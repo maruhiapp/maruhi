@@ -1,36 +1,3 @@
-// Pinned tests for the effectiveness of strict acceptance
-// (AUTH_SPEC §12-10 (1)).
-//
-// The targets are every implemented endpoint's payload route among
-// the surfaces §12-10 (1) enumerates
-// (SECURITY_CRITICAL_PAYLOAD_ENDPOINTS in
-// packages/api-schema/src/strict.ts). Each surface verifies over
-// the real workerd acceptance path that "a request containing an
-// unknown field is actually rejected with 400" — it does not test
-// the annotation's **presence** (so that if the schema annotation
-// stopped being read by the parser, it is detected from the
-// behavior side).
-// The enforcement is only the payload-schema wrapper
-// (`strictPayload`). The endpoint's `HttpApi.ParseOptions` would
-// pass the same options to success/error encoding, turning a
-// TaggedError's stack metadata into HTTP 500 — not used here.
-//
-// Each test is built from two sends of the same body:
-// 1. probe = clean body + an unknown field → 400
-// 2. control = the clean body itself → non-400 (proof the decode
-//    passed)
-//
-// Since the two sends differ only in the unknown field, the probe's
-// 400 is certainly caused by that field (if the 400 had a different
-// cause, the control would be 400 too).
-// A Schema 400's response body is empty (upstream renders
-// HttpApiSchemaError as an "empty 400"), so no body is checked.
-// Happy-path completion is covered by existing suites.
-//
-// Bodies that must not reach signature verification use
-// data-scenario's unsigned dummy (a zero signature, valid in form
-// only) — enough to prove the 400 settles at the Schema stage.
-
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -53,11 +20,6 @@ registerDataScenario();
 
 const PROBE_KEY = "__maruhiStrictProbe";
 
-/**
- * Pins probe (clean + unknown field) = 400 and control (clean) =
- * non-400. Returns the control's actual status (the caller can also
- * assert the handler stage's typical result).
- */
 async function expectStrictReject(
   send: (body: Record<string, unknown>) => Promise<Response>,
   clean: Record<string, unknown>,
@@ -69,12 +31,6 @@ async function expectStrictReject(
   return control.status;
 }
 
-/**
- * Propagation into nesting: for a clean body that already passed as
- * the control (non-400), the shape with an unknown field embedded
- * only at a nested position must fail with 400 (call after
- * expectStrictReject).
- */
 async function expectNestedReject(
   send: (body: Record<string, unknown>) => Promise<Response>,
   nested: Record<string, unknown>,
@@ -92,7 +48,6 @@ const sendJson =
       body: JSON.stringify(body),
     });
 
-// A zero-signature entry valid in form only (a control on the premise that signature verification = 422 is reached)
 const unsignedEntry = (op: string, payload: Record<string, unknown>): Record<string, unknown> => ({
   suite: "maruhi/v1",
   seq: fixture.head.seq + 1,
@@ -136,7 +91,6 @@ describe("chain append (§11-4)", () => {
     const entry = unsignedEntry("remove_member", { targetUserId: "user-member-0002" });
     const clean = { parentHeadHashHex: fixture.head.hashHex, entry };
     await expectStrictReject(send, clean);
-    // Propagation into a nested position (entry.payload)
     await expectNestedReject(send, {
       ...clean,
       entry: {
@@ -154,10 +108,6 @@ describe("head-attestation submission (§16-1)", () => {
       `${BASE}/projects/${projectId}/head-attestation`,
       bearer(token(OWNER)),
     );
-    // The zero-signature control passes Schema and falls to the
-    // acceptance check's 422 (signature-invalid). A non-400 alone
-    // would miss error-encoding 500s, so pin the declared status
-    // too.
     const status = await expectStrictReject(send, {
       suite: "maruhi/v1",
       chainHeadHashHex: fixture.head.hashHex,
@@ -168,7 +118,6 @@ describe("head-attestation submission (§16-1)", () => {
   });
 });
 
-// A zero-signature boundary checkpoint valid in form only (§12-4's mandatory bundling)
 const unsignedCheckpoint = (epoch: number, manifestVersion: number): Record<string, unknown> =>
   unsignedEntry("checkpoint", {
     environments: [
@@ -203,7 +152,6 @@ describe("environment create / rotation composite (§12-4)", () => {
       ...clean,
       entry: unsignedEntry("create_environment", { ...entryPayload, [PROBE_KEY]: true }),
     });
-    // strict also propagates into the composite's checkpoint field
     await expectNestedReject(send, {
       ...clean,
       checkpoint: { ...(clean.checkpoint as Record<string, unknown>), [PROBE_KEY]: true },
@@ -234,8 +182,6 @@ describe("environment create / rotation composite (§12-4)", () => {
       ...clean,
       manifest: { ...(clean.manifest as Record<string, unknown>), [PROBE_KEY]: true },
     });
-    // strict also propagates inside the checkpoint field: both the
-    // entry payload and its environment-tuple nested positions
     const cleanCheckpoint = clean.checkpoint as Record<string, unknown>;
     const checkpointPayload = cleanCheckpoint["payload"] as Record<string, unknown>;
     await expectNestedReject(send, {
@@ -259,14 +205,6 @@ describe("environment create / rotation composite (§12-4)", () => {
   });
 
   it("rejects a composite without the required boundary checkpoint field with 400", async () => {
-    // §12-4's mandatory bundling: a create / rotate composite without
-    // the checkpoint field fails closed as a Schema-stage 400
-    // (session-33 ruling E-3).
-    // Per the file-top convention, probe / control are paired within
-    // this test (if it depended on a prior test's clean, a change on
-    // the prior side would silently lose the guarantee that the 400
-    // is caused by the missing checkpoint): the only difference is
-    // the presence of the checkpoint field
     const create = sendJson("POST", dataUrl("/environments"), bearer(token(OWNER)));
     const createClean = {
       parentHeadHashHex: fixture.head.hashHex,
@@ -340,9 +278,6 @@ describe("value push / meta operations (§12-5 — variables)", () => {
   });
 
   it("declared create (union branch — §12-5) rejects an unknown field with 400", async () => {
-    // Pinning on the v3 branch that strict annotations propagate
-    // across the Union (§12-10 (1)). The control is the handler
-    // stage's 4xx (non-400) = proof the decode passed
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/variables`), bearer(token(OWNER)));
     const statement = {
       ...unsignedVariableStatement(VAR, "DATABASE_URL"),
@@ -456,8 +391,6 @@ describe("recovery-blob registration (§13-2)", () => {
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(16),
     });
-    // The control passes all the way to real acceptance (a
-    // backcheck that the probe changed no state)
     expect(status).toBe(204);
   });
 });
@@ -492,8 +425,6 @@ describe("the device registry (§13-11)", () => {
 
 describe("lease requests (§14)", () => {
   it("lease issue rejects an unknown field with 400", async () => {
-    // The only unauthenticated surface (the credential is the OIDC
-    // token itself — §14-1)
     const send = sendJson("POST", dataUrl(`/environments/${ENV}/lease`), {});
     await expectStrictReject(send, {
       oidcToken: "aa.bb.cc",

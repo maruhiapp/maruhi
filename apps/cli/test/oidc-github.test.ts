@@ -1,7 +1,3 @@
-// The OIDC issuance fetch (apps/cli/src/oidc-github.ts — AUTH_SPEC §14-1).
-// A stub `FetchHttpClient.Fetch` pins the request's shape (method, the
-// three headers, `redirect: "manual"`) and every failure's exact message.
-
 import { egressHttpClientLayer } from "@maruhi/core";
 import { Cause, Effect, Exit, Fiber, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -27,7 +23,6 @@ interface RecordedCall {
   readonly init: RequestInit | undefined;
 }
 
-/** The silent-off-TTY CliIo carrying the runner's two env vars. */
 function io(vars: Readonly<Record<string, string | undefined>>): CliIoShape {
   return {
     log: () => Effect.void,
@@ -47,11 +42,6 @@ const runnerEnv = io({
   [OIDC_REQUEST_TOKEN_ENV]: RUNNER_TOKEN,
 });
 
-/**
- * Runs the issuance fetch against a stubbed `FetchHttpClient.Fetch`
- * (`handler` throws/rejects/answers like fetch would), returning the
- * Exit and the calls the stub saw.
- */
 async function fetchWith(
   handler: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
   timeoutMs = 30_000,
@@ -70,7 +60,6 @@ async function fetchWith(
   return { exit, calls };
 }
 
-/** The CliError message a failure Exit carries (the test fails on anything else). */
 function messageOf(exit: Exit.Exit<unknown, CliError>): string {
   if (!Exit.isFailure(exit)) {
     throw new Error("expected a failure Exit");
@@ -97,7 +86,6 @@ describe("the GitHub Actions OIDC issuance fetch", () => {
     expect(request.url).toBe(`${RUNNER_URL}&audience=${encodeURIComponent(AUDIENCE)}`);
     expect(request.init?.method).toBe("GET");
     expect(request.init?.redirect).toBe("manual");
-    // Exactly the three headers — nothing else (above all, no trace headers)
     expect(request.init?.headers).toEqual({
       accept: "application/json",
       authorization: `Bearer ${RUNNER_TOKEN}`,
@@ -142,11 +130,6 @@ describe("the GitHub Actions OIDC issuance fetch", () => {
     expect(messageOf(exit)).toBe(`${FETCH_FAILED}: socket hangup`);
   });
 
-  // Under runCli an ambient HttpClient already sits in context, and
-  // `Effect.provide` shares layer builds across provide calls: without
-  // `{ local: true }` on the issuance fetch's provide, its
-  // `FetchHttpClient.layer` resolves to the ambient build — which never
-  // carries the RequestInit — and `redirect: "manual"` silently drops
   it('keeps `redirect: "manual"` when an ambient HttpClient already exists', async () => {
     const calls: RecordedCall[] = [];
     const stub = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -157,7 +140,6 @@ describe("the GitHub Actions OIDC issuance fetch", () => {
       fetchGitHubOidcToken(AUDIENCE).pipe(
         Effect.provideService(CliIo, runnerEnv),
         Effect.provideService(FetchHttpClient.Fetch, stub),
-        // The ambient client the command environment carries
         Effect.provide(egressHttpClientLayer()),
       ),
     );

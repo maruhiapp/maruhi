@@ -1,38 +1,3 @@
-// `maruhi proxy run -- <command>` (PF4 — credential brokering and
-// short-lived connectors. Design record: docs/notes/pf4-design.md).
-//
-// The command of `maruhi run`, with one difference in what the child
-// receives: for a variable with a `broker` or `connector` rule the child
-// gets a **placeholder**, and the real value is written into requests
-// only at the proxy, only toward the hosts the rule names. The agent (or
-// any program) running under it cannot print, log, or exfiltrate a value
-// it never had. Values a proxy cannot substitute (a database URL, a key
-// used locally) are passed through only when a rule says so; everything
-// else is withheld (fail closed — ruling P5).
-//
-// Flow:
-//   1. classify the decrypted variables by the config's rules
-//      (broker / connector / passthrough / withhold / unlisted);
-//   2. create the run's CA (proxy-cert.ts) and start the proxy
-//      (proxy-server.ts) on a loopback port;
-//   3. write the CA certificate (public) and a bundle (system roots +
-//      CA) into a private temp directory — the only files this command
-//      creates, and never a secret;
-//   4. build the child's environment: placeholders, pass-through values
-//      (through `buildInjectionEnv`'s name and value checks), and the
-//      control variables every TLS client reads — HTTP(S)_PROXY, the
-//      CA-file variables, NODE_USE_ENV_PROXY — written **after** the
-//      variables so a variable of the same name cannot redirect the
-//      child's traffic;
-//   5. run the child with signals held (the proxy must outlive it), then
-//      close the proxy, remove the directory, and print how many requests
-//      were brokered, tunnelled, blocked, or failed.
-//
-// Pass-through values are also handed to the run-output redaction
-// (ROADMAP Phase 3 ⑤ — run.ts) under the same trigger as `maruhi run`.
-// The server is not involved: no endpoint, no acceptance rule, no audit
-// row beyond the pull's own `var.read`. No spec text changes.
-
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import tls from "node:tls";
@@ -61,11 +26,6 @@ import {
   startProxy,
 } from "./proxy-server.ts";
 
-/**
- * Test seams (absent in production): where the proxy's upstream
- * connections go and how a connector reaches its API. Provided by the
- * test layer through {@link ProxySeams}.
- */
 export interface ProxySeamsShape {
   readonly upstream?: ProxyOptions["upstream"];
   readonly connector?: Partial<ConnectorDeps>;
@@ -81,19 +41,11 @@ interface ProxyRunInput {
   readonly configPath: string;
   readonly environmentId: EnvironmentId;
   readonly variables: readonly DecryptedVariable[];
-  /** One stderr line per request the proxy handled. */
   readonly verbose: boolean;
-  /**
-   * Sandbox mode (pf4-design.md §20 — the structural answer to ruling M):
-   * `listen` = `host[:port]` to bind beyond the loopback so a container or
-   * another network namespace can reach the proxy; `advertise` = the
-   * `host[:port]` the child is told (what the sandbox sees the host as).
-   */
   readonly listen?: string | undefined;
   readonly advertise?: string | undefined;
 }
 
-/** `[host]` or `[host]:port` → the two parts; null when the brackets are malformed. */
 function splitBracketed(text: string): { readonly host: string; readonly portText: string } | null {
   const close = text.indexOf("]");
   if (close < 0) {
@@ -106,7 +58,6 @@ function splitBracketed(text: string): { readonly host: string; readonly portTex
   return after.startsWith(":") ? { host: text.slice(1, close), portText: after.slice(1) } : null;
 }
 
-/** `host` or `host:port` → the two parts (more than one colon and no bracket = a bare IPv6 address). */
 function splitPlain(text: string): { readonly host: string; readonly portText: string } {
   const colon = text.lastIndexOf(":");
   if (colon < 0 || text.indexOf(":") !== colon) {
@@ -115,11 +66,6 @@ function splitPlain(text: string): { readonly host: string; readonly portText: s
   return { host: text.slice(0, colon), portText: text.slice(colon + 1) };
 }
 
-/**
- * `host[:port]` of a bind address: an IPv4 literal, a host name, or an IPv6
- * literal (`[::1]:8080`, `[::1]`, or a bare `::1`); port 0 = ephemeral.
- * Exported for tests.
- */
 export function parseListenAddress(
   text: string,
 ): { readonly host: string; readonly port: number } | null {
@@ -136,20 +82,12 @@ export function parseListenAddress(
   return port <= 65535 ? { host, port } : null;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Classification                                                               */
-/* -------------------------------------------------------------------------- */
-
 interface Plan {
   readonly credentials: readonly BrokeredCredential[];
-  /** Env-var name → placeholder, in rule order. */
   readonly placeholders: ReadonlyMap<string, string>;
-  /** Variables injected with their real value. */
   readonly passthrough: readonly DecryptedVariable[];
   readonly withheld: readonly string[];
-  /** Variables consumed by connectors (never injected). */
   readonly consumed: readonly string[];
-  /** Rules naming a variable the environment does not hold. */
   readonly absent: readonly string[];
 }
 
@@ -169,7 +107,6 @@ function describeHosts(hosts: readonly HostPattern[]): string {
 const placeholderFor = (name: string, rule: { readonly placeholder: string | undefined }) =>
   rule.placeholder ?? makePlaceholder(name);
 
-/** A `broker` rule's credential: the variable's own bytes, resolved per request. */
 function brokerCredential(
   name: string,
   rule: Extract<VariableRule, { mode: "broker" }>,
@@ -180,15 +117,11 @@ function brokerCredential(
     placeholder: placeholderFor(name, rule),
     hosts: rule.hosts,
     surfaces: rule.surfaces,
-    // Reason for unwrapping: the proxy writes the value into a request
-    // toward a host the rule names (the sanctioned consumption path of
-    // this command). Resolved per request, never stored anywhere else
     resolve: () => Promise.resolve(Redacted.value(variable.value)),
     known: () => [Redacted.value(variable.value)],
   };
 }
 
-/** A `connector` rule's credential, or the fail-fast error (before the child starts). */
 function connectorCredential(input: {
   readonly name: string;
   readonly rule: Extract<VariableRule, { mode: "connector" }>;
@@ -204,16 +137,12 @@ function connectorCredential(input: {
   for (const [inputName, variableName] of Object.entries(rule.inputs)) {
     const variable = byName.get(variableName);
     if (variable === undefined) {
-      // Fail fast, before the child starts: a connector that cannot mint has nothing to broker
       return Effect.fail(
         cliError(
           `The connector rule for ${displayText(name)} names variable ${displayText(variableName)} as its ${inputName}, but the environment has no value for it. Set it with \`maruhi push ${displayText(variableName)}\`, or fix the rule. The command was not started`,
         ),
       );
     }
-    // Reason for unwrapping: the connector consumes the input in memory to
-    // mint a short-lived credential (integration-options.md §6 D3). The
-    // input never reaches the child
     inputs[inputName] = Redacted.value(variable.value);
     consumed.push(variableName);
   }
@@ -238,7 +167,6 @@ function connectorCredential(input: {
   });
 }
 
-/** Files a non-connector rule into the plan's buckets (by what it does with the variable it names, or does not find). */
 function placeRule(input: {
   readonly name: string;
   readonly rule: Exclude<VariableRule, { mode: "connector" }>;
@@ -299,7 +227,6 @@ const planFor = Effect.fn("proxy-run.planFor")(function* (input: {
     });
   }
 
-  // Variables no rule names follow `unlisted`; a connector's inputs never reach the child, whatever it says
   const unlisted = input.variables.filter(
     (variable) => !input.config.variables.has(variable.name) && !consumed.has(variable.name),
   );
@@ -320,7 +247,6 @@ const planFor = Effect.fn("proxy-run.planFor")(function* (input: {
   };
 });
 
-/** How one rule is summarized on stderr before the child starts (names and hosts only). */
 function describeRule(name: string, rule: VariableRule): string {
   switch (rule.mode) {
     case "broker":
@@ -333,11 +259,6 @@ function describeRule(name: string, rule: VariableRule): string {
   }
 }
 
-/**
- * One line summarizing a config's rules, for `maruhi proxy accept` (what a
- * person is accepting: brokered variables and their hosts, pass-through
- * and withheld names, the two defaults). Names only, never a value.
- */
 export function describeProxyConfig(config: ProxyConfig): string {
   const rules = [...config.variables];
   const brokered = rules.filter(([, rule]) => rule.mode === "broker" || rule.mode === "connector");
@@ -366,17 +287,6 @@ export function describeProxyConfig(config: ProxyConfig): string {
   return parts.join("; ");
 }
 
-/* -------------------------------------------------------------------------- */
-/* The child's control environment                                             */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The variables that point a child's HTTP clients at the proxy and make
- * them trust the run's CA. `bundle` = system roots + the CA (OpenSSL-style
- * clients replace their store with this file, so the roots must ride
- * along for the hosts the proxy only tunnels); `caOnly` = the CA alone
- * (additive variables). Exported for tests.
- */
 export function proxyControlEnv(input: {
   readonly proxyUrl: string;
   readonly bundlePath: string;
@@ -387,12 +297,9 @@ export function proxyControlEnv(input: {
     HTTPS_PROXY: input.proxyUrl,
     http_proxy: input.proxyUrl,
     https_proxy: input.proxyUrl,
-    // An inherited NO_PROXY could route a brokered host around the proxy
     NO_PROXY: "",
     no_proxy: "",
-    // Node 24+ fetch (undici) honours the proxy variables only when asked
     NODE_USE_ENV_PROXY: "1",
-    // OpenSSL-based clients (curl, Python, Ruby, Go, git): the whole store
     SSL_CERT_FILE: input.bundlePath,
     REQUESTS_CA_BUNDLE: input.bundlePath,
     CURL_CA_BUNDLE: input.bundlePath,
@@ -402,27 +309,16 @@ export function proxyControlEnv(input: {
     CARGO_HTTP_CAINFO: input.bundlePath,
     NIX_SSL_CERT_FILE: input.bundlePath,
     GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: input.bundlePath,
-    // Additive stores
     NODE_EXTRA_CA_CERTS: input.caPath,
     DENO_CERT: input.caPath,
   };
 }
 
-/**
- * PEM text of the roots the child should keep trusting for the hosts the
- * proxy only tunnels: the runtime's bundled Mozilla roots plus, where the
- * runtime exposes it, the operating system's store (a corporate root
- * behind a TLS-inspecting network proxy — review finding §19 D-13a).
- */
 function rootCertificatesPem(): string {
   const system = typeof tls.getCACertificates === "function" ? tls.getCACertificates("system") : [];
   const unique = new Set<string>([...tls.rootCertificates, ...system]);
   return [...unique].map((cert) => (cert.endsWith("\n") ? cert : `${cert}\n`)).join("");
 }
-
-/* -------------------------------------------------------------------------- */
-/* The command                                                                  */
-/* -------------------------------------------------------------------------- */
 
 interface Tally {
   brokered: number;
@@ -448,7 +344,6 @@ function describeDecision(decision: ProxyDecision): string {
   }
 }
 
-/** Says on stderr what the child will get, before anything starts (ruling P5: the config decides where values go). */
 const announcePlan = Effect.fn("proxy-run.announcePlan")(function* (
   plan: Plan,
   input: ProxyRunInput,
@@ -491,7 +386,6 @@ const announcePlan = Effect.fn("proxy-run.announcePlan")(function* (
   );
 });
 
-/** The child's variables: placeholders ride the same checks as values (name shape, execution-control names, case collisions). */
 function injectionEnvFor(plan: Plan): Effect.Effect<Readonly<Record<string, string>>, CliError> {
   const placeholderVariables: DecryptedVariable[] = [...plan.placeholders].map(
     ([name, placeholder]) => ({
@@ -508,7 +402,6 @@ function injectionEnvFor(plan: Plan): Effect.Effect<Readonly<Record<string, stri
   return buildInjectionEnv([...plan.passthrough, ...placeholderVariables]);
 }
 
-/** `--listen` / `--advertise` checked (usage errors) and the non-loopback warning. */
 interface Addresses {
   readonly listen: { readonly host: string; readonly port: number } | undefined;
   readonly advertise: { readonly host: string; readonly port: number } | undefined;
@@ -537,7 +430,6 @@ const resolveListen = Effect.fn("proxy-run.resolveListen")(function* (
   return { listen, advertise };
 });
 
-/** Teardown: revoke the credentials connectors minted (best effort, a Note on failure), then close the proxy. */
 const releaseAndClose = Effect.fn("proxy-run.releaseAndClose")(function* (
   credentials: readonly BrokeredCredential[],
   proxy: ProxyHandle,
@@ -559,7 +451,6 @@ const releaseAndClose = Effect.fn("proxy-run.releaseAndClose")(function* (
   yield* Effect.promise(() => proxy.close());
 });
 
-/** `maruhi proxy run`: broker the environment's values to one command. Returns the child's exit code. */
 export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
   input: ProxyRunInput,
 ): Effect.fn.Return<number, CliError, CliIo | ProcessRunner | Stdio.Stdio | HttpClient.HttpClient> {
@@ -578,8 +469,6 @@ export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
   });
   yield* announcePlan(plan, input);
   const injected = yield* injectionEnvFor(plan);
-  // CA and leaves read the same clock the connector's JWTs do — one time
-  // source per run, and a TestClock drives all of them
   const ca = yield* Effect.tryPromise({
     try: () => makeEphemeralCa(() => connectorDeps.clock.currentTimeMillisUnsafe()),
     catch: () => cliError("Cannot create the run's certificate authority (WebCrypto unavailable)"),
@@ -588,12 +477,9 @@ export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
   const onDecision = (decision: ProxyDecision): void => {
     tally[decision.kind === "error" ? "errors" : decision.kind] += 1;
     if (input.verbose) {
-      // Written synchronously as it happens (stderr; names, hosts, paths without
-      // their query — never a value). runSync: the live CliIo writes with writeSync
       Effect.runSync(io.logError(`Note: ${describeDecision(decision)}`));
     }
   };
-  // The private directory first: a failure here leaves nothing to tear down
   const { dir, removeDir } = yield* privateRuntimeDir({
     envVar: io.envVar,
     prefix: "maruhi-proxy-",
@@ -602,9 +488,6 @@ export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
       `proxy run: could not remove the proxy CA directory (${path}) — remove it by hand`,
   });
   const { listen, advertise } = yield* resolveListen(input);
-  // The run's proxy credential (userinfo of the proxy URL — §19 D-14b).
-  // Whoever holds it can use the proxy, so the redaction covers it too:
-  // a `printenv` under an agent must not leave it in a transcript (§21 R-10)
   const proxyPassword = randomAlphanumeric(22);
   const exitCode = yield* Effect.gen(function* () {
     const proxy = yield* Effect.tryPromise({
@@ -614,8 +497,6 @@ export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
           unmatched: input.config.unmatched,
           ca,
           hopDir: dir,
-          // Every client must present this run's proxy credential (userinfo in
-          // the proxy URL — honoured by curl, git, Python, Go, Node, Bun; §19 D-14b)
           credential: { user: "maruhi", password: proxyPassword },
           ...(listen === undefined ? {} : { listen }),
           ...(advertise === undefined ? {} : { advertise }),
@@ -628,8 +509,6 @@ export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
         ),
     });
     return yield* Effect.gen(function* () {
-      // The CA certificate is public; the bundle is the roots plus the CA.
-      // Neither is a secret — the CA key stays in memory
       const caPath = join(dir, "ca.pem");
       const bundlePath = join(dir, "ca-bundle.pem");
       yield* Effect.tryPromise({
@@ -640,17 +519,12 @@ export const proxyRunOp = Effect.fn("proxy-run.proxyRunOp")(function* (
         catch: () => cliError(`Cannot write the proxy's CA certificate under ${dir}`),
       });
       const control = proxyControlEnv({ proxyUrl: proxy.url, bundlePath, caPath });
-      // Control variables are written last: a variable named HTTPS_PROXY
-      // (a co-member can choose names) must not redirect the child's traffic
       const extraEnv = { ...injected, ...control };
       yield* logNote(
         proxy.advertised === proxy.address
           ? `proxy run: proxy listening on ${proxy.address}; starting the command`
           : `proxy run: proxy listening on ${proxy.address}, told to the command as ${proxy.advertised}; starting the command`,
       );
-      // The redaction covers pass-through values and the brokered values
-      // known at start (defence in depth: the child should never print a
-      // brokered value, so there is no false positive to fear)
       const brokeredAtStart = plan.credentials.flatMap((credential) => credential.known());
       return yield* runner.run({
         command: input.command,

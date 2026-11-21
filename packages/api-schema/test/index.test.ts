@@ -8,7 +8,6 @@ import { ChainEntrySchema, ChainInvalidReasonSchema, maruhiApi } from "../src/in
 const decodeEntry = Schema.decodeUnknownOption(ChainEntrySchema);
 const decodeReason = Schema.decodeUnknownOption(ChainInvalidReasonSchema);
 
-// Same shape as seq 1 (genesis) of test-vectors/chain-entries.json. Dummy values
 const genesisEntry = {
   suite: "maruhi/v1",
   seq: 1,
@@ -156,11 +155,6 @@ describe("maruhiApi", () => {
   });
 
   it("declares span redaction for the credential-carrying query and header names", () => {
-    // Pins the API-level declaration (the framework combines it onto
-    // every endpoint's client-request and server span redaction). The
-    // names cover the OAuth callback's `code` / `state`, the signup
-    // entry point's `signup_code`, the CLI verify URL's `code` / `vsig`,
-    // and the credential headers.
     expect(Context.getOrUndefined(maruhiApi.annotations, HttpApi.RedactedNames)).toEqual({
       query: ["code", "state", "signup_code", "vsig"],
       headers: ["authorization", "cookie", "set-cookie"],

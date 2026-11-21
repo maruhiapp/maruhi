@@ -1,8 +1,4 @@
 ---
-/**
- * PaginationLink — one half of the pagination bar: a caption, the page title
- * (the default slot), and the key that reaches it.
- */
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 import PaginationKey from "./PaginationKey.astro";
@@ -12,14 +8,12 @@ import { shortcuts } from "@/lib/shortcuts";
 interface Props extends Omit<HTMLAttributes<"a">, "rel"> {
   rel: "prev" | "next";
   href: string;
-  /** Caption above the title. Defaults to "Previous" or "Next". */
   label?: string;
 }
 
 const { rel, href, label, class: className, ...attrs } = Astro.props;
 const isNext = rel === "next";
 const caption = label ?? (isNext ? "Next" : "Previous");
-// The key that reaches this page; `false` in src/lib/shortcuts.ts means none.
 const key = isNext ? shortcuts.nextPage : shortcuts.previousPage;
 ---
 
@@ -46,7 +40,6 @@ const key = isNext ? shortcuts.nextPage : shortcuts.previousPage;
 </a>
 
 <style>
-  /* The rule between the halves; it fades while either half is highlighted. */
   .nb-pagination-link + .nb-pagination-link::before {
     content: "";
     position: absolute;
@@ -62,7 +55,6 @@ const key = isNext ? shortcuts.nextPage : shortcuts.previousPage;
     opacity: 0;
   }
 
-  /* Long titles get two lines on a phone and an ellipsis on wider screens. */
   .nb-pagination-title {
     display: -webkit-box;
     -webkit-box-orient: vertical;

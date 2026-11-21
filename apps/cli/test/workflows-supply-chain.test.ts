@@ -1,68 +1,3 @@
-// Pins the workflows' supply-chain invariants mechanically, so a later edit
-// cannot undo one unnoticed. The rule behind them: an executable that runs in
-// a workflow comes either from the commit being run or from a fetch verified
-// against a digest pinned in that commit, no run reads a store another run
-// can write, and a release publishes only what its build job produced.
-//
-// An Actions cache entry in the default branch's scope is writable by code
-// in any run there (a push to main and its dependencies, the Pullfrog
-// agent's workflow_dispatch) — GITHUB_TOKEN permissions do not limit cache
-// writes — and PR, push and tag-triggered release runs all read that scope.
-// actions/cache restores by untarring the entry with absolute paths allowed
-// (`tar -P`) and no member filter, so whatever its key and path, one entry
-// can rewrite the checkout, node_modules, build output or $HOME before they
-// run: falsified gate results on PR / push runs, and the release run's
-// artifact-overwrite token or ops-backup's Cloudflare token on privileged
-// ones. Checking the file a step meant to restore does not help. What is
-// pinned:
-//   1. every workflow is classified, and the unprivileged ones hold no secret
-//      and no write permission (a new privileged workflow cannot slip in as
-//      unprivileged)
-//   2. every workflow uses only allowlisted, SHA-pinned or local actions and
-//      no reusable workflow but ci.yml (called with no inputs) — default-deny:
-//      actions/cache, and any action with an implicit cache (setup-go,
-//      setup-python's `cache`, setup-node v5's package-manager cache), fails
-//      here first — with no cache input, and the local actions run shell
-//      steps only
-//   3. privileged workflows download artifacts from their own run only, and
-//      run no job or service container
-//   4. Bun comes only from .github/actions/install-bun, whose pinned version
-//      is `.bun-version`, and release.yml's publish-npm (the OIDC publish)
-//      runs only a pinned Node.js; both check the pinned SHA-256 before
-//      unpacking, and unpack before first running anything
-//   5. the Bun runtime embedded in each release binary is a release zip
-//      pinned in apps/cli/scripts/bun-runtimes.ts at that same version (the
-//      linux-x64 pin is install-bun's), and the build cannot fall back to an
-//      unpinned download
-//   6. release.yml's build job digests each artifact into its job outputs,
-//      publish-github checks both artifacts against them before creating the
-//      Release, and publish-npm checks the npm package again before anything
-//      else, each publishing from the checked directory only
-//   7. until the reviewer-approval gate is enabled before the first public
-//      release, no stable version ships: apps/cli's version stays a
-//      prerelease, and version-check refuses a stable tag
-//   8. the publish path cannot be skipped or soft-fail: the publish jobs'
-//      `if:`, step sequences, and every check and publish command are pinned
-//      byte for byte, with no `if:`, continue-on-error or custom shell on
-//      their steps, no `defaults` or extra `env` (BASH_ENV) above them,
-//      smoke's soft-fail limited to the keychain probe, and artifacts kept
-//      as long as a re-run can wait for an approval
-//   9. ci.yml's browser is the Chrome Headless Shell version the pinned
-//      Playwright expects (bun.lock resolves one Playwright), installed only
-//      by scripts/install-headless-shell.sh (the one pin, shared with the
-//      Cursor Cloud setup), which checks it against the pinned SHA-256 before
-//      it is unpacked. Any other
-//      Playwright browser download fails: ci.yml points PLAYWRIGHT_DOWNLOAD_HOST
-//      at an unresolvable host and nothing else sets a PLAYWRIGHT_ variable,
-//      and no workflow, local action or package.json script (`pre`/`post`
-//      hooks included) runs `playwright install` in any spelling
-//  10. every job that runs on a runner sets `timeout-minutes` of at most
-//      MAX_JOB_TIMEOUT_MINUTES, so a hung run cannot hold its secrets and
-//      tokens for GitHub's 6-hour default (the Pullfrog agent's job holds
-//      provider API keys and an OIDC token)
-// YAML is parsed by `Bun.YAML` in a subprocess (vitest runs on Node), the
-// same way as apps/site/test/unit/workflows.test.ts.
-
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -99,9 +34,6 @@ interface Step {
   readonly "continue-on-error"?: unknown;
   readonly shell?: string;
   readonly run?: string;
-  // Step concurrency (GA 2026-06): `background` marks a step asynchronous,
-  // `parallel:` carries a group of steps run concurrently, `wait` /
-  // `wait-all` / `cancel` gate a background step by id
   readonly background?: boolean;
   readonly parallel?: readonly Step[];
   readonly wait?: string | readonly string[];
@@ -138,31 +70,21 @@ const loadWorkflow = (file: string) => {
   return { source, workflow: parseYaml(source) as Workflow };
 };
 
-/** Hold a secret, a write permission, or produce what gets published. */
 const PRIVILEGED = ["ops-backup.yml", "pullfrog.yml", "release.yml"];
-/** Read-only runs with no secret. ci.yml is also release.yml's gate. */
 const UNPRIVILEGED = ["ci.yml", "english-pr.yml", "installer.yml"];
 
 const INSTALL_BUN = "./.github/actions/install-bun";
-/** Actions in this repository, allowed when they run shell steps only (checked below). */
 const LOCAL_ACTIONS = [INSTALL_BUN, "./actions/setup-maruhi"];
 const loadLocalAction = (uses: string) =>
   parseYaml(read(`${uses.slice(2)}/action.yml`)) as { runs: { using: string; steps: Step[] } };
 
-/** Actions with no cache feature at all: any commit, pinned by its 40-hex SHA. */
 const NO_CACHE_ACTIONS = [
   "actions/checkout",
   "actions/upload-artifact",
   "actions/download-artifact",
 ];
-/**
- * Actions that could grow a cache (pullfrog's agent runtime), allowed at the reviewed commit only,
- * so a bump re-checks them here. actions/setup-node is deliberately absent: v5+ turns a
- * package-manager cache on by default, and it downloads Node unverified on a tool-cache miss.
- */
 const REVIEWED_ACTIONS = ["pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90"];
 
-/** Why a `uses:` step could restore an Actions cache, or undefined when it cannot. */
 function cacheRisk(step: Step): string | undefined {
   const uses = step.uses ?? "";
   const allowed =
@@ -174,10 +96,6 @@ function cacheRisk(step: Step): string | undefined {
   return cacheInputs.length > 0 ? `${uses} sets ${cacheInputs.join(", ")}` : undefined;
 }
 
-/**
- * A pinned install script checks the digest, then unpacks, then runs the unpacked binary — in that
- * order, so nothing downloaded runs unverified.
- */
 function expectVerifiedBeforeRun(run: string, unpack: string, firstRun: string): void {
   const verify = run.indexOf("sha256sum --check --strict");
   expect(verify, "checks the SHA-256").toBeGreaterThan(-1);
@@ -185,14 +103,11 @@ function expectVerifiedBeforeRun(run: string, unpack: string, firstRun: string):
   expect(run.indexOf(firstRun), `${firstRun} after ${unpack}`).toBeGreaterThan(run.indexOf(unpack));
 }
 
-/** A step entry, or every member when the entry is a `parallel:` group. */
 const flattenStep = (step: Step): readonly Step[] => step.parallel ?? [step];
 
-/** Every leaf step in every job — a step nested in `parallel:` is covered too. */
 const stepsOf = (workflow: Workflow): Step[] =>
   Object.values(workflow.jobs).flatMap((job) => (job.steps ?? []).flatMap(flattenStep));
 
-/** Every PLAYWRIGHT_ variable a workflow sets in an env block or names in a step's script. */
 function playwrightSettings(file: string): string[] {
   const { env, jobs } = loadWorkflow(file).workflow;
   const keys = (block: Readonly<Record<string, unknown>> | undefined, where: string) =>
@@ -215,7 +130,6 @@ function playwrightSettings(file: string): string[] {
   ];
 }
 
-/** Every `permissions:` value granting write, at the workflow or a job level. */
 function writeGrants(workflow: Workflow): string[] {
   const grants: string[] = [];
   const collect = (permissions: unknown, where: string) => {
@@ -240,7 +154,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       const { source, workflow } = loadWorkflow(file);
       expect(source, `${file} references a secret`).not.toMatch(/secrets\./);
       expect(writeGrants(workflow), `${file} grants write`).toEqual([]);
-      // A workflow without an explicit permissions block gets the repository default
       expect(workflow.permissions, `${file} states its permissions`).toBeDefined();
     }
   });
@@ -258,7 +171,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
   it.each([...PRIVILEGED, ...UNPRIVILEGED])(
     "%s calls no reusable workflow except ci.yml, with no inputs",
     (file) => {
-      // A reusable workflow elsewhere would bring its own steps, caches included
       for (const job of Object.values(loadWorkflow(file).workflow.jobs)) {
         if (job.uses === undefined) continue;
         expect(job.uses).toBe("./.github/workflows/ci.yml");
@@ -277,7 +189,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
     const { workflow } = loadWorkflow(file);
 
     it("runs no job in a container and starts no service container", () => {
-      // An image pulled by tag is another unverified executable; none is needed today
       const images = Object.entries(workflow.jobs).filter(
         ([, job]) => job.container !== undefined || job.services !== undefined,
       );
@@ -296,8 +207,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
   });
 
   describe("Bun comes only from pinned release zips", () => {
-    // The install-bun action runs scripts/install-bun.sh, which holds the CI pin; both are
-    // pinned in dev-setup.test.ts
     const installScript = read("scripts/install-bun.sh");
     const scriptPin = (name: string) =>
       new RegExp(`^${name}="([^"]*)"$`, "m").exec(installScript)?.[1];
@@ -319,7 +228,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
         expect(runtime.member).toMatch(/^bun-[a-z0-9-]+\/bun(\.exe)?$/);
         expect(runtime.zip).toBe(`${runtime.member.split("/")[0]}.zip`);
       }
-      // One zip, two pins: the CI Bun and the linux-x64 runtime must not drift apart
       expect(scriptPin("BUN_VERSION")).toBe(BUN_RUNTIME_VERSION);
       expect(BUN_RUNTIMES["bun-linux-x64"].sha256).toBe(scriptPin("BUN_LINUX_X64_ZIP_SHA256"));
     });
@@ -328,7 +236,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       const script = read("apps/cli/scripts/build-binaries.ts");
       expect(script).toContain("`--compile-executable-path=${executable}`");
       expect(script).toContain("downloadVerified(runtimeUrl(runtime), runtime.sha256)");
-      // A flag bun ignored would fetch the runtime from npm; this env makes that fail
       expect(script).toContain("HTTPS_PROXY: unreachable,");
       expect(script).toContain('BUN_INSTALL_CACHE_DIR: join(runtimesDir, "install-cache"),');
       expect(script).toMatch(/run\(\s*"bun",\s*\[[^\]]*\],\s*cliRoot,\s*compileEnv,\s*\)/);
@@ -343,13 +250,10 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       expect(script).toContain("`--compile-exec-argv=${COMPILE_EXEC_ARGV}`");
       expect(script).toContain('"--no-compile-autoload-dotenv",');
       expect(script).toContain('"--no-compile-autoload-bunfig",');
-      // bun ignores a misspelled flag, so the probe goes through the same compile call
       expect(script).toContain("compile(target, executable, probeEntry, probe);");
       expect(script).toContain(
         'compile(target, executable, "src/bin.ts", join(workDir, target.bin));',
       );
-      // The probe's directory has a .env that sets a variable the probe exits 1
-      // on, and a bunfig.toml whose preload exits 1
       expect(script).toContain(
         'await writeFile(join(probeDir, ".env"), "MARUHI_STRICT_PROBE_DOTENV=read\\n");',
       );
@@ -362,8 +266,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       expect(script).toContain(
         'await writeFile(join(probeDir, "preload.ts"), "process.exit(1);\\n");',
       );
-      // An inherited BUN_OPTIONS or BUN_BE_BUN would let a probe that runs code
-      // pass, and an inherited probe variable would fail it whatever the flag does
       expect(script).toContain(
         '([name]) => !name.toUpperCase().startsWith("BUN_") && name !== "MARUHI_STRICT_PROBE_DOTENV",',
       );
@@ -414,8 +316,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       (s) => s.name === "Install Chrome Headless Shell (pinned SHA-256, no cache)",
     );
     const step = steps[install];
-    // The step runs scripts/install-headless-shell.sh, which holds the pin; the script's
-    // failure paths are run in dev-setup.test.ts
     const script = read("scripts/install-headless-shell.sh");
     const scriptPin = (name: string) => new RegExp(`^${name}="([^"]*)"$`, "m").exec(script)?.[1];
     const webPin = (
@@ -426,7 +326,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
       const sitePin = (
         JSON.parse(read("apps/site/package.json")) as { devDependencies: Record<string, string> }
       ).devDependencies["playwright"];
-      // Steps 9 / 9b / 11 share the one browser
       expect(sitePin, "apps/site and apps/web pin the same playwright").toBe(webPin);
       const fromWeb = createRequire(join(repoRoot, "apps/web/package.json"));
       const corePackage = createRequire(fromWeb.resolve("playwright/package.json")).resolve(
@@ -448,7 +347,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
 
     it("installs only through the script, which holds the one pin, and exports what it printed", () => {
       expect(install).toBeGreaterThan(-1);
-      // Byte for byte, so nothing (`|| true`, a second download, a fallback path) rides along
       expect(step?.run).toBe(
         [
           "set -euo pipefail",
@@ -459,9 +357,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
           "",
         ].join("\n"),
       );
-      // No `if:`, continue-on-error, shell or env can make it skip or soft-fail.
-      // It runs `background: true` so the download overlaps the install prefix;
-      // the id is how the wait step below references it
       expect(Object.keys(step ?? {}).toSorted()).toEqual([
         "background",
         "id",
@@ -494,7 +389,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
         "unzip ",
         'echo "${install_root}/${tree}/chrome-headless-shell"',
       );
-      // Unconditional, at the top level of the script, and exits on its own (not through `set -e`)
       const lines = script.split("\n");
       const check = lines.indexOf(
         'if ! echo "${CHROME_HEADLESS_SHELL_LINUX64_ZIP_SHA256}  ${zip}" | sha256sum --check --strict >&2; then',
@@ -505,7 +399,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
         "fi",
       ]);
       expect(script).toMatch(/^die\(\) \{\n(?:  .*\n)*  exit 1\n\}$/m);
-      // No enclosing block (if / case / loop / group / subshell) opened before it
       let depth = 0;
       for (const line of lines.slice(0, check)) {
         if (/^\s*(if|case|for|while|until)\b|[{(]\s*$/.test(line)) depth += 1;
@@ -515,14 +408,10 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
     });
 
     it("sends every other Playwright browser download to an unresolvable host", () => {
-      // playwright-core 1.64 replaces all its mirrors (Chrome for Testing's included) with this
-      // host, so `playwright install` fails before unpacking, whoever runs it and however
       const { workflow } = loadWorkflow("ci.yml");
       expect(workflow.env?.["PLAYWRIGHT_DOWNLOAD_HOST"]).toBe(
         "https://playwright-download.invalid",
       );
-      // ... and nothing overrides it (a PLAYWRIGHT_<browser>_DOWNLOAD_HOST would win over it): the
-      // only other PLAYWRIGHT_ variable is the verified executable path the install step exports
       expect([...PRIVILEGED, ...UNPRIVILEGED].flatMap(playwrightSettings)).toEqual([
         "ci.yml env: PLAYWRIGHT_DOWNLOAD_HOST",
         `ci.yml e2e ${step?.name} run: PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`,
@@ -530,10 +419,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
     });
 
     it("gates every browser step behind a wait on the background install", () => {
-      // A background step's $GITHUB_ENV write (the executable path the tests
-      // launch through) is only visible after a wait that names its id, and
-      // only inside the job that ran the install — a browser step in any
-      // other job could never see the path at all, so scan every job
       const waitForInstall = steps.findIndex((s) => {
         const waits = typeof s.wait === "string" ? [s.wait] : (s.wait ?? []);
         return waits.includes(step?.id ?? "");
@@ -566,7 +451,6 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
           [],
         );
       }
-      // bun runs `pre<name>` / `post<name>` around every script, so every script counts
       const manifests = spawnSync("git", ["ls-files", "--", "*package.json"], {
         cwd: repoRoot,
         encoding: "utf8",
@@ -582,11 +466,9 @@ describe("No workflow restores an Actions cache or runs an unpinned download", (
   });
 });
 
-/** The one digest function: every non-directory entry's path and SHA-256, C-sorted. */
 const DIGEST =
   "digest() { (cd \"$1\" && find . ! -type d -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --) | sha256sum | cut -d ' ' -f 1; }";
 
-/** The build job's digest step, byte for byte. */
 const DIGEST_RUN = [
   "set -euo pipefail",
   DIGEST,
@@ -597,7 +479,6 @@ const DIGEST_RUN = [
   "",
 ].join("\n");
 
-/** Every publish job's check of a downloaded artifact, byte for byte. */
 const VERIFY_RUN = [
   "set -euo pipefail",
   DIGEST,
@@ -609,7 +490,6 @@ const VERIFY_RUN = [
   "",
 ].join("\n");
 
-/** The Release upload: exactly the five archives and checksums.txt. */
 const RELEASE_RUN = [
   "FLAGS=(--generate-notes --verify-tag)",
   'if [ "${PRERELEASE}" = "true" ]; then',
@@ -622,7 +502,6 @@ const RELEASE_RUN = [
   "",
 ].join("\n");
 
-/** publish-npm's dry run, lifecycle scripts off. */
 const DRY_RUN_RUN = [
   "set +e",
   'OUT=$(npm publish ./dist-npm --dry-run --ignore-scripts --tag "${DIST_TAG}" 2>&1)',
@@ -642,17 +521,8 @@ const DRY_RUN_RUN = [
 
 const PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
 const RELEASE_TAGS = "v[0-9]*";
-/**
- * version-check's resolve step, byte for byte: the version and tag checks, the prerelease
- * decision, and the refusal of a stable tag while no approval gates the publish jobs.
- */
 const RESOLVE_RUN = [
   "VERSION=$(node -p \"require('./apps/cli/package.json').version\")",
-  "# Canonical SemVer (same shape as SEMVER_PATTERN in",
-  "# scripts/shared.ts). With a lax check, leading zeros etc. are first",
-  "# rejected at the final npm publish and Release and npm diverge.",
-  "# Later jobs expand this output into the shell, so the format check",
-  "# doubles as injection hardening",
   "SEMVER_RE='^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'",
   'if ! [[ "${VERSION}" =~ ${SEMVER_RE} ]]; then',
   '  echo "::error::apps/cli/package.json version is not SemVer: ${VERSION}"',
@@ -663,13 +533,6 @@ const RESOLVE_RUN = [
   "  exit 1",
   "fi",
   'if [ "${EVENT_NAME}" = "push" ]; then',
-  "  # Force the tag to point at a commit in the main ancestry.",
-  "  # Without this, tagging any unreviewed branch commit with a v tag",
-  "  # would reach a real Release / npm publish (with provenance).",
-  "  # origin/main is already fetched by checkout (fetch-depth: 0 = all",
-  "  # branches, full history) \u2014 do not re-fetch here (a manual fetch",
-  "  # after persist-credentials: false is the one line that breaks the",
-  "  # moment the repository goes private)",
   "  if ! git merge-base --is-ancestor HEAD origin/main; then",
   '    echo "::error::tag ${GITHUB_REF_NAME} does not point at a commit on main (docs/RELEASING.md)"',
   "    exit 1",
@@ -679,8 +542,6 @@ const RESOLVE_RUN = [
   "  *-*) PRERELEASE=true ;;",
   "  *) PRERELEASE=false ;;",
   "esac",
-  "# A stable tag publishes to npm `latest` with nobody's approval",
-  "# until the release gate exists, so it stops here",
   'if [ "${EVENT_NAME}" = "push" ] && [ "${PRERELEASE}" = "false" ]; then',
   '  echo "::error::stable tag ${GITHUB_REF_NAME}: enable the release approval gate first (docs/RELEASING.md, \\"Before the first public release\\")"',
   "  exit 1",
@@ -690,18 +551,15 @@ const RESOLVE_RUN = [
   "",
 ].join("\n");
 
-/** No condition and no continue-on-error: a failure here stops what depends on it. */
 function expectUnconditional(item: Step | Job | undefined, where: string): void {
   expect(item, where).toBeDefined();
   expect(item?.if, `${where} has an if:`).toBeUndefined();
   expect(item?.["continue-on-error"], `${where} has continue-on-error`).toBeUndefined();
-  // A custom shell (`shell: "true {0}"`) would skip the script and still pass
   expect((item as Step | undefined)?.shell, `${where} sets a shell`).toBeUndefined();
 }
 
 const needsOf = (job: Job | undefined) =>
   typeof job?.needs === "string" ? [job.needs] : [...(job?.needs ?? [])];
-/** Jobs that can publish: any write permission or the OIDC token. */
 const canPublish = ({ permissions }: Job) =>
   typeof permissions === "string"
     ? permissions === "write-all"
@@ -715,7 +573,6 @@ describe("release.yml publishes only what its build job produced", () => {
   const github = workflow.jobs["publish-github"]?.steps ?? [];
   const npm = workflow.jobs["publish-npm"]?.steps ?? [];
 
-  /** `steps[at]` downloads `artifact` into `path`, and the next step checks it there. */
   function expectVerifiedDownload(
     steps: readonly Step[],
     at: number,
@@ -809,9 +666,6 @@ describe("release.yml publishes only what its build job produced", () => {
   });
 
   it("lets nothing reshape the shell those steps run in", () => {
-    // defaults.run.shell or BASH_ENV (sourced before every bash step) at any level would run
-    // before or instead of the pinned scripts, and GH_HOST would point publish-github's
-    // `gh release create` at another server
     expect(workflow.defaults).toBeUndefined();
     expect(workflow.env).toEqual({
       DO_NOT_TRACK: "1",
@@ -854,17 +708,12 @@ describe("release.yml publishes only what its build job produced", () => {
   });
 
   it("keeps the artifacts as long as a re-run can still wait for an approval", () => {
-    // A re-run may start 30 days after the run and, with the approval gate, wait 30 days more
     const uploads = buildSteps.filter((s) => s.uses?.startsWith("actions/upload-artifact@"));
     expect(uploads.map((s) => s.with?.["retention-days"])).toEqual([60, 60]);
   });
 });
 
 describe("release.yml ships no stable release until the approval gate is enabled", () => {
-  // The reviewer-approval gate on the publish jobs is deferred until the first public release
-  // (docs/RELEASING.md, "Before the first public release"). Until then a stable version is
-  // refused twice: here, when apps/cli is bumped to one, and in version-check, when one is
-  // tagged. Enabling the gate replaces this block.
   const { workflow } = loadWorkflow("release.yml");
   const jobs = Object.entries(workflow.jobs);
   const versionCheck = workflow.jobs["version-check"];
@@ -905,14 +754,12 @@ describe("release.yml ships no stable release until the approval gate is enabled
   });
 });
 
-/** The longest bound a job may set (Pullfrog's, the longest today, is 75). */
 const MAX_JOB_TIMEOUT_MINUTES = 120;
 
 describe("Every job that runs on a runner is time-bounded", () => {
   it.each([...PRIVILEGED, ...UNPRIVILEGED])(
     "%s bounds every job that runs on a runner with timeout-minutes",
     (file) => {
-      // A job that calls a reusable workflow cannot set one; ci.yml's own jobs are checked here
       const unbounded = Object.entries(loadWorkflow(file).workflow.jobs)
         .filter(([, job]) => job.uses === undefined)
         .filter(([, job]) => {

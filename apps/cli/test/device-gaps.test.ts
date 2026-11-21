@@ -1,19 +1,3 @@
-// Integration tests for filling in missing epochs of your other devices
-// (DK K11 — design note dk-design.md §16). Device ops, wraps, and
-// registration signatures are real crypto; the server is a wire-level mock.
-//
-// Properties pinned down (K11-6):
-//  1. From the bundled wrap rows, `maruhi pull` derives the missing epochs
-//     of your other still-valid devices that are recipients of that
-//     environment, wraps **only those epochs** to the sibling's key, and
-//     registers them with this device's registration signature (the
-//     registered rows open under the sibling's key and pass §5.1 signature
-//     verification)
-//  2. Nothing is registered when there is no gap, or for a device that isn't
-//     a recipient (outside the effective scope)
-//  3. An epoch this device also cannot open is not wrapped — it is reported.
-//     A registration failure stays a Note; pull still exits 0
-
 import {
   type ChainOperation,
   decodeHex,
@@ -48,9 +32,7 @@ const ENV_ID = "env-app";
 const OTHER_ENV_ID = "env-other";
 
 let owner: TestUser;
-/** owner's second device (the sibling with a missing epoch). */
 let sibling: TestUser;
-/** owner's third device (its cap's scope is only OTHER_ENV_ID — not a recipient of ENV_ID). */
 let narrow: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
@@ -95,7 +77,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** A distribution row destined to a device key (the new-server shape — carries `recipientEncPubHex`). */
 async function rowFor(device: TestUser, epoch: number): Promise<WireRecipientDek> {
   return wrapDekFor({
     projectId: built.projectId,
@@ -116,7 +97,6 @@ interface Posted {
   readonly signatureHex: string;
 }
 
-/** Chain + a valued pull of an environment with 0 variables (swap the bundled rows) + wrap registration. */
 async function start(input: {
   readonly rows: readonly unknown[];
   readonly registerStatus?: number;
@@ -184,8 +164,6 @@ async function start(input: {
 
 describe("maruhi pull fills in the missing epochs of your other devices (DK K11)", () => {
   it("registers only the sibling's missing epochs, wrapped to the sibling's key with this device's registration signature", async () => {
-    // owner holds epochs 1 and 2; sibling has only 2 (1 is missing). narrow
-    // is not a recipient of ENV_ID
     const { env, posted } = await start({
       rows: [await rowFor(owner, 1), await rowFor(owner, 2), await rowFor(sibling, 2)],
     });
@@ -196,8 +174,6 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
     const [wrap] = posted;
     if (wrap === undefined) throw new Error("no wrap");
     expect(wrap.recipientUserId).toBe(owner.userId);
-    // Discriminate the destination: it opens under the sibling's key to
-    // the epoch-1 DEK and the registration signature verifies
     const opened = await unwrapDek({
       recipientKeyPair: sibling.encKeyPair,
       wrapped: {
@@ -249,8 +225,6 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
   });
 
   it("reports rather than wraps an epoch this device also cannot open; a registration failure stays a Note and pull is 0", async () => {
-    // owner doesn't hold epoch 1 either → sibling's epoch 1 can't be filled
-    // (not wrapped)
     const unavailable = await start({
       rows: [await rowFor(owner, 2), await rowFor(sibling, 2)],
     });
@@ -272,10 +246,6 @@ describe("maruhi pull fills in the missing epochs of your other devices (DK K11)
       `once the cause is fixed, the next \`maruhi pull --project ${built.projectId} --env ${ENV_ID}\` tries again`,
     );
 
-    // With a partially fillable gap (this device holds only epoch 2, the
-    // sibling lacks both) when registration fails: the failure message
-    // names only the epoch it tried to wrap (2), and the epoch this device
-    // doesn't hold either (1) is also mentioned
     const partial = await start({
       rows: [await rowFor(owner, 2)],
       registerStatus: 500,

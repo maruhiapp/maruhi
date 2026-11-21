@@ -1,17 +1,3 @@
-// Integration tests for the audit-event read API (AUDIT_SPEC §6 / §7).
-// The visibility classes and filters live in audit-read.test.ts (the
-// shared helpers in support/audit-read-scenario.ts).
-//
-// Properties being pinned:
-//  1. Paging bounds: seq descending, limit ≤ 200 (beyond that is a Schema
-//     400), advancing the before cursor. A below-admin page fills to limit
-//     rows even when it straddles class-2 rows (non-leakage of counts)
-//  2. invite.* (D1): the permission axis is only chain role admin of that
-//     project — being an org admin grants no read access (404), and no
-//     non-invite.* org events or other projects' rows leak in
-//  3. self (D1): only one's own rows. The token requirement is the same
-//     level as §13-2 (`*` × admin)
-
 import { cryptoServicesLayer, ulid } from "@maruhi/core";
 import { encodeHex } from "@maruhi/crypto";
 import { env, SELF } from "cloudflare:test";
@@ -51,7 +37,6 @@ describe("paging bounds (§7: seq descending, limit ≤ 200, cursor advance)", (
     expect(seqs).toEqual([...seqs].toSorted((a, b) => b - a));
     const paged: WireAuditEvent[] = [];
     let before: string | null = null;
-    // A hard upper bound so a regression where the cursor stops advancing cannot hang (all < 4 × 50)
     for (let pages = 0; ; pages += 1) {
       expect(pages).toBeLessThan(50);
       const page = await fetchEvents(token(OWNER), {
@@ -70,13 +55,8 @@ describe("paging bounds (§7: seq descending, limit ≤ 200, cursor advance)", (
   it("a below-admin page fills to limit rows even when it straddles class-2 rows (non-leakage of gaps / counts)", async () => {
     await seedProjectActivity();
     const full = await fetchEvents(token(READER), { limit: "200" });
-    // With class-2 rows (dek.registered ×3 + others' var.read) sandwiched
-    // in the middle of the visible column, concatenating 2-row pages
-    // matches the full visible column, and every page but the last holds
-    // exactly 2 rows (= hidden rows do not shorten the page)
     const paged: WireAuditEvent[] = [];
     let before: string | null = null;
-    // A hard upper bound so a regression where the cursor stops advancing cannot hang
     for (let pages = 0; ; pages += 1) {
       expect(pages).toBeLessThan(50);
       const page = await fetchEvents(token(READER), {
@@ -97,9 +77,6 @@ describe("paging bounds (§7: seq descending, limit ≤ 200, cursor advance)", (
 
   it("out-of-range limit and malformed cursors are a Schema 400", async () => {
     await seedProjectActivity();
-    // before accepts only a 32-digit lowercase-hex row id (numeric seqs
-    // and short/uppercase hex are rejected by Schema — the opaque cursor
-    // of AUDIT_SPEC §7)
     for (const query of [
       "limit=0",
       "limit=201",
@@ -117,24 +94,17 @@ describe("paging bounds (§7: seq descending, limit ≤ 200, cursor advance)", (
 
   it("a cursor outside visibility or naming an unknown row id returns an empty page (no existence oracle)", async () => {
     await seedProjectActivity();
-    // As OWNER, fetch the id of a row invisible to READER (a var.read
-    // whose actor is someone else — class 2), then use it as READER's
-    // cursor
     const admin = await fetchEvents(token(OWNER), { limit: "200" });
     const hidden = admin.events.find(
       (event) => event.event === "var.read" && event.actor.userId === MEMBER,
     );
     expect(hidden).toBeDefined();
     const probe = await fetchEvents(token(READER), { before: hidden?.id ?? "" });
-    // "Exists but invisible" gets the same response as "no such id" (an
-    // empty page) — a non-empty response or a 4xx difference would make it
-    // an existence oracle for ids
     expect(probe.status).toBe(200);
     expect(probe.events).toEqual([]);
     const unknown = await fetchEvents(token(READER), { before: "0".repeat(32) });
     expect(unknown.status).toBe(200);
     expect(unknown.events).toEqual([]);
-    // A visible row's id returns the continuation (the control showing the cursor works)
     const visible = await fetchEvents(token(READER), { limit: "1" });
     expect(visible.events.length).toBe(1);
     const rest = await fetchEvents(token(READER), { before: visible.events[0]?.id ?? "" });
@@ -143,9 +113,6 @@ describe("paging bounds (§7: seq descending, limit ≤ 200, cursor advance)", (
 });
 
 async function issueInvite(role: string): Promise<string> {
-  // The server does not verify the issuance document (format check only —
-  // AUTH_SPEC §15-2), so for the audit read tests we just make the id and
-  // link public key unique while matching the format
   const id = await Effect.runPromise(ulid().pipe(Effect.provide(cryptoServicesLayer)));
   const linkPubHex = encodeHex(crypto.getRandomValues(new Uint8Array(32)));
   const response = await requestJson("POST", "/invites", token(OWNER), {
@@ -194,8 +161,6 @@ describe("reading invite.* (the §7 exception provision — D1)", () => {
       expect(INVITE_AUDIT_EVENTS).toContain(event.event);
       expect(event.payload?.["inviteId"]).toBe(inviteId);
     }
-    // Paging (before cursor = row id). The D1 response carries no seq to
-    // anyone (the global sequence is a cross-tenant ordinal — AUDIT_SPEC §7)
     for (const event of events) {
       expect(event.seq).toBeUndefined();
       expect(event.id).toMatch(/^[0-9a-f]{32}$/);
@@ -213,9 +178,6 @@ describe("reading invite.* (the §7 exception provision — D1)", () => {
     await issueInvite("member");
     expect((await fetchInvites(token(MEMBER))).status).toBe(403);
     expect((await fetchInvites(token(READER))).status).toBe(403);
-    // Even making STRANGER an org admin leaves chain non-members of the
-    // project at 404 (being an org admin grants no read access to invite.*
-    // — §7)
     await env.DB.prepare(
       "INSERT INTO memberships (org_id, user_id, role) VALUES ('org-data-0001', ?, 'admin')",
     )
@@ -226,9 +188,6 @@ describe("reading invite.* (the §7 exception provision — D1)", () => {
 
   it("no non-invite.* org events or other projects' rows leak in (purity of the predicate)", async () => {
     const inviteId = await issueInvite("member");
-    // Directly seed an org event with the same project_id (the org-admin
-    // axis's domain) and an invite row of another project, and pin that
-    // neither appears in the response
     await env.DB.batch([
       env.DB.prepare(
         "INSERT INTO org_audit_events (row_id, server_ts, event, actor_type, actor_user_id, org_id, project_id) VALUES (lower(hex(randomblob(16))), 1, 'org.project_created', 'user', ?, 'org-data-0001', ?)",
@@ -252,9 +211,6 @@ describe("user events read by the owner (§3.1 / §6 — self)", () => {
     expect(response.status).toBe(200);
     const { events } = (await response.json()) as { events: readonly WireAuditEvent[] };
     expect(events.length).toBeGreaterThan(0);
-    // Newest first (server_ts non-increasing). Since seq is not carried
-    // in the D1 response (§7), row identity is confirmed via the opaque
-    // row id
     const times = events.map((event) => event.serverTs);
     expect(times).toEqual([...times].toSorted((a, b) => b - a));
     const ids = events.map((event) => event.id);
@@ -262,11 +218,9 @@ describe("user events read by the owner (§3.1 / §6 — self)", () => {
     for (const event of events) {
       expect(event.seq).toBeUndefined();
     }
-    // Evidence of the real issuance paths: the CLI handoff (setup) + this Web login
     expect(eventNames(events)).toEqual(
       expect.arrayContaining(["auth.token_created", "auth.login_succeeded"]),
     );
-    // Only one's own rows (§6): not a single row appears where neither the actor nor the target is the user
     for (const event of events) {
       expect(event.actor.userId === OWNER || event.targetUserId === OWNER).toBe(true);
     }

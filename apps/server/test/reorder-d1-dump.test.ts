@@ -1,7 +1,3 @@
-// Pins the pure-function part of scripts/reorder-d1-dump.ts (the D1 restore
-// runbook's tool — hosted-ops.md §5-1 (3)) with a synthetic dump. Reproduces
-// with minimal input the shape in which a raw import fails (child table ->
-// parent table order; `PRAGMA defer_foreign_keys` not taking effect).
 import { describe, expect, it } from "vite-plus/test";
 
 import { reorderD1Dump, UnclassifiedStatementsError } from "../scripts/reorder-d1-dump.lib.ts";
@@ -48,8 +44,6 @@ describe("reorder-d1-dump", () => {
       "CREATE TABLE `memberships`",
       "CREATE TABLE `organizations`",
       "CREATE TABLE `users`",
-      // sqlite_sequence (no CREATE) first, then parents (organizations /
-      // users) -> children
       "DELETE FROM sqlite_sequence;",
       'INSERT INTO "sqlite_sequence"',
       'INSERT INTO "organizations"',

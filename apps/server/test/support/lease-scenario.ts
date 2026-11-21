@@ -1,9 +1,3 @@
-// Shared helpers for workload-lease integration tests.
-//
-// Assumes the fixture of data-scenario.ts (registerDataScenario): each test
-// file calls registerDataScenario() before writing its describes, and the
-// helpers here reference data-scenario's live binding (fixture).
-
 import type { LeasedDek } from "@maruhi/api-schema";
 import {
   computeLeaseClaimsDigest,
@@ -30,16 +24,12 @@ import { createVariableOk, ENV, fixture, token, VAR } from "./data-scenario.ts";
 import { deploymentKey, LEASE_AUDIENCE, LEASE_SUBJECT } from "./lease.ts";
 import { OIDC_ISSUER } from "./oidc-issuer.ts";
 
-/** The workload's ephemeral key (assumed generated in memory per job —
- * §9.1). */
 export async function workloadKeyPair() {
   const pair = await generateEncryptionKeyPair();
   const publicKey = await exportEncryptionPublicKey(pair.publicKey);
   return { pair, publicKeyHex: encodeHex(publicKey) };
 }
 
-/** The default lease policy (issuer / audience match + one exact-match
- * constraint on sub). */
 export function defaultPolicy(subject = LEASE_SUBJECT) {
   return [
     {
@@ -52,8 +42,6 @@ export function defaultPolicy(subject = LEASE_SUBJECT) {
 
 export type LeasePolicy = ReturnType<typeof defaultPolicy>;
 
-/** The owner appends a grant_server (addressed to a really-derived
- * deployment key). */
 export async function grantServer(input: {
   readonly scope: readonly string[];
   readonly leasePolicy?: LeasePolicy;
@@ -71,8 +59,6 @@ export async function grantServer(input: {
   return key.fingerprintHex;
 }
 
-/** The owner backfills the server-addressed wrap (the §12-6
- * right-after-grant path). */
 export async function backfillServerWrap(
   epoch: number,
   dek: Uint8Array,
@@ -101,7 +87,6 @@ export interface LeaseBody {
   readonly chain: readonly unknown[];
   readonly headSeq: number;
   readonly headHashHex: string;
-  /** The bundled environment manifest (§14-2 — required since 0.28-draft). */
   readonly manifest: {
     readonly manifestVersion: number;
     readonly epoch: number;
@@ -138,8 +123,6 @@ export async function requestLease(input: {
   );
 }
 
-/** Builds a "leaseable state" set up through grant + backfill + one
- * variable. */
 export async function readyProject(): Promise<{ readonly dek: Uint8Array }> {
   const dek = await createEnvironmentOk(fixture, ENV, "App");
   await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -148,8 +131,6 @@ export async function readyProject(): Promise<{ readonly dek: Uint8Array }> {
   return { dek };
 }
 
-/** Extracts a required element of the response (keeps later assertions off
- * optional chaining). */
 export function requireFirst<T>(items: readonly T[], what: string): T {
   const first = items[0];
   if (first === undefined) {
@@ -158,8 +139,6 @@ export function requireFirst<T>(items: readonly T[], what: string): T {
   return first;
 }
 
-/** A binary string via the same lenient decode as the server's
- * decodeBase64Url (through atob). */
 function decodeBase64UrlToBinary(segment: string): string {
   const padded = segment
     .replaceAll("-", "+")
@@ -168,15 +147,6 @@ function decodeBase64UrlToBinary(segment: string): string {
   return atob(padded);
 }
 
-/**
- * Replaces the final character of the signature segment with "a different
- * character that decodes to the same bytes under the server's lenient
- * decode" (malleability of the unused bits in the last base64url group). The
- * mutated token changes neither the signed content (header.payload) nor the
- * signature bytes, so it passes signature verification but is a different
- * raw string — a reproduction of an attacker manipulation showing that a
- * first-come binding would break if it hashed the raw token.
- */
 export function malleateSignatureSegment(compactJws: string): string {
   const parts = compactJws.split(".");
   const [header, payload, sig] = parts;
@@ -198,8 +168,6 @@ export function malleateSignatureSegment(compactJws: string): string {
   throw new Error("no byte-identical alternative for the final signature character");
 }
 
-/** Computes the workload-side claims_digest (a recomputation independent of
- * the server — §9.1). */
 export async function claimsDigestOf(subject = LEASE_SUBJECT): Promise<string> {
   const digest = await computeLeaseClaimsDigest({
     issuerUrl: OIDC_ISSUER,
@@ -212,8 +180,6 @@ export async function claimsDigestOf(subject = LEASE_SUBJECT): Promise<string> {
   return digest.value;
 }
 
-/** Opens a lease wrap with the ephemeral key (the receiving-side procedure
- * of §9.1). */
 export async function openLease(input: {
   readonly lease: LeasedDek;
   readonly workloadKeyPair: Awaited<ReturnType<typeof workloadKeyPair>>["pair"];

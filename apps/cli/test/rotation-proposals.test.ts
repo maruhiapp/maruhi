@@ -1,22 +1,3 @@
-// Tests for `maruhi rotation proposals | accept | reject` (CRYPTO_SPEC §5.3
-// / AUTH_SPEC §14-5 — PF7b), driven through runCli against the honest
-// in-memory value environment plus a stateful proposals mock.
-//
-// Properties pinned down:
-//  1. accept opens this device's wrap, checks the proposal still targets the
-//     verified current version, pushes the plaintext as an ordinary signed
-//     version, then resolves the proposal naming that version
-//  2. no value is ever printed (not the proposed one, not the current one)
-//  3. a non-interactive accept needs --yes; a stale proposal is refused with
-//     the reject-and-rerun guidance; a prefix of the id is accepted
-//  4. reject only resolves, and names the facts so the credential at the
-//     issuer can be retired by hand
-//  5. the list shows each proposal with its environment, variables, minter,
-//     facts and next step; `rotation list` counts them
-//  6. a list holding a proposal of an environment the verified chain shows
-//     as deleted is refused as a resurrection (CRYPTO_SPEC §6.3), and
-//     nothing is resolved from it
-
 import {
   decryptVariable,
   encodeHex,
@@ -59,7 +40,6 @@ const FACT = "./rotate.sh: new credential produced";
 
 let owner: TestUser;
 let built: BuiltChain;
-/** `built` plus an environment created and then deleted (seq 3 / 4). */
 let withDeleted: BuiltChain;
 const DELETED_ENV_ID = "old";
 let dek: Uint8Array;
@@ -72,7 +52,6 @@ beforeAll(async () => {
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
   ]);
-  // Same prefix (Ed25519 signing is deterministic)
   withDeleted = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
@@ -118,7 +97,6 @@ interface ProposedVariableSpec {
   readonly plaintext: string;
 }
 
-/** Seals one proposed value to a device under the §5.3 info. */
 async function sealedWrap(recipient: TestUser, spec: ProposedVariableSpec): Promise<WireWrap> {
   const publicKey = await importEncryptionPublicKey(hexBytes(recipient.encPubHex));
   if (!publicKey.ok) {
@@ -147,12 +125,10 @@ async function sealedWrap(recipient: TestUser, spec: ProposedVariableSpec): Prom
   };
 }
 
-/** A proposal sealed to the owner's device (the minting job's step — ci-rotate.ts). */
 async function proposalFor(input: {
   readonly baseVersion?: number;
   readonly recipient?: TestUser;
   readonly plaintext?: string;
-  /** The proposed variables in the minted order (default: STRIPE_SECRET_KEY alone). */
   readonly variables?: readonly ProposedVariableSpec[];
 }): Promise<WireProposal> {
   const recipient = input.recipient ?? owner;
@@ -186,7 +162,6 @@ interface Fixture {
   readonly env: TestEnv;
   readonly state: ValueEnvironmentState;
   readonly resolutions: { proposalId: string; body: unknown }[];
-  /** The number of resolutions to refuse with a 500 before accepting (the push-ok / resolve-failed path). */
   failResolutions: number;
 }
 
@@ -194,7 +169,6 @@ async function startEnv(
   proposals: WireProposal[],
   options: {
     readonly chain?: BuiltChain;
-    /** The name of a third variable, one outside NFC (the pull warns about it — §12-1). */
     readonly nonNfcName?: string;
   } = {},
 ): Promise<Fixture> {
@@ -234,7 +208,6 @@ async function startEnv(
     writer: owner,
     head: headOf(built, 2),
   });
-  // A second variable (the key id companion of a JSON-answer exec rule)
   const idStatement = await statementFor({
     projectId: built.projectId,
     environmentId: ENV_ID,
@@ -402,7 +375,6 @@ describe("maruhi rotation accept (PF7b)", () => {
       "minted with the exec connector by the workload whose lease claims digest is abababababababab",
     );
     expect(errors).toContain(FACT);
-    // The value's shape, from the opened plaintext on this device (D-8)
     expect(errors).toContain(
       "STRIPE_SECRET_KEY: 17 bytes, 1 line (opened on this device; the current value: 17 bytes, 1 line)",
     );
@@ -411,9 +383,6 @@ describe("maruhi rotation accept (PF7b)", () => {
   });
 
   it("a proposed value whose line count differs from the current value's is warned about before the push, never refused (D-18)", async () => {
-    // A rotate script whose child wrote to its stdout within the settle
-    // produced "junk\n<credential>": the acceptance shows both shapes and
-    // warns where the decision is made; the push is the member's
     const polluted = `junk_line_dummy\n${NEW_KEY}`;
     const fixture = await startEnv([await proposalFor({ plaintext: polluted })]);
     expect(await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], fixture.env.layer)).toBe(0);
@@ -486,7 +455,6 @@ describe("maruhi rotation accept (PF7b)", () => {
     expect(await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], fixture.env.layer)).toBe(0);
     expect(await latestPlaintext(fixture.state, "vk")).toEqual({ plaintext: NEW_ID, version: 2 });
     expect(await latestPlaintext(fixture.state, "vs")).toEqual({ plaintext: NEW_KEY, version: 4 });
-    // The companion was stored first (a deploy between the two pushes sees a consistent pair)
     const order = fixture.state.writes
       .filter((write) => write.kind === "version")
       .map((write) => /variables\/([^/]+)\/versions/.exec(write.request.path)?.[1]);
@@ -507,8 +475,6 @@ describe("maruhi rotation accept (PF7b)", () => {
       "STRIPE_KEY_ID version=2, epoch=1; STRIPE_SECRET_KEY version=4, epoch=1",
     );
     expect(fixture.env.errors.join("\n")).not.toContain("where the current value has");
-    // A companion is compared too (every proposed variable is opened on
-    // this device): only its line count differs here
     const companionPolluted = await startEnv([
       await proposalFor({
         variables: [
@@ -544,7 +510,6 @@ describe("maruhi rotation accept (PF7b)", () => {
     expect(firstErrors).toContain(`Run \`maruhi rotation accept ${PROPOSAL_ID}\` again`);
     expect(firstErrors).not.toContain("rotation reject");
     expect(fixture.resolutions).toEqual([]);
-    // The second accept recognizes its own push: no new version, the resolution names version 4
     fixture.env.logs.length = 0;
     fixture.env.errors.length = 0;
     expect(await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], fixture.env.layer)).toBe(0);

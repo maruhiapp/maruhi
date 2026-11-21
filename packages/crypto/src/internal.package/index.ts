@@ -1,6 +1,3 @@
-// The public surface of internal.package. Only what is re-exported here escapes the
-// boundary (to src/index.ts). Keep the public API minimal (CLAUDE.md).
-
 export { decodeHex, encodeHex } from "./bytes.ts";
 export {
   canonicalChainEntryBytes,

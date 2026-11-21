@@ -1,9 +1,3 @@
-// The raw-wire level of the forward proxy (proxy-server.ts): the pieces
-// that read or write bytes on the client socket before — or instead of —
-// an HTTP server: the request-head limit, one plain-text response written
-// straight to a socket, the CONNECT and absolute-form target parsers, and
-// the two-way socket pipe of a tunnel or a loopback hop.
-
 import net from "node:net";
 
 import type { Target } from "./proxy-rules.ts";
@@ -11,7 +5,6 @@ import type { Target } from "./proxy-rules.ts";
 export const MAX_HEAD = 64 * 1024;
 export const HEAD_END = "\r\n\r\n";
 
-/** A short plain-text response written straight to a raw socket (before any protocol handoff). */
 export function rawResponse(
   status: number,
   reason: string,
@@ -23,7 +16,6 @@ export function rawResponse(
   return `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${bytes}\r\nConnection: close\r\nProxy-Agent: maruhi\r\n${extra}\r\n${body}`;
 }
 
-/** Parses `host[:port]` (an IPv6 literal in brackets is refused — rules cannot name one). */
 export function parseAuthority(
   text: string,
   defaultPort: number,
@@ -32,7 +24,6 @@ export function parseAuthority(
     return null;
   }
   const colon = text.lastIndexOf(":");
-  // Lower-cased, and a trailing dot (an absolute DNS name) dropped so it matches the rule
   const host = (colon >= 0 ? text.slice(0, colon) : text).toLowerCase().replace(/\.$/, "");
   const portText = colon >= 0 ? text.slice(colon + 1) : String(defaultPort);
   if (host.length === 0 || !/^\d{1,5}$/.test(portText)) {
@@ -42,7 +33,6 @@ export function parseAuthority(
   return port >= 1 && port <= 65535 ? { host, port } : null;
 }
 
-/** Splits an absolute-form request target into its target and origin-form path. */
 export function parseAbsoluteForm(
   url: string,
 ): { readonly target: Target; readonly path: string } | "https" | null {
@@ -65,7 +55,6 @@ export function parseAbsoluteForm(
   };
 }
 
-/** Inside a tunnel the client writes origin-form; an absolute-form target is reduced to its path. */
 export function originFormOf(raw: string): string {
   if (raw.startsWith("/")) {
     return raw;
@@ -78,7 +67,6 @@ export function originFormOf(raw: string): string {
   }
 }
 
-/** Pipes two sockets into each other and tears both down together. */
 export function bridge(a: net.Socket, b: net.Socket): void {
   const teardown = () => {
     a.destroy();

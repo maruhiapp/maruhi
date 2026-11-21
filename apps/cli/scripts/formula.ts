@@ -1,23 +1,9 @@
-// Assembling the Homebrew formula (tap: maruhiapp/homebrew-maruhi).
-//
-// Inputs are the Release's checksums.txt (the sha256sum -c compatible file
-// build-binaries.ts makes) and the version only. shared.ts's TARGETS is the
-// single source of truth for the target list, so added/renamed targets ripple
-// here automatically (unknown shapes are thrown, not swallowed — silently
-// publishing a formula one platform short is worse than failing to generate).
-//
-// The CLI entry point is generate-formula.ts; the golden is
-// packaging/homebrew/maruhi.example.rb (apps/cli/test/installer.test.ts pins
-// the match).
-
 import { SEMVER_PATTERN, TARGETS } from "./shared.ts";
 
 const REPO = "maruhiapp/maruhi";
 
-/** One line of checksums.txt: 64-hex + two spaces + filename. */
 const CHECKSUM_LINE = /^([0-9a-f]{64}) {2}(\S+)$/;
 
-/** Which of brew's on_macos / on_linux × on_arm / on_intel slots a target lands in. */
 interface Slot {
   readonly os: "macos" | "linux";
   readonly cpu: "arm" | "intel";
@@ -28,13 +14,6 @@ interface Download {
   readonly sha256: string;
 }
 
-/**
- * Parses a `sha256sum -c` compatible checksums file into filename → hex digest.
- *
- * Rejects malformed and duplicated lines: a formula built from a half-understood
- * checksums file would ship a wrong digest, which brew reports as a download
- * failure far from the cause.
- */
 export function parseChecksums(text: string): ReadonlyMap<string, string> {
   const entries = new Map<string, string>();
   for (const [index, line] of text.split("\n").entries()) {
@@ -56,7 +35,6 @@ export function parseChecksums(text: string): ReadonlyMap<string, string> {
   return entries;
 }
 
-/** Checks a version (with or without leading v) and normalizes it to `{ version, tag }`. */
 export function normalizeVersion(input: string): {
   readonly version: string;
   readonly tag: string;
@@ -68,7 +46,6 @@ export function normalizeVersion(input: string): {
   return { version, tag: `v${version}` };
 }
 
-/** True for `-rc.N` style prereleases (the brew tap only carries stable releases). */
 export function isPrerelease(version: string): boolean {
   return version.includes("-");
 }
@@ -85,10 +62,6 @@ function slotOf(targetName: string): Slot {
   return { os, cpu };
 }
 
-/**
- * Maps every non-Windows target to its brew slot, failing when the release is
- * missing an archive: a formula silently short one platform is worse than none.
- */
 function collectDownloads(
   tag: string,
   checksums: ReadonlyMap<string, string>,
@@ -133,12 +106,6 @@ function renderPlatform(os: Slot["os"], downloads: ReadonlyMap<string, Download>
   return lines.join("\n");
 }
 
-/**
- * Renders the tap formula for the given version from a parsed checksums map.
- *
- * Windows targets are skipped (brew has no Windows); every other target must be
- * present in the checksums file.
- */
 export function renderFormula(input: string, checksums: ReadonlyMap<string, string>): string {
   const { version, tag } = normalizeVersion(input);
   const downloads = collectDownloads(tag, checksums);
@@ -158,8 +125,6 @@ ${renderPlatform("linux", downloads)}
 
   def install
     bin.install "maruhi"
-    # The archive contains a single binary. \`mh\` is linked by the
-    # installer side (ADR-0015 rulings 6/7)
     bin.install_symlink "maruhi" => "mh"
   end
 

@@ -1,23 +1,3 @@
-// Checks for CRYPTO_SPEC §4.2 (signed statements of variable/environment
-// metadata).
-// Ed25519 is an RFC 8032 deterministic signature, so the signing direction is
-// verified byte-for-byte against the vectors too.
-// For the verification-rule kind (kind = "authorization"), pin that "the
-// signature is valid but is rejected by the §6.3 history verification with
-// expected_reason" via verifyDistributedMetaStatement against the history
-// index built by verifyChainWithHistory.
-//
-// Metadata-specific pinning points (differences from value-signature):
-// - var-meta-head-before-env-create is a **positive** (no epoch anchor — an
-//   intentional asymmetry that does not check environment existence.
-//   §14.3-5 / AUTH_SPEC §12-4)
-// - rename_fork (a fork at the same metaVersion) and name_swap (a name
-//   swap fails signature verification)
-// - revive-after-delete (every successor of a deleted predecessor is
-//   rejected)
-// - v2-layout-unsupported (kind = unsupported-layout): the retired layout v2
-//   is refused with UnsupportedMetaLayout before signature verification
-
 import type {
   ChainHistoryIndex,
   CryptoResult,
@@ -66,7 +46,6 @@ interface VectorContext {
   readonly var_type?: string;
   readonly required?: string;
   readonly description?: string;
-  /** Layout v3 only (PF6 R9): "" or a decimal 1..3650. */
   readonly max_age_days?: string;
   readonly meta_version: number;
   readonly prev_meta_sig_hash_hex: string;
@@ -77,7 +56,6 @@ interface VectorContext {
 
 interface MetaVector {
   readonly name: string;
-  /** Comparison chain (unset = canonical. device-ops = the device-key derived chain — 2026-09-19 DK). */
   readonly chain?: string;
   readonly context: VectorContext;
   readonly author_key_fingerprint_hex: string;
@@ -129,14 +107,6 @@ function contextOf(v: VectorContext): MetaStatementContext {
   };
 }
 
-/**
- * The schema fields (var_type / required / description / max_age_days)
- * exist as one set (§4.2 — required represents presence on the vector
- * side). max_age_days rides only when the vector has the key: its absence
- * is the v3-missing-max-age shape negative (and the retired v2 encoding has
- * none), so the cast carries that wire shape into the implementation,
- * whose validation must refuse it.
- */
 function schemaOf(v: VectorContext): MetaVariableSchema {
   const schema = {
     varType: (v.var_type ?? "") as MetaVariableSchema["varType"],
@@ -147,10 +117,6 @@ function schemaOf(v: VectorContext): MetaVariableSchema {
   return schema as MetaVariableSchema;
 }
 
-/**
- * The builder's signed bytes as lowercase hex, or null when the builder
- * refuses the context's layout (never equal to any vector's hex).
- */
 function signedBytesHexOf(context: MetaStatementContext): string | null {
   const built = buildMetaSignedBytes(context);
   return built.ok ? toHex(built.value) : null;
@@ -158,7 +124,6 @@ function signedBytesHexOf(context: MetaStatementContext): string | null {
 
 const positives: readonly MetaVector[] = metaVectors.vectors;
 
-/** Comparison chains (name → verified history index). A vector with `chain` unset means canonical. */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
 function historyFor(
@@ -179,13 +144,10 @@ function predecessorOf(vector: MetaVector) {
     : {
         signedBytesHashHex: base.signed_bytes_sha256_hex,
         status: base.context.status as MetaStatementContext["status"],
-        // Required on the MetaPredecessor side (fail-closed). A vector
-        // omission = v1
         layoutVersion: base.context.layout_version ?? 1,
       };
 }
 
-/** Two checks: the signing direction (deterministic re-signing) and the low-level verification direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -193,8 +155,6 @@ async function signAndVerifyChecks(
   signatureHex: string,
   authorKeyFingerprintHex: string,
 ): Promise<void> {
-  // Sign with the author's device (user_id, FP) seed (2026-09-19 DK —
-  // signers are per-device)
   const signer = await importVectorSigner(context.authorUserId, authorKeyFingerprintHex);
   if (signer === null) {
     c.push(`meta-sig ${name}: author keys`, false, "signer keys missing or failed to import");
@@ -230,9 +190,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       `meta-sig ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-    // Deletion statements (status deleted, metaVersion > 1) must be
-    // signable legitimately, so deletion vectors are also checked through
-    // deterministic re-signing
     await signAndVerifyChecks(
       c,
       vector.name,
@@ -241,9 +198,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.author_key_fingerprint_hex,
     );
 
-    // History-based composite verification (§6.3): predecessor included
-    // when prev_base exists. var-meta-head-before-env-create (a pre-
-    // environment-creation head) also passes through here = positive
     const distributed = await verifyDistributedMetaStatement({
       history,
       context,
@@ -260,9 +214,7 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   deleteRetentionChecks(c);
 }
 
-/** Re-confirm the data of the deletion-statement retention convention (§4.2). */
 function deleteRetentionChecks(c: Checks): void {
-  // A deletion retains the last active name
   const del = byName.get("var-delete");
   const rename = byName.get("var-rename");
   c.push(
@@ -272,11 +224,6 @@ function deleteRetentionChecks(c: Checks): void {
   deleteRetentionV3Checks(c);
 }
 
-/**
- * A v3 deletion fully retains the schema fields (max_age_days included) and
- * the layout from the previous statement under the same convention as name
- * (§4.2 layout v3).
- */
 function deleteRetentionV3Checks(c: Checks): void {
   const deleted = byName.get("var-v3-delete-keeps-max-age")?.context;
   const created = byName.get("var-v3-create-expiring")?.context;
@@ -301,8 +248,6 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
       signatureHex: branch.signature_hex,
       predecessor: predecessorOf(branch),
     });
-    // Each branch passes all checks on its own (prevention is impossible —
-    // the evidence-recording of §14.2-5)
     c.push(`meta-sig fork ${branch.name}: verifies individually`, result.ok);
     if (result.ok) {
       hashes.push(result.value.signedBytesHashHex);
@@ -315,8 +260,6 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
 }
 
 async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
-  // Each of the 2 canonical statements verifies on its own (the name ↔ ID
-  // binding is carried by the signature)
   for (const statement of metaVectors.name_swap.statements as readonly MetaVector[]) {
     const result = await verifyDistributedMetaStatement({
       history,
@@ -326,8 +269,6 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
     });
     c.push(`meta-sig name-swap ${statement.name}: verifies individually`, result.ok);
   }
-  // A byte string with only the name field swapped fails the original
-  // signature's verification
   for (const swapped of metaVectors.name_swap.swapped as readonly MetaNegative[]) {
     const context = contextOf(swapped.context);
     const bytesMatch = signedBytesHexOf(context) === swapped.verify_signed_bytes_hex;
@@ -345,11 +286,6 @@ async function nameSwapChecks(c: Checks, history: ChainHistoryIndex): Promise<vo
   }
 }
 
-// Exhaustiveness pinning of the reason space (checked by support.ts's
-// reasonCoverageChecks): the Record type enforces sync with the union
-// **at compile time**, so "implemented a new rejection rule but neither
-// the vectors nor the harness has a negative for it" is caught by type +
-// test.
 const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "signature-invalid": true,
   "author-unknown": true,
@@ -366,7 +302,6 @@ const META_REASON_COVERAGE: Record<MetaInvalidReason, true> = {
   "layout-regression": true,
 };
 
-/** Verification-rule negative: the signature is valid but history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: MetaNegative,
@@ -402,7 +337,6 @@ async function ruleNegativeCheck(
   );
 }
 
-/** Tamper/transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(
   c: Checks,
   negative: MetaNegative,
@@ -431,19 +365,8 @@ async function tamperNegativeCheck(
   );
 }
 
-/**
- * Structural-violation negatives (kind = invalid-input): the signature is
- * valid over the given byte string (confirmed by the reference
- * implementation), but as a wire-form structural violation (v1 declared,
- * v3 empty required) it is rejected with InvalidInput before signature
- * verification is reached (§4.2 / ruling CS — the rejection is not by
- * cryptographic verification).
- */
 async function invalidInputNegativeCheck(c: Checks, negative: MetaNegative): Promise<void> {
   const context = contextOf(negative.context);
-  // The encoder is total over field values (it refuses only a layout it
-  // cannot select — none of these vectors), so also pin that it reproduces
-  // the vector's signed_bytes
   const bytesMatch = signedBytesHexOf(context) === negative.signed_bytes_hex;
   const key = await importSigningPublicKey(fromHex(negative.verify_key_hex));
   if (!key.ok) {
@@ -475,17 +398,6 @@ function isUnsupportedLayout(result: CryptoResult<unknown>, layoutVersion: numbe
   );
 }
 
-/**
- * Retired-layout negatives (kind = unsupported-layout — §4.2 0.15-draft):
- * the statement is validly signed over the retired v2 encoding (confirmed by
- * the reference implementation), and every entry point — the signed-bytes
- * builder, signing, raw verification, hashing, and history verification
- * with the real author key — refuses it with the typed
- * UnsupportedMetaLayout. The history path would otherwise reach the
- * signature check (the author key exists), so the typed error proves the
- * rejection precedes signature verification; the builder's refusal proves
- * it never falls back to the v1 encoding.
- */
 async function unsupportedLayoutNegativeCheck(
   c: Checks,
   negative: MetaNegative,
@@ -507,7 +419,6 @@ async function unsupportedLayoutNegativeCheck(
   );
 }
 
-/** The outcomes of building, signing, raw verification, hashing, and history verification of one negative. */
 async function unsupportedLayoutEntryPoints(
   negative: MetaNegative,
   history: ChainHistoryIndex,
@@ -551,7 +462,6 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // Pin the kind vocabulary (a third value would escape every sieve)
   c.push(
     "meta-sig negative: kind vocabulary is exhaustive",
     [...seenKinds].every(
@@ -609,10 +519,6 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
-  // Checks only on the signing side (the verify side instead rejects
-  // asymmetrically with a reason code — same shape as value-sign): a
-  // non-empty prev on metaVersion 1, and status deleted on metaVersion 1
-  // (creation is active — §4.2)
   const coupledPrev = await signMetaStatement({
     context: { ...baseContext, metaVersion: 1, prevMetaSigHashHex: "ab".repeat(32) },
     signingKey: pair.privateKey,
@@ -640,11 +546,6 @@ async function invalidInputChecks(c: Checks): Promise<void> {
   );
 }
 
-/**
- * Layout-dependent structural violations (§4.2 — the split of duties not
- * expressed as JSON vectors): schema fields on v1, missing schema fields
- * on v3, a var_type closed-set violation, v3 targeting environment meta.
- */
 async function layoutInvalidInputChecks(c: Checks): Promise<void> {
   const base = positives[0];
   const v3Base = byName.get("var-v3-create-expiring");
@@ -692,23 +593,12 @@ async function layoutInvalidInputChecks(c: Checks): Promise<void> {
   }
 }
 
-/**
- * Layout selection (§4.2 / ruling CR — a layout with no reference statement
- * is pinned on the harness side per the convention-21 split of duties; the
- * retired layout 2 is also pinned by the v2-layout-unsupported vector): an
- * unsupported layoutVersion is rejected with UnsupportedMetaLayout
- * **before signature verification** (an honest failure mode — not
- * collapsed into invalid signature or InvalidInput). An explicit
- * layoutVersion 1 is equivalent to omitted.
- */
 async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const base = byName.get("var-v3-create-expiring");
   if (base === undefined) {
     c.push("meta-sig layout selection: base vector", false);
     return;
   }
-  // The supported set is {1, 3}: the retired 2 and the first future 4 are
-  // both unsupported
   for (const layoutVersion of [2, 4]) {
     const unsupported: MetaStatementContext = { ...contextOf(base.context), layoutVersion };
     const pair = await generateSigningKeyPair();
@@ -719,9 +609,6 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
       authorPublicKey: pair.publicKey,
     });
     const hash = await computeMetaSignedBytesHash(unsupported);
-    // Never even reaches signing-key resolution (author-unknown) =
-    // rejection before signature verification; pin it by passing an FP
-    // that does not exist in the history
     const distributed = await verifyDistributedMetaStatement({
       history,
       context: unsupported,
@@ -749,8 +636,6 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
       isUnsupportedLayout(distributed, layoutVersion),
     );
   }
-  // Structural violations of layoutVersion (0 / non-integer) are
-  // InvalidInput (a broken wire form, not version negotiation)
   for (const bad of [0, 1.5]) {
     const context: MetaStatementContext = { ...contextOf(base.context), layoutVersion: bad };
     const results: readonly CryptoResult<unknown>[] = [
@@ -762,8 +647,6 @@ async function layoutSelectionChecks(c: Checks, history: ChainHistoryIndex): Pro
       results.every((result) => isInvalidInput(result, "context layoutVersion")),
     );
   }
-  // An explicit layoutVersion 1 is equivalent to omitted (§4.2 — omitted
-  // = 1)
   const v1 = byName.get("var-create");
   if (v1 === undefined) {
     c.push("meta-sig layout selection: v1 base vector", false);
@@ -779,18 +662,6 @@ function isInvalidInput(result: CryptoResult<unknown>, field: string): boolean {
   return !result.ok && result.error.kind === "InvalidInput" && result.error.field === field;
 }
 
-/**
- * The layout's field set (§4.2): layout 3 exists only for variable
- * statements and carries the schema fields; layout 1 carries none. A
- * context whose fields do not match its declared layout selects no layout,
- * so every entry point — the signed-bytes builder included — refuses it
- * with the same InvalidInput, and the builder never encodes it under the
- * other layout (a v3 environment statement or a schema-less v3 variable
- * statement used to fall back to the v1 encoding; a v1 statement with
- * schema fields used to drop them from the signed bytes). Rejection cases
- * have no reference expected value, so they are pinned here (convention
- * 21's split).
- */
 async function layoutFieldSetChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const v3 = byName.get("var-v3-create-expiring");
   const env = positives.find((vector) => vector.context.kind === "environment");
@@ -848,9 +719,6 @@ async function layoutFieldSetChecks(c: Checks, history: ChainHistoryIndex): Prom
       results.every((result) => isInvalidInput(result, field)),
     );
   }
-  // Layout selection precedes field-value validation: a context that both
-  // selects no layout and carries a bad coordinate reports the layout
-  // (parse the layout, then validate and encode under it)
   const both: MetaStatementContext = {
     ...contextOf(env.context),
     layoutVersion: 3,
@@ -864,17 +732,6 @@ async function layoutFieldSetChecks(c: Checks, history: ChainHistoryIndex): Prom
   );
 }
 
-/**
- * Property check of domain separation (§4.2 — consideration 7):
- * signed_bytes of the same coordinate encoded as v1 / v3 must always
- * differ. The confusion vectors (both directions of layout-confusion)
- * illustrate on fixed inputs, but this is a generative direct check — an
- * implementation that drops the domain-separation string cannot fake it
- * unless a vector regeneration happens to coincide. Also pins that a
- * degenerate v3 with all schema fields empty still does not collide with
- * v1 (that the separation depends on the domain tag, not the LP
- * structure).
- */
 function layoutDomainSeparationChecks(c: Checks): void {
   const v3 = byName.get("var-v3-create-expiring");
   if (v3 === undefined) {
@@ -893,9 +750,6 @@ function layoutDomainSeparationChecks(c: Checks): void {
     "meta-sig domain separation: same coordinates encode differently across layouts",
     v1Bytes !== null && v1Bytes !== v3Bytes && v3Bytes === v3.signed_bytes_hex,
   );
-  // Degenerate case: even with all schema fields empty, the domain tag
-  // prevents collision with v1 (the encoder is total over field values, so
-  // it can build the byte string without the field-value checks)
   const degenerateBytes = signedBytesHexOf({
     ...v3Context,
     schema: {
@@ -911,7 +765,6 @@ function layoutDomainSeparationChecks(c: Checks): void {
   );
 }
 
-/** Any successor of a deleted predecessor is rejected regardless of status (§4.2 — a tombstone is terminal). */
 async function deletedPredecessorChecks(c: Checks, history: ChainHistoryIndex): Promise<void> {
   const deleted = byName.get("var-delete");
   const keys = vectorKeys["user-admin-0003"];
@@ -927,8 +780,6 @@ async function deletedPredecessorChecks(c: Checks, history: ChainHistoryIndex): 
     c.push("meta-sig deleted predecessor: key import", false);
     return;
   }
-  // deleted → deleted (overwriting a deletion) is also rejected as
-  // revived-after-delete
   const successor: MetaStatementContext = {
     ...contextOf(deleted.context),
     metaVersion: deleted.context.meta_version + 1,

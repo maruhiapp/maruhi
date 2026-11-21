@@ -1,6 +1,3 @@
-// Unit test of chain-view (S5's display fold — not verification).
-// Inputs are fixtures conforming to api-schema's wire types (the types
-// are bound by tsc).
 import type { KeyFingerprintHex, UserId } from "@maruhi/crypto";
 import { testEnvironmentId, testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
@@ -114,8 +111,6 @@ describe("deriveReportedView", () => {
       ["user_owner", "owner"],
       ["user_a", "admin"],
     ]);
-    // The seq of the entry that updated the role is reflected in
-    // sinceSeq
     expect(view.members[1]?.sinceSeq).toBe(change.seq);
   });
 
@@ -180,8 +175,6 @@ describe("deriveReportedView", () => {
   });
 
   it("ignores a hostile op name without touching the prototype chain", () => {
-    // Even when a hostile server claims op: "__proto__" etc., no
-    // prototype-chain value is invoked and nothing throws
     const hostile = { ...base(), op: "__proto__", payload: {} } as unknown as ChainEntry;
     const view = deriveReportedView([genesis, hostile]);
     expect(view.members).toHaveLength(1);
@@ -209,19 +202,11 @@ describe("deriveReportedView", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Four-eyes (PF1 K6 — design record es-design.md §12 K6-J): the fold
-// of the policy and pending proposals.
-// A proposal's hash is drawn from the next entry's prevHashHex (the
-// last one takes headHashHex), and votes are recounted
-// ---------------------------------------------------------------------------
-
 const FP_A = "aa".repeat(16);
 const FP_B = "bb".repeat(16);
 const FP_B2 = "b2".repeat(16);
 const HASH_P = "77".repeat(32);
 
-/** An entry in the shape of being signed by the given actor (as reported — the signature is not verified). */
 function signedBy(userId: string, fp: string): ReturnType<typeof base> {
   return {
     ...base(),
@@ -255,7 +240,6 @@ function approve(userId: string, fp: string, hash: string): ChainEntry {
   return { ...signedBy(userId, fp), op: "approve", payload: { proposalHashHex: hash } };
 }
 
-/** Places a proposal's hash into the next entry's prevHashHex (the response carries no per-entry hash). */
 function linked(entries: ChainEntry[], proposalIndex: number, hash: string): ChainEntry[] {
   return entries.map((entry, index) =>
     index === proposalIndex + 1 ? ({ ...entry, prevHashHex: hash } as ChainEntry) : entry,
@@ -301,7 +285,6 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
         voterUserIds: ["user_owner"],
       },
     ]);
-    // Before application: the target is still a member
     expect(view.members.map((m) => m.userId)).toContain("user_m");
   });
 
@@ -339,7 +322,6 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
     const ownerA = addMember("user_a", "owner");
     const ownerB = addMember("user_b", "owner");
     const member = addMember("user_m", "member");
-    // Proposed as admin → the proposal signature is not a vote (§6.2)
     const proposal = proposeRemove("user_owner", FP, "user_m");
     const voteA = approve("user_a", FP_A, HASH_P);
     const demoteA: ChainEntry = {
@@ -367,13 +349,9 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
       HASH_P,
     );
     const view = deriveReportedView(entries, "99".repeat(32));
-    // Only the proposer's 1 vote (A's vote was revoked by the
-    // demotion)
     expect(view.proposals[0]?.votes).toBe(1);
     expect(view.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
 
-    // B votes → removed → re-added with a different key (unsigned):
-    // B's old vote is not counted
     const voteB = approve("user_b", FP_B, HASH_P);
     const removeB: ChainEntry = {
       ...signedBy("user_owner", FP),
@@ -411,7 +389,6 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
       "99".repeat(32),
     );
     expect(again.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
-    // After signing with the new key, that key's vote is counted
     const voteB2 = approve("user_b", FP_B2, HASH_P);
     const signed = deriveReportedView(
       linked(
@@ -538,15 +515,6 @@ describe("deriveReportedView — four-eyes policy and pending proposals (K6)", (
   });
 });
 
-// ---------------------------------------------------------------------------
-// Device keys (DK K5 — design record dk-design.md §10 K5-1 / K5-2 /
-// K5-4): a device is identified by its public-key pair, and an FP is
-// bound only as far as the reported bytes let it be bound
-// mechanically (no hash is computed). A revocation removes by match
-// when bound and by arithmetic when unbound; the device count is kept
-// exact at all times
-// ---------------------------------------------------------------------------
-
 const FP_D2 = "d2".repeat(16);
 const FP_D3 = "d3".repeat(16);
 const FP_R = "0e".repeat(16);
@@ -616,7 +584,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
 
   it("binds a fingerprint when the member signs and exactly one device is unbound", () => {
     const addD2 = addDevice("user_owner", FP, KEYS_D2);
-    // D2 signs (adds R) → only D2 is unbound → bind. R stays unbound
     const addR = addDevice("user_owner", FP_D2, KEYS_R);
     const view = deriveReportedView([genesis, addD2, addR]);
     expect(devicesOf(view, "user_owner")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
@@ -640,8 +607,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
   it("revokes fingerprint-less devices by arithmetic: all of them when the counts match, otherwise counts the revocation as unresolved", () => {
     const addD2 = addDevice("user_owner", FP, KEYS_D2);
     const addR = addDevice("user_owner", FP, KEYS_R);
-    // One FP against 2 unbound (D2, R) → which one is unknown. The
-    // count of 2 is exact
     const one = deriveReportedView([
       genesis,
       addD2,
@@ -652,8 +617,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     expect(partial?.devices).toHaveLength(3);
     expect(partial?.unresolvedRevocations).toBe(1);
     expect(reportedDeviceCount(partial!)).toBe(2);
-    // The other one is revoked too → 1 unbound left = 1 FP that did
-    // not match → drop every unbound one
     const both = deriveReportedView([
       genesis,
       addD2,
@@ -673,17 +636,14 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     const count = (entries: ChainEntry[]) =>
       reportedDeviceCount(devicesOf(deriveReportedView(entries), "user_owner")!);
     expect(count([...prefix, revokeDevice("user_owner", FP, "user_ghost", [FP_D2])])).toBe(2);
-    // 2 non-matching FPs against 1 unbound → unreadable
     expect(count([...prefix, revokeDevice("user_owner", FP, "user_owner", [FP_D2, FP_D3])])).toBe(
       2,
     );
     expect(count([...prefix, revokeDevice("user_owner", FP, "user_owner", [FP_D2, FP_D2])])).toBe(
       2,
     );
-    // 0 devices after revocation (last-device-protected)
     expect(count([...prefix, revokeDevice("user_owner", FP, "user_owner", [FP, FP_D2])])).toBe(2);
     expect(count([genesis, revokeDevice("user_owner", FP, "user_owner", [FP])])).toBe(1);
-    // A broken payload
     const broken = {
       ...signedBy("user_owner", FP),
       op: "revoke_device",
@@ -696,8 +656,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     const view = deriveReportedView([
       genesis,
       addDevice("user_ghost", FP_D2, KEYS_D2),
-      // The same public keys as genesis's (HEX64 / HEX64) →
-      // duplicate-member-key
       addDevice("user_owner", FP, { encPubHex: HEX64, sigPubHex: "b9".repeat(32) }),
     ]);
     expect(view.members).toHaveLength(1);
@@ -725,11 +683,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
   it("re-adds a key after an unresolved revocation by resolving the stale row (the accepted add_device proves that key was inactive — K5-12)", () => {
     const addD2 = addDevice("user_owner", FP, KEYS_D2);
     const addR = addDevice("user_owner", FP, KEYS_R);
-    // Revoke one of the 2 unbound (D2) → which one is unknown
-    // (unresolved 1)
     const revokeD2 = revokeDevice("user_owner", FP, "user_owner", [FP_D2]);
-    // Re-adding the same key was accepted, so D2's row is confirmed
-    // revoked → drop the residue and add
     const readdD2 = addDevice("user_owner", FP, KEYS_D2, {
       roleCap: "member",
       scopeKind: "all",
@@ -744,17 +698,12 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       [KEYS_R.encPubHex, "owner", addR.seq],
       [KEYS_D2.encPubHex, "member", readdD2.seq],
     ]);
-    // With no residue (unresolved 0), a same-key re-add is a duplicate
-    // = left ignored
     const dup = deriveReportedView([genesis, addD2, addR, readdD2]);
     expect(reportedDeviceCount(devicesOf(dup, "user_owner")!)).toBe(3);
     expect(devicesOf(dup, "user_owner")?.devices[1]?.roleCap).toBe("owner");
   });
 
   it("never binds a revoked device's fingerprint to another device, and keeps the arithmetic sound under a duplicate-FP report (K5-13)", () => {
-    // user_a's first key is chosen not to collide with another
-    // member's (a real-chain invariant — a duplicate key is never
-    // accepted)
     const KEYS_A1 = { encPubHex: "a1".repeat(32), sigPubHex: "b1".repeat(32) };
     const owner: ChainEntry = {
       ...base(),
@@ -767,18 +716,14 @@ describe("deriveReportedView — device keys (DK K5)", () => {
         scopeEnvironmentIds: [],
       },
     };
-    const addD2 = addDevice("user_a", FP_A, KEYS_D2); // D1 (FP_A bound) + D2 (unbound)
+    const addD2 = addDevice("user_a", FP_A, KEYS_D2);
     const revokeD1 = revokeDevice("user_a", FP_A, "user_a", [FP_A]);
-    // A row signed under the revoked D1's FP is reported (stale
-    // actor) → never bound to D2
     const stale = addDevice("user_a", FP_A, KEYS_D3);
     const afterStale = deriveReportedView([genesis, owner, addD2, revokeD1, stale]);
     expect(devicesOf(afterStale, "user_a")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
       null,
       null,
     ]);
-    // Re-add D1's key → the learned FP_A is restored (only that one
-    // row carries FP_A)
     const readdD1 = addDevice("user_a", FP_A, KEYS_A1);
     const readd = deriveReportedView([genesis, owner, addD2, revokeD1, stale, readdD1]);
     expect(devicesOf(readd, "user_a")?.devices.map((d) => d.keyFingerprintHex)).toEqual([
@@ -786,8 +731,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       null,
       FP_A,
     ]);
-    // FP_A's revocation removes exactly 1 row (device count 2) — the
-    // shape of 2 rows sharing one FP is never produced
     const again = deriveReportedView([
       genesis,
       owner,
@@ -798,8 +741,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       revokeDevice("user_a", FP_A, "user_a", [FP_A]),
     ]);
     expect(reportedDeviceCount(devicesOf(again, "user_a")!)).toBe(2);
-    // A vote cast under a revoked device's FP is not counted (§6.2 —
-    // a revoked device's vote is revoked)
     const proposal = proposeRemove("user_owner", FP, "user_m");
     const vote = approve("user_a", FP_A, HASH_P);
     const entries = linked(
@@ -835,10 +776,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
         scopeEnvironmentIds: [],
       },
     });
-    // Tenure 1: FP_X is bound to K1 (signed) → removed → tenure 2:
-    // a different key K2, signed with the same FP_X → FP_X belongs to
-    // K1 so it is never tied to K2 (the table is set-once — K5-16)
-    // → add_device K1 back: FP_X is restored
     const entries = [
       genesis,
       memberWith(KEYS_B1),
@@ -855,7 +792,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     const view = deriveReportedView(entries);
     const b = devicesOf(view, "user_b");
     expect(b?.devices.map((d) => d.keyFingerprintHex)).toEqual([null, null, FP_X]);
-    // FP_X's revocation removes exactly 1 row
     const revoked = deriveReportedView([
       ...entries,
       revokeDevice("user_b", FP_X, "user_b", [FP_X]),
@@ -867,8 +803,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
   });
 
   it("never binds another member's fingerprint, and ignores a revoke that names a fingerprint owned elsewhere (K5-16)", () => {
-    // A row where user_a signed under the owner's FP (borrowing
-    // someone else's FP) → never tied to user_a's unbound device
     const add = addMember("user_a", "member");
     const stolen = addDevice("user_a", FP, KEYS_D2);
     const view = deriveReportedView([genesis, add, stolen]);
@@ -877,15 +811,10 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       null,
     ]);
     expect(devicesOf(view, "user_owner")?.devices.map((d) => d.keyFingerprintHex)).toEqual([FP]);
-    // A row listing the owner's FP in user_a's revocation → does not
-    // shrink the unbound devices by arithmetic; the whole row is
-    // ignored
     const bogus = revokeDevice("user_owner", FP, "user_a", [FP]);
     expect(
       reportedDeviceCount(devicesOf(deriveReportedView([genesis, add, stolen, bogus]), "user_a")!),
     ).toBe(2);
-    // A row revoking an already-revoked device's FP again → likewise
-    // ignored (does not drag an unbound device in)
     const owner2 = addDevice("user_owner", FP, KEYS_D3);
     const revokeFirst = revokeDevice("user_owner", FP, "user_owner", [FP]);
     const twice = revokeDevice("user_owner", FP, "user_owner", [FP]);
@@ -910,10 +839,10 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     const view = deriveReportedView([
       genesis,
       addD2,
-      addDevice("user_ghost", FP_D2, KEYS_D3), // non-member
-      addDevice("user_owner", FP, KEYS_D2), // duplicate key
-      revokeDevice("user_owner", FP, "user_ghost", [FP]), // unknown target
-      revokeDevice("user_owner", FP, "user_owner", [FP, FP_D2]), // 0 devices after revocation
+      addDevice("user_ghost", FP_D2, KEYS_D3),
+      addDevice("user_owner", FP, KEYS_D2),
+      revokeDevice("user_owner", FP, "user_ghost", [FP]),
+      revokeDevice("user_owner", FP, "user_owner", [FP, FP_D2]),
     ]);
     expect(view.unreadableEntries).toBe(4);
     expect(reportedDeviceCount(devicesOf(view, "user_owner")!)).toBe(2);
@@ -923,13 +852,13 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     const malformed = [
       null,
       "entry",
-      { ...base(), op: "add_member", actor: null }, // missing actor
-      { ...base(), op: "add_member", payload: null }, // missing payload
+      { ...base(), op: "add_member", actor: null },
+      { ...base(), op: "add_member", payload: null },
       {
         ...base(),
         op: "add_member",
         payload: { targetUserId: 42, role: "member", encPubHex: HEX64, sigPubHex: HEX64 },
-      }, // id is not a string
+      },
     ];
     const view = deriveReportedView([genesis, ...(malformed as unknown[] as ChainEntry[])]);
     expect(view.unreadableEntries).toBe(5);
@@ -946,7 +875,7 @@ describe("deriveReportedView — device keys (DK K5)", () => {
         encPubHex: "ab".repeat(32),
         sigPubHex: "cd".repeat(64),
         scopeKind: "listed",
-        scopeEnvironmentIds: "env-1", // not an array
+        scopeEnvironmentIds: "env-1",
       },
     } as unknown as ChainEntry;
     const badServerScope = {
@@ -1042,8 +971,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       const signFromD1 = addDevice("user_a", FP_A, KEYS_R);
       const entries = linked([...setup(), addD2, proposal, voteFromD2, signFromD1], 5, HASH_P);
       const view = deriveReportedView(entries, "99".repeat(32));
-      // D2 was the only unbound device when it signed → bound. D1
-      // signing later does not remove D2's vote
       expect(view.proposals).toEqual([]);
       expect(view.members.map((m) => m.userId)).toEqual(["user_owner", "user_a"]);
     });
@@ -1065,16 +992,12 @@ describe("deriveReportedView — device keys (DK K5)", () => {
       const proposal = proposeRemove("user_owner", FP, "user_m");
       const addD2 = addDevice("user_a", FP_A, KEYS_D2);
       const addR = addDevice("user_a", FP_A, KEYS_R);
-      // Signed from one of 2 unbound (both owner/all) → whichever
-      // device it was, it was owner → count it
       const vote = approve("user_a", FP_D2, HASH_P);
       const counted = deriveReportedView(
         linked([...setup(), addD2, addR, proposal, vote], 6, HASH_P),
         "99".repeat(32),
       );
       expect(counted.proposals).toEqual([]);
-      // If one of them is member-capped, the conclusion depends on
-      // the device → do not count
       const capped = addDevice("user_a", FP_A, KEYS_R, {
         roleCap: "member",
         scopeKind: "all",
@@ -1085,9 +1008,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
         "99".repeat(32),
       );
       expect(notCounted.proposals[0]?.voterUserIds).toEqual(["user_owner"]);
-      // One of the unbound is revoked after the vote was counted
-      // (which one is unknown) → the vote may have been revoked →
-      // not counted
       const policy3 = policyEntry(3, ["remove_member"]);
       const revoked = deriveReportedView(
         linked(
@@ -1111,12 +1031,6 @@ describe("deriveReportedView — device keys (DK K5)", () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Environment deletion (CRYPTO_SPEC §6.2 `delete_environment` —
-// 2026-10-07): the deleted id leaves every listed scope (members,
-// device caps, granted servers); `all` is never pruned
-// ---------------------------------------------------------------------------
 
 const FP_S = "5e".repeat(16);
 const FP_S2 = "5f".repeat(16);
@@ -1166,9 +1080,6 @@ describe("deriveReportedView — environment deletion (§6.2 delete_environment)
     const addA = addListedMember("user_a", "admin", ["dev", "prod"]);
     const addB = addListedMember("user_b", "reader", ["dev"]);
     const addC = addListedMember("user_c", "member", ["prod"]);
-    // user_a signs from its first key (binds FP_A) and adds a second
-    // device capped to its own listed scope; the owner adds a device
-    // capped to dev only
     const deviceA = addDevice("user_a", FP_A, KEYS_D2, {
       roleCap: "admin",
       scopeKind: "listed",
@@ -1201,14 +1112,11 @@ describe("deriveReportedView — environment deletion (§6.2 delete_environment)
       scopeEnvironmentIds: [],
       sinceSeq: genesis.seq,
     });
-    // The genesis key's cap is `all` (never pruned); the dev-only cap
-    // stays listed and becomes empty (crypto's scopeWithout)
     expect(owner?.devices.map((d) => [d.scopeKind, d.scopeEnvironmentIds])).toEqual([
       ["all", []],
       ["listed", []],
     ]);
 
-    // A pruned member's scope was set by the deletion (sinceSeq moves)
     const a = devicesOf(view, "user_a");
     expect(a).toMatchObject({
       scopeKind: "listed",
@@ -1224,14 +1132,12 @@ describe("deriveReportedView — environment deletion (§6.2 delete_environment)
       scopeEnvironmentIds: [],
       sinceSeq: deletion.seq,
     });
-    // A listed scope that does not name the environment is untouched
     expect(devicesOf(view, "user_c")).toMatchObject({
       scopeKind: "listed",
       scopeEnvironmentIds: ["prod"],
       sinceSeq: addC.seq,
     });
 
-    // Server grants keep their grant seq; an emptied scope stays a grant
     expect(view.servers).toEqual([
       { keyFingerprintHex: FP_S, scopeEnvironmentIds: ["prod"], sinceSeq: grantS.seq },
       { keyFingerprintHex: FP_S2, scopeEnvironmentIds: ["prod"], sinceSeq: grantS2.seq },
@@ -1256,9 +1162,6 @@ describe("deriveReportedView — environment deletion (§6.2 delete_environment)
   });
 
   it("does not apply a delete_environment carried inside a proposal (never a four-eyes target — §6.2)", () => {
-    // A propose carrying delete_environment is `approval-not-required`
-    // on a verified chain, so like the device ops (K5-4) the fold
-    // applies it only as a direct entry
     const proposal: ChainEntry = {
       ...signedBy("user_owner", FP),
       op: "propose",

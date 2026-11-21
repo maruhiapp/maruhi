@@ -1,12 +1,3 @@
-// The shared fixtures for the dashboard e2e and screenshots (DP3
-// ruling F). W3b (S8 invite management, S9 token management) rulings
-// CE / CO / CQ are also pinned by the fixtures here.
-//
-// Literals conforming to the api-schema-derived types
-// (src/dashboard/types.ts); tsc detects any divergence. A decode
-// check against the real Schemas lives in e2e.test.ts (ruling BV).
-// This is a test-process-only module and never enters the shipped
-// bundle (only screenshots.ts and e2e.test.ts import it).
 import {
   testEnvironmentId,
   testKeyFingerprintHex,
@@ -43,9 +34,6 @@ const ROW_ID_1 = "78".repeat(16);
 const ROW_ID_2 = "9a".repeat(16);
 const ROW_ID_3 = "bc".repeat(16);
 const ROW_ID_4 = "de".repeat(16);
-// Device keys (DK K5): D2 = phone (cap member / production), R =
-// reserve key (owner / all). The public keys are chosen not to collide
-// with the first key (HEX64) (chain-view's duplicate-member-key fold)
 export const FP_D2 = testKeyFingerprintHex("d2".repeat(16));
 const KEYS_D2 = { encPubHex: "a2".repeat(32), sigPubHex: "b2".repeat(32) };
 const KEYS_R = { encPubHex: "ae".repeat(32), sigPubHex: "be".repeat(32) };
@@ -58,10 +46,6 @@ export const projectsPage1: ProjectList = {
   projects: [{ projectId: PROJECT_1, role: "admin" }],
   nextAfter: PROJECT_1,
 };
-// An empty page + nextAfter (AUTH_SPEC §11-5 — the shape where
-// excluding ghosts and skipping failed confirmations empties the
-// candidate page). The UI must not misjudge this as the end and still
-// advances the cursor
 export const projectsPageEmpty: ProjectList = {
   projects: [],
   nextAfter: PROJECT_GHOST_CURSOR,
@@ -70,10 +54,6 @@ export const projectsPage2: ProjectList = {
   projects: [{ projectId: PROJECT_2, role: "reader" }],
 };
 
-// Contains the 2 device-key ops (DK K5): seq 3 = D1 adds D2,
-// seq 4 = D2 signs and adds R (this is where D2's FP gets bound),
-// seq 5 = D1 revokes D2. After the fold, user_e2e's devices =
-// D1 (FP bound) + R (FP unbound, owner/all) = 2 devices
 export const chainFixture: ChainSnapshot = {
   projectId: PROJECT_1,
   headSeq: 5,
@@ -145,8 +125,6 @@ export const chainFixture: ChainSnapshot = {
   attestations: [],
 };
 
-// A chain containing 1 unreadable device op (for rendering the K5-17
-// note): the revocation targets a non-member
 export const chainWithUnreadableEntry: ChainSnapshot = {
   ...chainFixture,
   headSeq: 6,
@@ -198,8 +176,6 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
     },
   ],
   deletedVariables: [],
-  // The distributed environment manifest (required on the wire since
-  // 0.28-draft — a schema-valid dummy; the dashboard never reads it)
   manifest: {
     suite: "maruhi/v1",
     environmentId: ENV_PRODUCTION,
@@ -218,9 +194,6 @@ export const metadataPullFixture: EnvironmentMetadataPull = {
   schemaPolicy: "enabled",
 };
 
-// The admin-visible project-DO response (with seq — AUDIT_SPEC §7).
-// The two device events (AUDIT_SPEC §3.4 — DK) keep the generic
-// rendering (K5-6): the payload comes out as the recorded JSON
 export const projectAuditEvents: { events: AuditEvent[] } = {
   events: [
     {
@@ -269,7 +242,6 @@ export const projectAuditEvents: { events: AuditEvent[] } = {
   ],
 };
 
-// The self axis (the D1 path — seq is returned to nobody)
 export const selfAuditEvents: { events: AuditEvent[] } = {
   events: [
     {
@@ -292,8 +264,6 @@ export const rotationFlagsFixture: RotationFlagList = {
       triggerChainSeq: 3,
       trigger: "remove_member",
     },
-    // The device-revocation variant (AUDIT_SPEC §4.1 — DK): trigger =
-    // revoke_device; the target is a person (no FP is carried)
     {
       environmentId: ENV_PRODUCTION,
       variableId: VAR_API_KEY,
@@ -306,16 +276,8 @@ export const rotationFlagsFixture: RotationFlagList = {
   ],
 };
 
-// ---------------------------------------------------------------------------
-// Fixtures for S8 (invite management) and S9 (token management).
-// Expiry values are fixed at "future = 2100 / past = 2023" (stable
-// against the clock at run time — ruling CQ's Expired display
-// compares against the client clock, so nothing near the boundary is
-// used)
-// ---------------------------------------------------------------------------
-
-const FUTURE_MS = 4_102_444_800_000; // 2100-01-01
-const PAST_MS = 1_700_000_000_000; // 2023-11-14
+const FUTURE_MS = 4_102_444_800_000;
+const PAST_MS = 1_700_000_000_000;
 
 const acceptanceFixture = {
   inviteeUserId: USER_COLLEAGUE,
@@ -326,9 +288,6 @@ const acceptanceFixture = {
   acceptedAtMs: 1_756_000_100_000,
 } as const;
 
-// The issuance statement (AUTH_SPEC §15-1 — IV): the link public key,
-// the head at issuance time, and the issuance signature (public
-// values)
 const issuanceFixture = {
   linkPubHex: HEX64,
   headHashHex: HEX64,
@@ -382,8 +341,6 @@ export const invitationsFixture: InvitationList = {
   ],
 };
 
-// The server's report after revocation (the pending row moves to
-// revoked) — the UI transcribes it on refetch (ruling CO)
 export const invitationsAfterRevoke: InvitationList = {
   invitations: [
     { ...pendingInvite, status: "revoked" },
@@ -414,16 +371,7 @@ export const tokensFixture: TokenList = {
   ],
 };
 
-// A targeted revocation deletes the row (the server implementation —
-// it disappears from the list)
 export const tokensAfterRevoke: TokenList = { tokens: tokensFixture.tokens.slice(1) };
-
-// ---------------------------------------------------------------------------
-// S11 (the device registry — AUTH_SPEC §13-11. advisory). The tokenId
-// is collated by id against the tokens listing (K5-8): row 1 is tied
-// to "ci" (tok-active), row 2 names a token absent from the listing,
-// row 3 has no link
-// ---------------------------------------------------------------------------
 
 export const devicesFixture: DeviceList = {
   devices: [

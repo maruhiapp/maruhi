@@ -1,35 +1,3 @@
-// `maruhi env list` — the project's environments: ID, display name, status,
-// current epoch, and whether the caller's effective scope covers each one
-// (zero values — a metadata read, so no agent gate and no master key is
-// required).
-//
-// Where each fact comes from:
-//   - The **set** of environments is the verified chain's create_environment
-//     entries (complete and verified — every environment is created on the
-//     chain, and the chain never forgets one, even after a deletion — §6.2)
-//   - The **status** is chain-derived too: an environment whose
-//     delete_environment entry is on the verified chain is deleted
-//     (CRYPTO_SPEC §6.2 / §6.3 — the server cannot hide or undo it)
-//   - The **name** of a live environment comes from its latest signed
-//     statement in the environment list, verified against the chain
-//     (signature, author's role and scope at its declared head — the same
-//     verification as pull). A deleted environment has no name: nothing of
-//     it is distributed any more (AUTH_SPEC §12-7)
-//   - The **epoch** is chain-derived (the server's advisory currentEpoch is
-//     not read)
-//   - **In scope** is the caller's effective scope (member scope ∩ this
-//     machine's device cap — §6.2); without a usable device key it falls
-//     back to the member scope and says so
-//   - **Disclosed to server** is chain-derived: the server keys whose active
-//     grant_server scope names the environment (CRYPTO_SPEC §9 —
-//     server-disclosure.ts; a revoked grant no longer counts)
-//
-// Fail-closed: a live chain environment missing from the list, a deleted
-// one present in it (a resurrection), an ID listed twice, or a statement
-// that fails verification is an error — nothing is silently skipped. A
-// statement declaring a chain head beyond this run's view (or a listed ID
-// the view has not seen created yet) re-syncs once.
-
 import type { EnvironmentListSchema } from "@maruhi/api-schema";
 import type { EnvironmentId, UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember, EnvironmentChainState, MemberScope } from "@maruhi/crypto";
@@ -47,68 +15,42 @@ import { serverDisclosures, serverKeysDisclosing } from "../server-disclosure.ts
 import { verifyEnvironmentStatement } from "../values-verify.ts";
 import { pullWithBoundedResync } from "../values.ts";
 
-/** An environment's lifecycle status. */
 export type EnvironmentStatus = "active" | "deleted";
 
-/**
- * The one place an environment's status is derived: the verified chain
- * (a deletion is the chain op delete_environment — CRYPTO_SPEC §6.2).
- */
 function environmentStatusOf(environment: EnvironmentChainState): EnvironmentStatus {
   return environment.deletedAtSeq === null ? "active" : "deleted";
 }
 
-/** One listed environment (the verified chain's set, with a live environment's verified name). */
 export interface EnvironmentListRow {
   readonly environmentId: EnvironmentId;
-  /** The verified statement's display name; null for a deleted environment (none is distributed — §12-7). */
   readonly name: string | null;
   readonly status: EnvironmentStatus;
-  /** The chain-derived current epoch. */
   readonly currentEpoch: number;
-  /** Whether the caller's scope (see `scopeBasis`) covers the environment (never for a deleted one — a deletion leaves no permission in it). */
   readonly inScope: boolean;
-  /** The server keys an active grant discloses the environment to (fingerprint ascending; empty = none — CRYPTO_SPEC §9). */
   readonly disclosedToServerKeyFingerprintsHex: readonly string[];
 }
 
-/** Which scope `inScope` was judged against. */
 export type ScopeBasis = "device" | "member";
 
 export interface EnvironmentList {
-  /** Every environment the chain created, ID ascending (deleted ones included). */
   readonly rows: readonly EnvironmentListRow[];
   readonly scopeBasis: ScopeBasis;
-  /** Why the basis is the member scope (null when it is the device's effective scope). */
   readonly memberBasisReason: string | null;
-  /** The verified chain head the listing was judged at. */
   readonly headSeq: number;
 }
 
-// The decoded success body (the client method's Success also carries the
-// response-mode results)
 type ListWire = typeof EnvironmentListSchema.Type;
 type ListedStatement = ListWire["environments"][number]["statement"];
 
-/** One chain environment joined with its verified listed statement (null = deleted on the chain). */
 interface JoinedEnvironment {
   readonly environmentId: EnvironmentId;
   readonly statement: VerifiedEnvironmentStatement | null;
   readonly chain: EnvironmentChainState;
 }
 
-/**
- * Joins the verified chain's environment set with the listed statements: a
- * live environment must be listed and its statement must verify; a deleted
- * one must not be listed (verifyEnvironmentStatement refuses a chain-deleted
- * environment as a resurrection). `future` = a statement declares a head
- * beyond the view, or a listed ID was not created in the view yet (both
- * resolved by the one bounded resync).
- */
 const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   view: VerifiedProject,
   wire: ListWire,
-  /** False on the first pass: an omitted live environment may be a deletion the view has not seen yet. */
   resynced: boolean,
 ): Effect.fn.Return<
   | { readonly kind: "ok"; readonly value: readonly JoinedEnvironment[] }
@@ -140,7 +82,6 @@ const verifyListing = Effect.fn("env-list.verifyListing")(function* (
   return { kind: "ok", value: joined } as const;
 });
 
-/** The listed statements by environment ID (an ID listed twice is an inconsistent response). */
 function indexListing(
   wire: ListWire,
 ): Effect.Effect<ReadonlyMap<EnvironmentId, ListedStatement>, CliError> {
@@ -158,11 +99,6 @@ function indexListing(
   return Effect.succeed(listed);
 }
 
-/**
- * One chain environment's verified statement: a live one must be listed
- * and verify; an unlisted deleted one has none (null). A listed deleted one
- * is refused by verifyEnvironmentStatement (a resurrection).
- */
 const joinedStatement = Effect.fn("env-list.joinedStatement")(function* (
   view: VerifiedProject,
   environmentId: EnvironmentId,
@@ -174,8 +110,6 @@ const joinedStatement = Effect.fn("env-list.joinedStatement")(function* (
     if (chainEnvironment.deletedAtSeq !== null) {
       return null;
     }
-    // The list carries no head: a deletion accepted after this view's sync
-    // legitimately drops the environment, so the first omission re-syncs once
     if (!resynced) {
       return "future";
     }
@@ -196,7 +130,6 @@ const joinedStatement = Effect.fn("env-list.joinedStatement")(function* (
   return outcome.kind === "future" ? "future" : outcome.value;
 });
 
-/** The scope `inScope` is judged against: this machine's device (effective) or, failing that, the member's own. */
 function scopeOf(
   member: ChainMember,
   ownKeyFingerprintHex: string | null,
@@ -219,11 +152,6 @@ function scopeOf(
   return { scope: effectivePermissionOf(member, device).scope, basis: "device", reason: null };
 }
 
-/**
- * Lists the project's environments (see the module header for where each
- * fact comes from). `ownKeyFingerprintHex` is this machine's device key
- * fingerprint, or null when no device key is available (a keyless run).
- */
 export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -241,12 +169,10 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
       .list({ params: { projectId: input.verified.projectId } })
       .pipe(Effect.mapError(toCliError)),
     verify: (current, wire) => verifyListing(current, wire, current !== input.verified),
-    // The listing is not a floor input (it only reads)
     accept: () => Effect.void,
     divergedMessage:
       "The environment list still names a chain head or an environment the verified chain does not have after a resync (evidence of a fork or a forged listing)",
   });
-  // The membership is re-read on the (possibly advanced) view
   const member = view.state.members.get(input.userId);
   if (member === undefined) {
     return yield* Effect.fail(cliError("You are not a chain-derived member of this project"));
@@ -278,7 +204,6 @@ export const envListOp = Effect.fn("env-list.envListOp")(function* (input: {
   };
 });
 
-/** The rows a run shows: deleted environments only with `--all`. */
 export function shownEnvironmentRows(
   list: EnvironmentList,
   all: boolean,
@@ -286,7 +211,6 @@ export function shownEnvironmentRows(
   return all ? list.rows : list.rows.filter((row) => row.status === "active");
 }
 
-/** One `--json` document (machine-readable — for agents / scripts. Zero values). */
 export function envListJson(list: EnvironmentList, all: boolean): string {
   return JSON.stringify(
     {
@@ -305,7 +229,6 @@ export function envListJson(list: EnvironmentList, all: boolean): string {
   );
 }
 
-/** The human-readable row (ID, name, status, epoch, scope, server disclosure; the name is neutralized; a deleted environment has no name — "-"). */
 export function formatEnvListRow(row: EnvironmentListRow): string {
   const disclosed = row.disclosedToServerKeyFingerprintsHex.length > 0 ? "yes" : "no";
   return `${displayText(row.environmentId)}\t${row.name === null ? "-" : displayText(row.name)}\t${row.status}\tepoch=${row.currentEpoch}\tin-scope=${row.inScope ? "yes" : "no"}\tdisclosed-to-server=${disclosed}`;

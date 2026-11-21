@@ -44,16 +44,10 @@ export interface Fixture {
 export let fixture: Fixture;
 export let servers: MockServer[] = [];
 
-/** A declaration headed by genesis (seq 1's entry hash = projectId — exists in every extension view). */
 export function genesisHead(projectId: string): { seq: number; hashHex: string } {
   return { seq: 1, hashHex: projectId };
 }
 
-/**
- * One variable of a pull response (verified statement + value — the §12-7 wire shape).
- * The statement's declared head is genesis (meta carries no epoch anchor, so
- * any view verifies when author is member-or-above — §4.2).
- */
 export async function pullEntry(
   projectId: string,
   variableId: string,
@@ -80,7 +74,6 @@ export async function pullEntry(
   };
 }
 
-/** The environment statement of a pull response (active · metaVersion 1 · genesis head). */
 export async function pullEnvStatement(
   projectId: string,
   author?: TestUser,
@@ -99,7 +92,6 @@ beforeAll(async () => {
   const owner = await makeTestUser("user-owner-1111");
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
-  // The chain carries the real DEK's commitment (§5.2 — real data down to the pull comparison)
   const { chain: built, wraps } = await rotatedEnvironmentFor({
     owner,
     environmentId: ENV_ID,
@@ -107,10 +99,6 @@ beforeAll(async () => {
     dek2,
   });
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  // The latest version's epoch differs per variable (§12-7): ALPHA is epoch 2,
-  // BETA stays at epoch 1, never re-encrypted after the rotation.
-  // The value signature (§4.1) declares the head where each epoch was current (inclusive):
-  // ALPHA = seq 3 (rotate), BETA = seq 2 (create)
   const valueAlpha = await encryptValueFor({
     dek: dek2,
     ...common,
@@ -195,11 +183,6 @@ export function chainHandler(): MockHandler {
   }));
 }
 
-/**
- * Distributed set (after overrides) → digest input. Overrides with duplicate
- * variableIds fold last-wins because the digest computation rejects them (the
- * duplicate itself is refused by the client before manifest verification).
- */
 function digestStatementsOf(
   variables: readonly unknown[],
   deletedVariables: readonly unknown[],
@@ -226,11 +209,9 @@ export function pullHandler(overrides?: {
   readonly deletedVariables?: readonly unknown[];
   readonly declaredVariables?: readonly unknown[];
   readonly statement?: unknown;
-  /** Overrides for the manifest's digest input (for building absence negatives). */
   readonly digestDeclared?: readonly unknown[];
 }): MockHandler {
   const { built, wraps, entryAlpha, entryBeta, envStatement } = fixture;
-  // Default + test overrides (spread replaces only existing keys)
   const resolved = {
     statement: envStatement as unknown,
     variables: [entryAlpha, entryBeta] as readonly unknown[],
@@ -242,9 +223,6 @@ export function pullHandler(overrides?: {
     schemaPolicy: "enabled" as const,
   };
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    // The manifest (§12-7) is computed from **the distributed set itself**
-    // (matching even sets tampered with / swapped via override — each test's
-    // negative verifies it is rejected by statement / value verification, not by the manifest)
     const manifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

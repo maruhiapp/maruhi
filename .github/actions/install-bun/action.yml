@@ -1,19 +1,3 @@
-# install-bun — installs the Bun that `.bun-version` pins, for this
-# repository's own workflows (ci / installer / release / ops-backup).
-#
-# The install itself is scripts/install-bun.sh, shared with the dev
-# environments: it holds the pinned SHA-256s and verifies the official release
-# zip before anything in it runs, and no Actions cache is read or written. Do
-# not go back to oven-sh/setup-bun: it caches the executable under a key any
-# run in the default-branch scope can seed, and its only check runs the
-# restored binary (`bun --revision`). On the release path this binary bundles
-# the published code and writes every artifact (the runtimes embedded in the
-# binaries are pinned per target in apps/cli/scripts/bun-runtimes.ts). The
-# step passes `--require-avx2`, so every job runs the same build as the
-# linux-x64 release runtime: the script refuses a runner without AVX2 instead
-# of falling back to the baseline build. The script annotates its own
-# failures (`::error::`).
-
 name: "install-bun"
 description: >-
   Install the Bun version pinned by .bun-version from the official release

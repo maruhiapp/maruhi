@@ -1,7 +1,3 @@
-// The head-attestation reads and the per-member fixed window of the
-// data store (AUTH_SPEC §16-1) — assembled into DataStoreShape by
-// dataStoreLayer in data-store.ts.
-
 import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -10,12 +6,6 @@ import { ATTESTATION_WINDOW_MS } from "../policy.ts";
 import { columnValue, numberColumn, storedSuite, stringColumn } from "./data-store-rows.ts";
 import type { StoredHeadAttestation } from "./data-store.ts";
 
-/**
- * Reads and the fixed window of head attestations (AUTH_SPEC §16-1).
- * The window's semantics (separation of judgment and consumption;
- * expired = counting from 0) are identical to the lease window's — only
- * the key became per-member.
- */
 export const makeAttestationQueries = (sql: SqlStorage) => ({
   headAttestationSeq: (attesterUserId: UserId, keyFingerprintHex: KeyFingerprintHex) =>
     Effect.sync(() => {
@@ -76,7 +66,6 @@ export const makeAttestationQueries = (sql: SqlStorage) => ({
   },
 });
 
-/** The live row of the attestation window (same "live window" definition as the lease window's leaseWindowRow). */
 function attestationWindowRow(
   sql: SqlStorage,
   attesterUserId: UserId,

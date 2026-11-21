@@ -1,23 +1,3 @@
-// Auto-proposal of existing commands (CRYPTO_SPEC §6.2 — PF1 K6. Design note
-// es-design.md §12 K6-A / D / I / N).
-//
-// Properties pinned down:
-//  1. When the policy targets the inner op, `member remove` / `change-role` /
-//     `add` / `server grant` / `revoke` append a `propose` instead of a direct
-//     append and fulfill nothing (no rotate / backfill — ruling P7). The
-//     display is "Proposed … nothing has been applied yet"
-//  2. Idempotency: if a pending proposal for the same inner op already
-//     exists, or a CAS-conflict resync finds one a concurrent run appended,
-//     do not propose anew (K6-A)
-//  3. Ops the policy does not target keep the direct append (pinned by
-//     existing tests). If a CAS-conflict resync finds the policy changed,
-//     fail closed (re-run)
-//  4. `member add`: propose after the ceremony (--expect-fingerprint), and
-//     warn on key-FP re-registration (K6-I)
-//  5. The proposal path does not refuse a self-remove (the fulfiller is the
-//     approver — K6-N)
-//  6. A malformed `--expires` is usage (2)
-
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -83,7 +63,6 @@ async function startEnv(
 
 type PolicyOp = Parameters<typeof setApprovalPolicyOp>[0][number];
 
-/** An accepted invite from owner, for `member add` to admit invitee. */
 async function invitationFor(projectId: string, invitee: TestUser) {
   const issued = await issueInviteFixture({
     inviter: owner,
@@ -107,7 +86,6 @@ async function invitationFor(projectId: string, invitee: TestUser) {
   };
 }
 
-/** 2 owners, 1 member, 1 environment, policy (ops, required 2). */
 function baseSteps(ops: readonly PolicyOp[]) {
   return [
     { actor: owner, operation: genesisOp(owner) },
@@ -152,7 +130,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
       op: "remove_member",
       payload: { targetUserId: target.userId },
     });
-    // 48h ≈ the expiry (signing time + 48h)
     const lifetime = proposed.payload.expiresAtMs - proposed.timestampMs;
     expect(lifetime).toBeGreaterThan(48 * 3_600_000 - 10_000);
     expect(lifetime).toBeLessThanOrEqual(48 * 3_600_000);
@@ -163,8 +140,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
     expect(logs).toContain("needs 1 more owner approval (1 of 2 recounted so far)");
     expect(logs).toContain("maruhi approval approve");
 
-    // Re-run: a pending entry for the same inner op exists, so no new
-    // proposal is added
     env.logs.length = 0;
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
@@ -205,8 +180,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
   });
 
   it("member remove: the proposal path does not refuse a self-remove (the fulfiller is the approver — K6-N)", async () => {
-    // 3 owners (reachability: even without owner2, required 2 is met — passes
-    // the quorum check at propose time)
     const owner3 = await makeTestUser("user-owner-3333");
     const steps = baseSteps(["remove_member"]);
     const built = await buildChain([
@@ -216,12 +189,9 @@ describe("auto-proposal of existing commands (K6-A)", () => {
     ]);
     const state = await makeFourEyesServer({ built, environments: {}, actor: owner2 });
     const env = await startEnv(state, built.projectId, owner2);
-    // owner2 proposes their own remove: the CLI doesn't stop merely on
-    // "self-remove" (the fulfiller is the approver)
     const code = await runCli(["member", "remove", owner2.userId], env.layer);
     expect(code).toBe(0);
     expect(state.appendedEntries.map((entry) => entry.op)).toEqual(["propose"]);
-    // K6-N': show the person the consequence once applied (not a refusal)
     expect(env.errors.join("\n")).toContain("this proposal removes you");
   });
 
@@ -245,8 +215,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
     });
     expect(state.rotateBodies).toHaveLength(0);
 
-    // If the policy only targets remove_member, change_role is a direct
-    // append (owner establishment is always targeted)
     const other = await buildChain(baseSteps(["remove_member"]));
     const otherState = await makeFourEyesServer({ built: other, environments: {}, actor: owner });
     const otherEnv = await startEnv(otherState, other.projectId, owner);
@@ -308,8 +276,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
       payload: { serverKeyFingerprintHex: serverFpHex, scopeEnvironmentIds: [ENV_ID] },
     });
     expect(state.registerBodies).toHaveLength(0);
-    // A run that skips the ceremony (no flag, non-interactive) stops before
-    // proposing
     const bare = await makeFourEyesServer({
       built,
       environments: {},
@@ -357,8 +323,6 @@ describe("auto-proposal of existing commands (K6-A)", () => {
         ...(granted === true ? [{ actor: owner, operation: grant }] : []),
       ];
       const built = await buildChain(steps);
-      // The policy was activated concurrently with the submission (the op
-      // became targeted)
       const concurrent = await buildChain([
         ...steps,
         { actor: owner, operation: setApprovalPolicyOp([op], 2) },

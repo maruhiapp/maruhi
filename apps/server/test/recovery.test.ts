@@ -1,12 +1,3 @@
-// Integration tests for the recovery-blob API (AUTH_SPEC §13; the
-// server side of CRYPTO_SPEC §8).
-// Verifies the real path via SELF on @cloudflare/vitest-plugin (real
-// workerd environment).
-//
-// The blob is opaque ciphertext to the server, so any hex fixture
-// suffices for the content (decryptability is the client side's job —
-// covered by the CLI tests).
-
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -58,9 +49,6 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
 
   it("rejects a session principal for both PUT and GET (the §5 capability restriction — the §13-2 table = tokens only)", async () => {
     const session = await loginSession(502);
-    // Neither registration nor fetch has a legitimate path from a
-    // session (W0 ruling). Even with the CSRF header it is 403
-    // session-not-allowed
     const put = await putWrap(sessionHeaders(session));
     expect(put.status).toBe(403);
     expect(((await put.json()) as Record<string, unknown>)["reason"]).toBe("session-not-allowed");
@@ -75,18 +63,12 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
     const token = await cliToken(507);
     expect((await putWrap(bearer(token))).status).toBe(204);
     const session = await loginSession(507);
-    // The shape of a cross-site navigation where only the Lax cookie
-    // rides along (no custom header). The capability judgment (§5)
-    // precedes the CSRF check, so the rejection reason does not vary
-    // with the header's presence
     const get = await SELF.fetch(`${BASE}/auth/recovery`, {
       headers: { cookie: sessionHeaders(session)["cookie"] ?? "" },
     });
     expect(get.status).toBe(403);
     const body = (await get.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("session-not-allowed");
-    // Since KL3 (AUTH_SPEC §13-8), the fetch count lives in the
-    // kind-aggregated window key_wrap_windows
     const row = await env.DB.prepare(
       "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
     ).first<{ fetch_count: number }>();
@@ -101,7 +83,6 @@ describe("PUT /auth/recovery(§13-1 / §13-2)", () => {
 
     const get = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     const body = (await get.json()) as Record<string, unknown>;
-    // The old blob does not survive (at most one row per user)
     expect(body["ciphertextHex"]).toBe(reissued);
   });
 
@@ -167,7 +148,6 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     expect(typeof body["retryAfterSeconds"]).toBe("number");
     expect(body["retryAfterSeconds"] as number).toBeGreaterThan(0);
 
-    // Re-issuance (replacement) resets the fetch window (the new blob does not inherit old attempt history)
     expect((await putWrap(bearer(token), "ef".repeat(64))).status).toBe(204);
     const afterReissue = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(afterReissue.status).toBe(200);
@@ -176,10 +156,6 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   it("counts concurrent fetches atomically: exactly the limit succeeds and the count matches", async () => {
     const token = await cliToken(516);
     expect((await putWrap(bearer(token))).status).toBe(204);
-    // Over-limit concurrent requests: since counting is a
-    // conditional relative UPDATE (a single statement), exactly the
-    // limit succeeds under any interleaving and the stored count
-    // stops at the limit
     const responses = await Promise.all(
       Array.from({ length: RECOVERY_FETCH_LIMIT + 3 }, () =>
         SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) }),
@@ -189,15 +165,10 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
     const limited = responses.filter((response) => response.status === 429).length;
     expect(succeeded).toBe(RECOVERY_FETCH_LIMIT);
     expect(limited).toBe(3);
-    // Since KL3 (AUTH_SPEC §13-8), the fetch count lives in the
-    // kind-aggregated window key_wrap_windows
     const row = await env.DB.prepare(
       "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
     ).first<{ fetch_count: number }>();
     expect(row?.fetch_count).toBe(RECOVERY_FETCH_LIMIT);
-    // The audit rows (auth.recovery_blob_fetched) are 1:1 with
-    // permitted fetches (the §5.2 same-transaction principle
-    // preserved)
     const audit = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM user_audit_events WHERE event = 'auth.recovery_blob_fetched'",
     ).first<{ n: number }>();
@@ -207,15 +178,9 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
   it("rejects an unknown stored suite without consuming the fetch window", async () => {
     const token = await cliToken(515);
     expect((await putWrap(bearer(token))).status).toBe(204);
-    // Create a row the v1 write path cannot produce, directly (the
-    // assumption of a future-version write / DB corruption). It must
-    // not be silently distributed as v1 (500) and must not consume
-    // the window
     await env.DB.prepare("UPDATE recovery_wraps SET suite = 'maruhi/v2'").run();
     const broken = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(broken.status).toBe(500);
-    // Since KL3 (AUTH_SPEC §13-8), the fetch count lives in the
-    // kind-aggregated window key_wrap_windows
     const row = await env.DB.prepare(
       "SELECT count AS fetch_count FROM key_wrap_windows WHERE kind = 'blob-fetch'",
     ).first<{ fetch_count: number }>();
@@ -228,7 +193,6 @@ describe("GET /auth/recovery(§13-2 / §13-3)", () => {
       const notFound = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
       expect(notFound.status).toBe(404);
     }
-    // After registration the fetches run to the limit (the 404s did not consume the window)
     expect((await putWrap(bearer(token))).status).toBe(204);
     const first = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(first.status).toBe(200);
@@ -242,11 +206,6 @@ describe("GET /auth/recovery/status(§13-2)", () => {
     expect(before.status).toBe(200);
     expect(await before.json()).toEqual({ registered: false, updatedAtMs: null });
 
-    // Registration is done under a differently-named token for the
-    // same user (a session cannot register under §5's capability
-    // restriction. Re-issuing a same-named token would revoke the
-    // existing token on rotation, so a different name keeps both
-    // alive)
     const adminToken = await cliToken(521, undefined, "recovery-secondary");
     expect((await putWrap(bearer(adminToken))).status).toBe(204);
 

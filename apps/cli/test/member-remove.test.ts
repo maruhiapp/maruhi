@@ -1,21 +1,3 @@
-// Integration tests for `maruhi member remove` / `maruhi member
-// change-role` (CRYPTO_SPEC §6.2 / §7).
-//
-// Properties pinned down:
-//  1. Appending remove_member + forced rotation of every environment
-//     (reason=member-removed). The new epoch's complete wrap set does
-//     **not** include the removed target
-//  2. Interruption recovery: already appended (target already a
-//     non-member) → don't append, resume the sweep / already rotated
-//     after removal → confirmation only (chain-derived — no progress file)
-//  3. Refusing self-removal and self-demotion below member (the fulfiller
-//     of the §7 mandate would vanish)
-//  4. change-role: demotion below member sweeps (reason=role-demoted);
-//     promotion doesn't. A no-op re-run on a born-reader carries no
-//     mandate
-//  5. Operations targeting an admin / owner are owner-only (§6.2's early
-//     check)
-
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
@@ -73,7 +55,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** The wire form of one rotation flag (AUDIT_SPEC §3.3). */
 interface WireFlag {
   readonly environmentId: string;
   readonly variableId: string;
@@ -88,30 +69,19 @@ interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
   readonly rotateBodies: WireRotateBody[];
-  /** dek_wraps registrations (the change-role widening backfill — §12-6). */
   readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
   readonly counters: { appendAttempts: number };
 }
 
-/**
- * A stateful mock for the remove / change-role flows (a slimmed-down
- * server-revoke test mock): chain GET / append POST, environment list,
- * pull (no variables), and accepting the rotate composite.
- */
 async function makeRemoveServer(input: {
   readonly built: BuiltChain;
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
-  /** An insert into the chain append (409 etc.). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** When onAppend inserts, swap subsequent chains to this form (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
-  /** The principal sending the rotate composite (default = owner). Issuer of accepted manifests and recipient of the self-destined wrap it stores. */
   readonly rotator?: TestUser;
-  /** Rotation flags the server reports after the removal (PF6 R3 — the checklist's input). */
   readonly flags?: readonly WireFlag[];
-  /** Verified variable statements per environment (the checklist resolves names from them). */
   readonly variableStatements?: Readonly<
     Record<string, readonly WireDistributedVariableStatement[]>
   >;
@@ -125,9 +95,7 @@ async function makeRemoveServer(input: {
   const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
-  /** Per-environment stored latest manifest (lazily issued on first pull → replaced on rotate acceptance). */
   const manifests = new Map<string, WireDistributedManifest>();
-  /** Per-environment stored checkpoint snapshot (§16-2 — no variables = empty enumeration). */
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
   const listedStatements = await Promise.all(
     Object.keys(environments).map((environmentId) =>
@@ -141,13 +109,6 @@ async function makeRemoveServer(input: {
     ),
   );
 
-  /**
-   * The metadata-only pull (PF6 R3 — the checklist resolves names from it):
-   * the listed statements under a manifest continuing the stored one (the
-   * rotate composite's accepted manifest covers no variables — this mock's
-   * pull carries none; the metadata pull's manifest must bind the statements
-   * it lists — §4.3).
-   */
   const metadataResponse = async (environmentId: string): Promise<MockResponse> => {
     const environment = environments[environmentId];
     const statement = listedStatements.find((item) => item.environmentId === environmentId);
@@ -273,8 +234,6 @@ async function makeRemoveServer(input: {
           deletedVariables: [],
           deks: environment.deks,
           manifest,
-          // Always bundle the baseline checkpoint's stored row when one
-          // exists (§12-7 — rule 2's material)
           ...(checkpointSnapshot === undefined ? {} : { checkpointSnapshot }),
           schemaPolicy: "enabled" as const,
         },
@@ -294,22 +253,17 @@ async function makeRemoveServer(input: {
       }
       const body = request.body as WireRotateBody;
       rotateBodies.push(body);
-      // Two entries accepted: rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);
       hashes.push(
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // Snapshot stored in the same transaction as acceptance (§16-2 — no
-      // variables = empty)
       checkpointSnapshots.set(environmentId, {
         chainSeq: entries.length,
         entryHashHex: hashes[hashes.length - 1] ?? "",
         values: [],
       });
       environment.currentEpoch = body.entry.payload.newEpoch;
-      // The accepted bundled manifest (§12-4) becomes the stored latest
-      // fed to distribution (§12-5)
       manifests.set(environmentId, {
         ...body.manifest,
         issuerUserId: rotator.userId,
@@ -341,8 +295,6 @@ async function makeRemoveServer(input: {
       };
     },
   ];
-  // dek_wraps (fetching your own = the backfill's input / registering =
-  // the widening's output)
   handlers.push((request) => {
     const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/deks$`).exec(
       request.path,
@@ -412,9 +364,6 @@ describe("maruhi member remove", () => {
     if (entry?.op !== "remove_member") throw new Error("remove entry missing");
     expect(entry.payload.targetUserId).toBe(target.userId);
 
-    // §7: forced rotation. The complete wrap set = every current member
-    // after the removal (including continuing member admin2, not just the
-    // caller). The removed target is excluded
     expect(state.rotateBodies).toHaveLength(1);
     const rotate = state.rotateBodies[0];
     if (rotate === undefined) throw new Error("rotate body missing");
@@ -467,7 +416,6 @@ describe("maruhi member remove", () => {
       environments: {
         [ENV_ID]: { currentEpoch: 1, deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)] },
       },
-      // Another member's flag is not part of this checklist
       flags: [
         flag("v-db", "readable"),
         flag("v-stripe", "read"),
@@ -485,7 +433,6 @@ describe("maruhi member remove", () => {
     const readable = logs.indexOf("[readable] env-app-1 DATABASE_URL:");
     expect(read).toBeGreaterThan(-1);
     expect(readable).toBeGreaterThan(read);
-    // No rotation config in the working directory: the by-hand route with the runbooks
     expect(logs).toContain(
       "rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env env-app-1` (runbooks: https://maruhi.app/docs/rotation)",
     );
@@ -498,8 +445,6 @@ describe("maruhi member remove", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: addMemberOp(target, "member") },
     ]);
-    // Concurrently with the send, another owner device had removed the
-    // same target (an extension chain)
     const concurrent = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -527,11 +472,8 @@ describe("maruhi member remove", () => {
     const env = await startEnv(state, built.projectId, owner);
 
     expect(await runCli(["member", "remove", target.userId], env.layer)).toBe(0);
-    // The append was attempted once (409) only — the resync detected the
-    // removal and no double-append happens
     expect(state.counters.appendAttempts).toBe(1);
     expect(state.appendedEntries).toHaveLength(0);
-    // The §7 mandate (sweep) is fulfilled as one's own share
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("The target was already removed");
@@ -588,10 +530,6 @@ describe("maruhi member remove", () => {
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(env.logs.join("\n")).toContain("The target was already removed");
-    // A converging command doesn't emit the always-on warning about an
-    // unconverged mandate (rotation-sweep.ts): this chain is unconverged at
-    // sync time (no rotate after the remove), but our own sweep report
-    // conveys the same fact more precisely — don't double-warn
     expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
   });
 
@@ -675,15 +613,11 @@ describe("maruhi member change-role", () => {
     expect(entry.payload).toEqual({
       targetUserId: target.userId,
       newRole: "reader",
-      // The K2 CLI keeps the target's current scope (all) (--env arrived
-      // in K4)
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("role-demoted");
-    // The demoted member keeps receiving the new epoch's wrap as a reader
-    // (§7 — the mandate is epoch-anchor soundness, not confidentiality)
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
       [owner.userId, target.userId].toSorted(),
     );
@@ -776,10 +710,6 @@ describe("maruhi member change-role", () => {
   });
 
   it("a no-op re-run on a born-reader doesn't pick up a sweep even with someone's unconverged mandate (the target-scope criterion)", async () => {
-    // target was born a reader (no demotion mandate of its own). Someone
-    // else's (admin2's) remove follows, and its rotation is unconverged —
-    // under a global criterion this no-op would pick up admin2's mandate
-    // and kick off a rotation of every environment
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -821,15 +751,9 @@ describe("maruhi member change-role", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Environment scope (2026-09-15 ES K4 — CRYPTO_SPEC §6.2 / §7, design
-// record es-design.md §10)
-// ---------------------------------------------------------------------------
-
 const ENV_DEV = "env-dev";
 const ENV_PROD = "env-prod";
 
-/** A mock's environment set holding the two envs dev / prod (epoch 1), with owner-bound wraps. */
 async function twoEnvironments(
   projectId: string,
 ): Promise<Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>> {
@@ -879,7 +803,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     ).toBe(0);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "change_role") throw new Error("change_role entry missing");
-    // role stays as-is (--role omitted); scope is fully replaced (§6.2)
     expect(entry.payload).toEqual({
       targetUserId: target.userId,
       newRole: "member",
@@ -888,8 +811,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     });
     expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_PROD]);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("scope-narrowed");
-    // The new epoch's complete set = R(prod) = { owner } (excludes the
-    // narrowed target — §6.3)
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId)).toEqual([owner.userId]);
     expect(state.registerBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
@@ -923,8 +844,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       scopeEnvironmentIds: [],
     });
     expect(state.rotateBodies).toHaveLength(0);
-    // The widened portion = prod only (dev is already held). Recipient =
-    // the target, epoch 1
     expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_PROD]);
     expect(state.registerBodies[0]?.deks.map((wrap) => [wrap.epoch, wrap.recipientUserId])).toEqual(
       [[1, target.userId]],
@@ -963,8 +882,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
       { actor: owner, operation: addMemberOp(target, "reader") },
     ]);
-    // Concurrently with the send, another owner device had promoted the
-    // target to member (an extension chain)
     const concurrent = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -990,8 +907,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     });
     const env = await startEnv(state, built.projectId, owner);
 
-    // A run that only changes scope: the re-sign keeps the post-promotion
-    // role (member)
     expect(
       await runCli(["member", "change-role", target.userId, "--env", ENV_DEV], env.layer),
     ).toBe(0);
@@ -1023,8 +938,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       expect(await runCli(argv, env.layer), argv.join(" ")).toBe(2);
       expect(state.appendedEntries, argv.join(" ")).toHaveLength(0);
     }
-    // An unknown environment ID stops at the on-chain existence check
-    // (the pre-judgement for unknown-environment)
     const state = await makeRemoveServer({ built, environments: {} });
     const env = await startEnv(state, built.projectId, owner);
     expect(
@@ -1058,9 +971,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     expect(env.errors.join("\n")).toContain(`your scope: ${ENV_DEV}`);
     expect(server.requests.filter((request) => request.path.includes("/pull"))).toHaveLength(0);
 
-    // A meta-only pull (`maruhi schema`) issues the request even outside
-    // scope (the mock doesn't have it so it ends in 404, but it doesn't
-    // stop on the scope-refusal wording)
     const schemaEnv = await makeTestEnv();
     seedSession(schemaEnv, server.origin, target);
     await seedConfig(schemaEnv, { server: server.origin, defaultProject: built.projectId });
@@ -1077,8 +987,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
-      // Widening (backfill interrupted) → a third party appends a
-      // change_role that only changes the role
       { actor: owner, operation: changeRoleOp(target, "member", null) },
       { actor: owner, operation: changeRoleOp(target, "admin", null) },
     ]);
@@ -1175,9 +1083,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
 
   it("someone-else's mandate environments outside the caller's scope aren't rotated but are noted, while one's own mandate is fulfilled (§7 — independent review S2)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
-    // owner narrowed target from {dev, prod} to {dev} but prod's rotate is
-    // unconverged. A dev-only admin demotes target to reader (symmetric
-    // difference ∅ · old ∪ new = {dev} ⊆ {dev})
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1186,8 +1091,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV, ENV_PROD]) },
       { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV]) },
     ]);
-    // The distributed self-destined wraps are for the caller (devAdmin)
-    // (the mock doesn't filter by recipient, so swap them)
     const environments = {
       [ENV_DEV]: {
         currentEpoch: 1,
@@ -1218,9 +1121,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
 
   it("when the unconverged portion of someone else's widening lies only outside your scope, it notes it and exits 0 with no backfill (Cursor Bugbot)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
-    // owner widened target from {dev} to {dev, prod} but prod's backfill
-    // is unconverged. A dev-only admin re-runs with the same scope
-    // (symmetric difference ∅ = a resume of an already-appended entry)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1246,10 +1146,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
 
   it("a chain-deleted environment leaves the widened portion and doesn't appear in the out-of-scope note (pullfrog)", async () => {
     const devAdmin = await makeTestUser("user-devadmin-4444");
-    // Same "someone else's widening is unconverged" as the case above, but
-    // prod has since been deleted on the chain (which also pruned it from
-    // the target's scope — CRYPTO_SPEC §6.2). No one can fill it, so no note
-    // is emitted (the §12-6 mandate vanishes with the deletion)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
@@ -1267,8 +1163,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies).toHaveLength(0);
     expect(env.errors.join("\n")).not.toContain("widened earlier for this member");
-    // A scope naming the deleted environment is refused before signing (the
-    // verifier's environment-deleted)
     expect(
       await runCli(
         ["member", "change-role", target.userId, "--env", ENV_DEV, "--env", ENV_PROD],
@@ -1306,8 +1200,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
       { actor: owner, operation: addScopedMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
     ]);
-    // Symmetric difference {prod} ⊄ {dev}: a dev-only admin cannot sign a
-    // narrowing away from prod
     const narrow = await makeRemoveServer({ built, environments: {} });
     const narrowEnv = await startEnv(narrow, built.projectId, devAdmin);
     expect(
@@ -1315,7 +1207,6 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
     ).toBe(1);
     expect(narrowEnv.errors.join("\n")).toContain("scope-not-contained");
     expect(narrow.appendedEntries).toHaveLength(0);
-    // When the role changes, old ∪ new = {dev, prod} ⊄ {dev}
     const promote = await makeRemoveServer({ built, environments: {} });
     const promoteEnv = await startEnv(promote, built.projectId, devAdmin);
     expect(

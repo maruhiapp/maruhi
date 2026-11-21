@@ -1,14 +1,3 @@
-// Tests for mirrors on the client side (AUTH_SPEC §11-7 — PF2,
-// docs/notes/pf2-design.md): the read-only fallback of `pull` / `run` /
-// `ci run` to a configured mirror.
-//
-// Properties pinned down:
-//  3. pull / run retry against the mirror only when the server does not
-//     answer (a connection failure, a gateway 503), never on an answer
-//     (a 403), and say so on stderr; the command runs once
-//  4. ci run requests the lease from the mirror with a token for the
-//     mirror's audience
-
 import { createServer } from "node:http";
 
 import { Duration, Effect } from "effect";
@@ -38,13 +27,11 @@ import {
 import { type MockHandler, type MockRequest } from "./support/server.ts";
 import { makeValueEnvironmentServer } from "./support/value-env.ts";
 
-/** A session on the mirror without a device key there (the key is the person's — stored for the server origin only). */
 function seedMirrorSession(env: TestEnv, mirrorOrigin: string): void {
   seedSession(env, mirrorOrigin, owner);
   env.keychain.delete(masterKeyEntryName(mirrorOrigin, owner.userId));
 }
 
-/** The mirror as a full read server (chain + pull), plus the status it reports (a mirror of `sourceOrigin`). */
 function readMirrorHandlers(sourceOrigin: string, status?: Record<string, unknown>): MockHandler[] {
   const value = makeValueEnvironmentServer({
     chain: built,
@@ -78,7 +65,6 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     expect(errors).toContain(`Retrying this read against the mirror ${mirror.origin}`);
     expect(env.logs.join("\n")).toContain("Sync and verification OK: 1 variable");
     expect(mirror.requests.some((r) => r.path.endsWith("/pull"))).toBe(true);
-    // The mark was checked first, with the mirror's own session
     expect(mirror.requests[0]?.path).toBe(`/projects/${built.projectId}/mirror`);
   });
 
@@ -99,7 +85,6 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     expect(errors).toContain(
       `${promoted.origin} does not hold this project as a mirror (it was promoted, or never marked), so the read is not retried there`,
     );
-    // The mirror's own word never moves a member's writes
     expect(errors).toContain("Confirm with an owner whether the project was promoted");
     expect(errors).not.toContain(`config set server ${promoted.origin}`);
     expect(promoted.requests.some((r) => r.path.endsWith("/pull"))).toBe(false);
@@ -162,7 +147,6 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     const stalled = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
       response.write("{");
-      // never ended
     });
     await new Promise<void>((resolve) => {
       stalled.listen(0, "127.0.0.1", resolve);
@@ -259,7 +243,6 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     expect(env.runnerCalls).toHaveLength(1);
     expect(env.runnerCalls[0]?.extraEnv["ALPHA"]).toBe(ALPHA_VALUE);
     expect(env.logs.join("\n")).not.toContain(ALPHA_VALUE);
-    // Nothing was written to the mirror (no attestation, no device registration, no wrap fill)
     expect(
       mirror.requests.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`),
     ).toEqual([]);
@@ -280,7 +263,6 @@ describe("the read-only fallback to a mirror (PF2)", () => {
     const dead = await deadOrigin();
     const mirror = await start(readMirrorHandlers(dead));
     const env = await makeTestEnv();
-    // Only the device key is in the keychain (stored for the server origin); the credentials are env vars
     seedSession(env, dead, owner);
     env.keychain.delete(tokenEntryName(dead));
     env.setEnvVar("MARUHI_TOKEN", "maruhi_pat_ServerTokenValue00000000000000000000000");
@@ -361,13 +343,11 @@ describe("the read-only fallback to a mirror (PF2)", () => {
       "printenv",
       "ALPHA",
     ];
-    // The mirror answers (a 404 here): the fallback fired, with a second token for the mirror's audience
     expect(await runCli(args, env.layer)).toBe(1);
     expect(audiences).toEqual([dead, mirror.origin]);
     expect(leased).toEqual([`/projects/${built.projectId}/environments/${ENV_ID}/lease`]);
     expect(env.errors.join("\n")).toContain(`Retrying against the mirror ${mirror.origin}`);
     expect(env.runnerCalls).toHaveLength(0);
-    // An explicit --audience is kept on the retry (a flag goes before `--`)
     audiences.length = 0;
     const terminator = args.indexOf("--");
     const withAudience = [

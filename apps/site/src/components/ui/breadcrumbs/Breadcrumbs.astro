@@ -6,13 +6,7 @@ import { withBase } from "@cloudflare/nimbus-docs/runtime";
 
 interface Props extends HTMLAttributes<"nav"> {
   items: Breadcrumb[];
-  /** Max visible crumbs before collapsing middle items (default: 4) */
   maxVisible?: number;
-  /**
-   * Whether the final crumb is the current page — rendered as non-interactive
-   * text (default: true). When false, every crumb with an `href` is a link and
-   * a single-crumb trail still renders.
-   */
   endsAtCurrentPage?: boolean;
 }
 
@@ -21,9 +15,8 @@ const { items, maxVisible = 4, endsAtCurrentPage = true, class: className, ...at
 const isCurrent = (isLast: boolean): boolean => endsAtCurrentPage && isLast;
 const resolveHref = (href: string): string => withBase(href, import.meta.env.BASE_URL);
 
-// When collapsed: Home + first segment + ... + last 2 (parent + current)
-const headCount = 2; // Home + first segment
-const tailCount = 2; // parent + current page
+const headCount = 2;
+const tailCount = 2;
 const shouldCollapse = items.length > Math.max(maxVisible, headCount + tailCount);
 const headItems = shouldCollapse ? items.slice(0, headCount) : items;
 const collapsedItems = shouldCollapse ? items.slice(headCount, items.length - tailCount) : [];

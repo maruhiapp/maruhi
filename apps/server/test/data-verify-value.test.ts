@@ -1,10 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) —
-// acceptance verification of value signatures (AUTH_SPEC §12-5 =
-// CRYPTO_SPEC §4.1 / §6.4).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// The shared fixture and helpers live in support/data-scenario.ts.
-
 import type { ChainEntry } from "@maruhi/crypto";
 import {
   buildValueSignedBytes,
@@ -60,7 +53,6 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** Check side-effect-freeness on rejection: variables, versions, latest, and audits do not change. */
 async function expectNoVersionSideEffects(expectedVersions: readonly number[]): Promise<void> {
   const rows = await queryProjectDo(
     projectId,
@@ -80,10 +72,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   it("rejects a value signed by someone other than the caller (422 signature-invalid)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER carries in a value correctly signed by OWNER → the
-    // verification key is the calling principal's (MEMBER's)
-    // acceptance-time chain key, so it fails (refusing to carry
-    // someone else's signature)
     const ownerSigned = await encryptValue(
       dek,
       {
@@ -135,7 +123,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { reason: string }).reason).toBe("signature-invalid");
-    // No variable row, statement row, version row, or audit remains
     for (const table of ["variables", "variable_meta_statements"]) {
       const rows = await queryProjectDo(
         projectId,
@@ -155,7 +142,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   it("rejects unknown declared heads (422 chain-head-unknown): hash mismatch and future seq", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // An existent seq × mismatched hash (valid signature) — existence of the exact pair is the acceptance condition
     const mismatched = await signValueAs(
       MEMBER,
       {
@@ -178,7 +164,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     expect(hashMismatch.status).toBe(422);
     expect(((await hashMismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
 
-    // A seq beyond the local chain (nonexistent on the server) is also chain-head-unknown
     const future = await signValueAs(
       MEMBER,
       {
@@ -211,7 +196,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     const entries = ((await chain.json()) as { entries: { seq: number }[] }).entries;
     expect(entries.length).toBe(fixture.head.seq);
 
-    // (a) Declaring a head from before the writer became a member (seq 1 = genesis)
     const beforeMembership = await signValueAs(
       MEMBER,
       {
@@ -236,10 +220,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
       "chain-head-state-mismatch",
     );
 
-    // (b) Declaring a head from before the environment's creation
-    // (base-chain seq 3) — forbids an implementation that backfills an
-    // epoch-undefined head with a default (the second half of §12-5
-    // item 4)
     const beforeCreate = await signValueAs(
       MEMBER,
       {
@@ -269,9 +249,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   it("rejects prev-chain mismatches (422 chain-head-state-mismatch): wrong prev and non-empty v1 prev", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // version 2's prev disagrees with the stored version 1's
-    // signed_bytes hash (the signature is valid — pinning that it is
-    // not crushed into an Ed25519 failure)
     const wrongPrev = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -283,9 +260,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
       "chain-head-state-mismatch",
     );
 
-    // A non-empty prev on version 1 (build the validly-signed shape
-    // via the low-level API — signValue refuses to sign a binding
-    // violation)
     const context = {
       suite: "maruhi/v1",
       projectId: testProjectId(projectId),
@@ -362,10 +336,8 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     expect(pulled.value.chainHeadSeq).toBe(headAtWrite.seq);
     expect(pulled.value.chainHeadHashHex).toBe(headAtWrite.hashHex);
     expect(pulled.value.prevValueSigHashHex).toBe("");
-    // The server-recomputed signed_bytes hash is not distributed (§12-2)
     expect("signedBytesHashHex" in pulled.value).toBe(false);
 
-    // Client-side verification (§6.3): verification at the expected coordinates against the fetched chain's history index
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -395,10 +367,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   it("keeps distributing a removed writer's stored value, verifiable at its in-tenure head", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Remove the writer (MEMBER). The stored value's writer info is
-    // distributed as of acceptance time (not re-derived from the
-    // current member set — verifiability of a removed writer's past
-    // values)
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
@@ -417,7 +385,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     if (pulled === undefined) throw new Error("missing pulled variable");
     expect(pulled.value.writerUserId).toBe(MEMBER);
 
-    // Even on the full chain after removal, verification passes because the declared head lies within the membership interval (§6.3-1/3)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -443,10 +410,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     });
     expect(result.ok).toBe(true);
 
-    // A new push by the removed writer (declaring a post-removal
-    // head) is rejected at the acceptance stage (the calling principal
-    // is not a current member → the 404 existence hiding takes
-    // precedence — §11-2)
     const rejected = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -457,24 +420,13 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   });
 
   it("rejects a re-added member declaring a head from their old tenure (422 chain-head-state-mismatch)", async () => {
-    // A principal that was removed and re-added with a different key
-    // declaring a head from the old membership interval fails even
-    // with a valid signature at "key bound at the declared head = key
-    // at acceptance" (§12-5 item 3). The server-API-level counterpart
-    // of the crypto vector key-from-other-tenure
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Snapshot the old-tenure (current) head's hash, then remove MEMBER
     const oldTenureHead = { ...fixture.head };
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
     });
-    // Re-add the same user_id (MEMBER) under a fresh key (reusing the
-    // old key or another member's key is rejected by §6.2 member-key
-    // uniqueness, so a newly generated key is used). MEMBER's
-    // acceptance-time bound key becomes the new key, and a declaration
-    // of an old-tenure head fails
     const newEncPair = await generateEncryptionKeyPair();
     const newSigPair = await generateSigningKeyPair();
     const rejoin = await signEntryAt({
@@ -499,16 +451,6 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     });
     expect(rejoined.status).toBe(200);
     fixture.head = { seq: rejoin.entry.seq, hashHex: rejoin.hash };
-    // MEMBER's acceptance-time bound key is the new key. The server
-    // verifies the signature with that key and uses MEMBER as the
-    // signed writer_user_id. The attacker signs with the new key yet
-    // declares a head from the old tenure (the signature is valid →
-    // the key bound at the head = old key ≠ the new key at acceptance,
-    // so it fails). Hand-build the context and sign with the new key.
-    // prev must be the stored v1's real signed-bytes hash (with a
-    // dummy, prev-hash-mismatch returns the same 422 reason and hides
-    // the tenure check's mutation). The tenure check (state at the
-    // head) precedes the prev check
     const context = {
       suite: "maruhi/v1" as const,
       projectId: testProjectId(projectId),

@@ -1,5 +1,3 @@
-// `maruhi device` (discipline: see commands/index.ts).
-
 import { hostname } from "node:os";
 
 import { ProjectIdSchema } from "@maruhi/core";
@@ -92,7 +90,6 @@ export const deviceRevokeConfig = {
     Argument.atLeast(1),
   ),
 };
-/** `maruhi device revoke`'s report (the per-project revoked FPs and the sweep — K4-7 / K4-8). */
 const reportDeviceRevoke = Effect.fn("commands-device.reportDeviceRevoke")(function* (
   summary: DeviceRevokeSummary,
 ): Effect.fn.Return<number, CliError, CliServices> {
@@ -105,7 +102,6 @@ const reportDeviceRevoke = Effect.fn("commands-device.reportDeviceRevoke")(funct
   return exitCode;
 });
 
-/** Reporting one project's revocation result (exit code: an append failure, a sweep failure, a rotate failure = 1). */
 function reportRevokedProject(
   project: ProjectRevokeOutcome,
 ): Effect.Effect<number, CliError, CliServices> {
@@ -120,7 +116,6 @@ function reportRevokedProject(
       `${label}: revoked ${project.revoked.length === 0 ? "nothing (already revoked)" : project.revoked.join(", ")}`,
     );
     if (project.sweepFailed !== null) {
-      // The revocation is on the chain. What remains is only fulfilling the duty (the always-on warning keeps displaying it)
       yield* logWarning(
         `${label}: the rotation sweep after the revocation failed — ${project.sweepFailed}. The revocation itself is on the chain; the mandate stays listed as unconverged until \`maruhi env rotate <environment> --new-epoch --reason <text>\` is run for the affected environments`,
       );

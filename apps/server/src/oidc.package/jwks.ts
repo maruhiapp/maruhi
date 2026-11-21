@@ -1,38 +1,3 @@
-// OIDC discovery + JWKS fetch with a TTL cache (AUTH_SPEC §14-1).
-//
-// The fetch target is **only issuers listed in the supported-issuer list
-// (static configuration)**. This ordering matters for DoS: the lease endpoint
-// is unauthenticated (§14-1), so letting an arbitrary issuer string trigger an
-// outbound fetch would be an amplification attack. The issuer allowlist check
-// runs before any fetch (the check order in verifier.ts).
-//
-// **stale-while-revalidate**: even when a refresh fails, if a JWKS was fetched
-// within the grace window (STALE_GRACE_MS) verification continues with it.
-// This does not contradict fail-closed (§14-1) — signature verification is
-// always performed, and rejection happens only when no key is available at
-// all. Two reasons for this design:
-//   1. A transient issuer / network failure must not directly stop every CI
-//      job of every project (against a 15-minute TTL, outages can run from
-//      minutes to hours)
-//   2. **An attacker can trigger a forced refresh via an unknown kid** (the kid
-//      is read before signature verification). If a failed fetch discarded the
-//      cache, an unauthenticated attacker could just throw a nonexistent kid to
-//      drop the good keys inside their TTL and force 503s on subsequent
-//      legitimate tokens. Keep the last successful JWKS and build so that a
-//      failure **never** corrupts the existing cache
-// The grace window is also "the upper bound between an issuer revoking a key
-// and us stopping accepting it", so it is an explicit constant trading off
-// availability against revocation lag.
-//
-// Reject only when no key is available at all, and answer 503
-// `oidc-jwks-unavailable` rather than 401 (see the reason code in
-// errors.package/lease.ts — a transient failure must not be reported as "bad
-// credentials").
-//
-// The cache is in-isolate memory. It lives in neither DO storage nor D1: a
-// JWKS is public information, and persisting it only saves one round trip on
-// cold start — not worth the management cost of stored data.
-
 import { egressHttpClientLayer } from "@maruhi/core";
 import {
   Clock,
@@ -48,33 +13,12 @@ import {
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Jwk } from "effect/jose";
 
-/** One JWKS entry, as fetched (the raw JSON object). */
 type JwkRecord = Readonly<Record<string, unknown>>;
 
-/** Whether the JWK's declared `alg` (when it declares one) names `allowed`. */
 const declaresAlg = (jwk: JwkRecord, allowed: "RS256" | "ES256"): boolean =>
   jwk["alg"] === undefined || jwk["alg"] === allowed;
 
-/**
- * Derives the verification algorithm from the JWK itself — **a design
- * that structurally closes off alg confusion**: the algorithm a key
- * may verify is always decided from the JWK side's kty / crv, and the
- * token header's `alg` is used only for a match check against the
- * expectation derived from them (verifier.ts). An implementation that
- * branches on the header's `alg` lets an attacker-chosen value pick
- * the verification path (`none`, substitution to HMAC); here the
- * branch input is only the server-fetched JWKS, so that path does not
- * exist.
- *
- * The allowed algorithms are RS256 / ES256 only (§14-1). Symmetric-key
- * algs and `none` have no corresponding JWK-side kty and are
- * unreachable. Returns null when the key is not one this deployment
- * can use — an unusable key is skipped during selection rather than
- * making the whole JWKS unusable (issuers may publish keys for
- * algorithms we do not accept).
- */
 function algorithmForJwk(jwk: JwkRecord): "RS256" | "ES256" | null {
-  // `use` is optional, but when declared it must be "sig"
   if (jwk["use"] !== undefined && jwk["use"] !== "sig") {
     return null;
   }
@@ -87,82 +31,27 @@ function algorithmForJwk(jwk: JwkRecord): "RS256" | "ES256" | null {
   return null;
 }
 
-/** TTL of a discovery document (jwks_uri is effectively immutable, so it is long). */
 const DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;
-/** TTL of a JWKS. */
 const JWKS_TTL_MS = 15 * 60 * 1000;
-/**
- * Cooldown for a forced refresh triggered by an unknown kid. Lets the "within
- * TTL but stale JWKS" right after a key rotation catch up in one round trip,
- * while requests listing nonexistent kids cannot keep hammering the issuer.
- */
 const FORCED_REFRESH_COOLDOWN_MS = 60 * 1000;
 
-/**
- * Interval after a **failed** refresh before the next refresh is attempted.
- * While an issuer is down, `fetchedAtMs` stays past the TTL, so without this,
- * for the rest of the grace window (just under 6 hours at most) "one
- * unauthenticated request = one outbound fetch to the issuer (5-second timeout
- * each)" would persist. The in-flight records fold only **concurrent**
- * requests; sequential requests are not folded. Amplification bites exactly
- * when the issuer is already weakened — the shape we least want.
- */
 const FAILED_REFRESH_COOLDOWN_MS = 60 * 1000;
 
-/**
- * The upper bound for how long the last successful JWKS may keep being used
- * after a refresh failure. It trades off availability (do not stop CI during
- * an issuer outage) against revocation lag (the delay between an issuer
- * revoking a key and us stopping accepting it); 6 hours covers realistic
- * outages (minutes to hours) while keeping revocation lag under a day.
- */
 const STALE_GRACE_MS = 6 * 60 * 60 * 1000;
 
-/**
- * Size limit of a fetched document (in **bytes**). Cut off by measured bytes
- * while reading the stream — `schemaBodyJson` buffers the whole body, so only
- * by stopping the stream at the threshold does this stay "cutting off memory
- * consumption by an oversized response".
- */
 const MAX_DOCUMENT_BYTES = 256 * 1024;
 
-/**
- * Timeout of one fetch. This is an outbound fetch triggered from the
- * unauthenticated path (leases); do not let a request hang on an issuer that
- * never responds (same value as jose's `timeoutDuration` default).
- */
 const FETCH_TIMEOUT_MS = 5_000;
 
-/**
- * Any failure that leaves no usable verification key (transport, non-OK
- * status, decode, oversize body, timeout, post-failure cooldown). Callers
- * map it to 503 `oidc-jwks-unavailable` — the same "transient, not 401"
- * shape the old `"jwks-unavailable"` literal carried; `reason` is
- * diagnostic only.
- */
 class JwksUnavailableError extends Data.TaggedError("JwksUnavailable")<{
   readonly reason: "fetch" | "status" | "decode" | "too-large" | "timeout" | "cooldown";
 }> {}
 
-/**
- * A resolved verification key: the JWK imported through effect/jose.
- * The key carries the algorithm {@link algorithmForJwk} derived from
- * the JWK side, so the verifier's alg match check and the signature
- * verification both read it from the key, never from the token.
- */
 export interface ResolvedVerificationKey {
   readonly key: Jwk.PublicKey;
 }
 
 export interface JwksCacheShape {
-  /**
-   * Resolve the verification key for `kid` from the issuer's JWKS. An unknown
-   * kid triggers one forced refresh within the cooldown before the verdict
-   * (key-rotation follow-up). Returns null if not found (= 401 unknown-key),
-   * or fails with `JwksUnavailableError` when no usable key can be obtained at
-   * all (= 503; the reason is never read, only mapped to a 503, so it takes
-   * the same single-shape role as ResealFailure in server-key.ts).
-   */
   readonly resolveKey: (
     issuer: string,
     kid: string | null,
@@ -180,14 +69,6 @@ interface CachedDiscovery {
   readonly fetchedAtMs: number;
 }
 
-/**
- * The whole cache state lives in one `SynchronizedRef` — the last successful
- * values, the failure timestamps, and the in-flight `Deferred`s that fold
- * concurrent same-issuer requests into one fetch (single-flight). Keeping
- * the last-good values and the in-flight markers in separate fields is what
- * keeps a failed fetch from corrupting an existing good value (the second
- * reason in the header comment).
- */
 interface CacheState {
   readonly lastGoodDiscovery: Readonly<Record<string, CachedDiscovery>>;
   readonly lastGoodJwks: Readonly<Record<string, CachedJwks>>;
@@ -208,57 +89,25 @@ const emptyCacheState: CacheState = {
   discoveryInFlight: {},
 };
 
-/** Drop one key from an immutable record copy. */
 function dropKey<T>(record: Readonly<Record<string, T>>, key: string): Readonly<Record<string, T>> {
   const next = { ...record };
   delete next[key];
   return next;
 }
 
-/** The discovery document's fields the pin checks read (issuer + jwks_uri). */
 const DiscoveryDocument = Schema.Struct({
   issuer: Schema.String,
   jwks_uri: Schema.String,
 });
 
-/**
- * The JWKS document. Every entry must be a JSON object — the schema
- * rejects a non-object entry wholesale (503), the verdict the
- * pre-Effect code reached when `algorithmForJwk` dereferenced `null`.
- * A Record keeps every declared JWK field (x/y/key_ops are consumed by
- * the effect/jose import in resolveKey, not just the ones we
- * pattern-match on); a key whose fields we cannot use is skipped later
- * by selectJwk (issuers may publish algorithms we do not accept).
- */
 const JwksDocument = Schema.Struct({
   keys: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-/**
- * The `HttpClient` layer the package's fetches run on — the repo's shared
- * egress client (trace propagation disabled), with `redirect: "manual"`
- * fixed for every request: **never follow redirects** — the check pinning
- * `jwks_uri` to the issuer's origin (jwksUriOf) is an explicit security
- * control, and following a 302 to another origin would defeat the
- * pinning. A 3xx is rejected by the status check in fetchJson.
- */
 const defaultHttpClientLayer = egressHttpClientLayer({ redirect: "manual" });
 
-/**
- * Decode with a fatal UTF-8 decoder: invalid bytes must be a decode
- * failure (503), not silently repaired into U+FFFD by the non-fatal
- * decoder `schemaBodyJson` uses.
- */
 const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
-/**
- * GET `url` and decode the JSON body with `schema` via
- * `HttpClientResponse.schemaBodyJson` (typed decoding — no `as` casts).
- * The byte cap reads the body as a stream and stops at MAX_DOCUMENT_BYTES
- * before wrapping it back into a `Response` — the same early-abort bound
- * the pre-Effect reader loop gave. The FETCH_TIMEOUT_MS timeout covers the
- * request **and** the body read, matching the old `AbortSignal.timeout`.
- */
 const fetchJson = Effect.fn("jwks.fetchJson")(function* <S extends Schema.Constraint>(
   url: string,
   schema: S,
@@ -268,10 +117,6 @@ const fetchJson = Effect.fn("jwks.fetchJson")(function* <S extends Schema.Constr
   HttpClient.HttpClient | S["DecodingServices"]
 > {
   const client = yield* HttpClient.HttpClient;
-  // Inside this region every error is foreign — transport, a hung issuer,
-  // schema decode — so the pipeline below normalizes them wholesale. Our
-  // own verdicts stay in the success channel as strings and become typed
-  // errors only outside it (no instanceof discrimination needed).
   const outcome = yield* Effect.gen(function* () {
     const response = yield* client.execute(
       HttpClientRequest.get(url, { headers: { accept: "application/json" } }),
@@ -297,7 +142,6 @@ const fetchJson = Effect.fn("jwks.fetchJson")(function* <S extends Schema.Constr
       merged.set(chunk, offset);
       offset += chunk.length;
     }
-    // Reject invalid UTF-8 before re-wrapping — see utf8FatalDecoder
     yield* Effect.try({
       try: () => utf8FatalDecoder.decode(merged),
       catch: () => new JwksUnavailableError({ reason: "decode" }),
@@ -309,9 +153,6 @@ const fetchJson = Effect.fn("jwks.fetchJson")(function* <S extends Schema.Constr
     return { document: yield* HttpClientResponse.schemaBodyJson(schema)(bounded) } as const;
   }).pipe(
     Effect.timeout(FETCH_TIMEOUT_MS),
-    // Normalize each foreign error to its own reason — no flattening:
-    // an error type the pipeline grows later surfaces as a type error
-    // here instead of being silently remapped
     Effect.catchTags({
       TimeoutError: () => Effect.fail(new JwksUnavailableError({ reason: "timeout" })),
       SchemaError: () => Effect.fail(new JwksUnavailableError({ reason: "decode" })),
@@ -324,15 +165,6 @@ const fetchJson = Effect.fn("jwks.fetchJson")(function* <S extends Schema.Constr
   return outcome.document;
 });
 
-/**
- * Extract `jwks_uri` from a decoded discovery document. **Verify the
- * issuer's self-declaration**: the `issuer` field must equal the requested
- * issuer, and `jwks_uri` must be https on the same origin as that issuer.
- * The issuer itself is trustworthy because it comes from the static
- * allowlist, but a URL returned by it sits in a position where the fetch
- * target could be swapped arbitrarily, so pin the keys' provenance to the
- * issuer's origin.
- */
 function jwksUriOf(document: typeof DiscoveryDocument.Type, issuer: string): string | null {
   if (document.issuer !== issuer) {
     return null;
@@ -347,15 +179,11 @@ function jwksUriOf(document: typeof DiscoveryDocument.Type, issuer: string): str
   }
 }
 
-/** Pick the usable key matching `kid` (a missing kid is allowed only when there is exactly one key). */
 function selectJwk(keys: readonly JwkRecord[], kid: string | null): JwkRecord | null {
   const usable = keys.filter((jwk) => algorithmForJwk(jwk) !== null);
   if (kid !== null) {
     return usable.find((jwk) => jwk["kid"] === kid) ?? null;
   }
-  // A token without a kid is accepted only when the candidate is uniquely
-  // determined. Trying every key would make verification "any key passes" and
-  // loosen key identification during rotation
   return usable.length === 1 ? (usable[0] ?? null) : null;
 }
 
@@ -373,11 +201,6 @@ const loadDiscovery = Effect.fn("jwks.loadDiscovery")(function* (
   return { jwksUri, fetchedAtMs: yield* Clock.currentTimeMillis };
 });
 
-/**
- * Whether the cached JWKS can be used as-is. Even inside the TTL, an unknown
- * kid triggers exactly one re-fetch under a cooldown (following a key
- * rotation right after it happens — the §14-1 JWKS cache strategy).
- */
 const isUsable = (cached: CachedJwks, kid: string | null, nowMs: number): boolean => {
   if (nowMs - cached.fetchedAtMs >= JWKS_TTL_MS) {
     return false;
@@ -388,11 +211,6 @@ const isUsable = (cached: CachedJwks, kid: string | null, nowMs: number): boolea
   return nowMs - cached.forcedRefreshAtMs < FORCED_REFRESH_COOLDOWN_MS;
 };
 
-/**
- * The forcedRefreshAtMs to seed a refresh with. A re-fetch inside the TTL
- * means a forced refresh triggered by an unknown kid, so record that time as
- * the cooldown's origin (a normal TTL-expired refresh leaves it unchanged).
- */
 const forcedRefreshStamp = (cached: CachedJwks | undefined, nowMs: number): number => {
   if (cached === undefined) {
     return 0;
@@ -400,17 +218,9 @@ const forcedRefreshStamp = (cached: CachedJwks | undefined, nowMs: number): numb
   return nowMs - cached.fetchedAtMs < JWKS_TTL_MS ? nowMs : cached.forcedRefreshAtMs;
 };
 
-/** Whether a good value is inside the grace window (the stale-while-revalidate acceptance condition). */
 const isWithinGrace = (cached: CachedJwks | undefined, nowMs: number): cached is CachedJwks =>
   cached !== undefined && nowMs - cached.fetchedAtMs < STALE_GRACE_MS;
 
-/**
- * One keyed in-flight record's slice of `CacheState`: which record the
- * single-flight `Deferred`s live in, and where a successful load lands.
- * Discovery and JWKS share the same register-or-join machinery through
- * these accessors (`Deferred` is invariant in its value type, so the slot
- * picks the concrete record rather than the record being generic).
- */
 interface InFlightSlot<A> {
   readonly inFlightOf: (
     state: CacheState,
@@ -431,32 +241,9 @@ const jwksSlot: InFlightSlot<CachedJwks> = {
   setInFlight: (state, inFlight) => ({ ...state, jwksInFlight: inFlight }),
 };
 
-/**
- * The JWKS cache (per isolate). Built once at worker startup (buildServices —
- * index.ts). The `SynchronizedRef`/`Deferred`s are `makeUnsafe` so the
- * constructor stays synchronous; concurrent requests share the in-flight
- * `Deferred`, so a cold-start rush does not hit the same issuer
- * simultaneously.
- */
 export function makeJwksCache(): JwksCacheShape {
   const state = SynchronizedRef.makeUnsafe(emptyCacheState);
 
-  /**
-   * Single-flight over `state`: join the in-flight `Deferred` for `issuer`,
-   * or — as the first arrival — run `load` on a detached fiber exactly
-   * once. Detached like the old shared Promise: the load must not die with
-   * the requester that happened to start it — every joiner awaits the same
-   * Deferred, and the finalization inside always completes it. The whole
-   * register-and-fork step is uninterruptible so no joiner can strand a
-   * Deferred that never completes.
-   *
-   * `settle` is the state transition the winner commits when `load`
-   * finishes. It runs inside the detached load's own
-   * `SynchronizedRef.update`, atomically with the in-flight drop and
-   * before `Deferred.done` — all post-load bookkeeping (a stored value,
-   * the failure cooldown stamp, the held-stale stamp) lands there, so it
-   * cannot be lost by interrupting every waiting caller.
-   */
   const singleFlight = <A>(
     issuer: string,
     slot: InFlightSlot<A>,
@@ -492,15 +279,7 @@ export function makeJwksCache(): JwksCacheShape {
           yield* Effect.forkDetach(
             Effect.uninterruptible(
               Effect.gen(function* () {
-                // Uninterruptible + an exit-materialized load: like the old
-                // shared Promise, the fetch cannot be killed mid-flight, and
-                // on ANY exit (success, typed failure, defect) the in-flight
-                // entry drops and the Deferred settles — a dead in-flight
-                // entry would hang every later joiner
                 const exit = yield* Effect.exit(
-                  // A defect must still read as "jwks unavailable" for
-                  // joiners — the old tryPromise catch-all mapped every
-                  // rejection to the same 503
                   load.pipe(
                     Effect.catchDefect(() =>
                       Effect.fail(new JwksUnavailableError({ reason: "fetch" })),
@@ -520,12 +299,6 @@ export function makeJwksCache(): JwksCacheShape {
       }),
     );
 
-  /**
-   * discovery is used only to resolve `jwks_uri`, and that value is
-   * effectively immutable. If a fetch fails but a last-successful value
-   * exists, keep using it (the freshness bound is held by the JWKS-side grace
-   * window, so no separate window lives here).
-   */
   const discoveryFor = (
     issuer: string,
   ): Effect.Effect<CachedDiscovery, JwksUnavailableError, HttpClient.HttpClient> =>
@@ -580,10 +353,6 @@ export function makeJwksCache(): JwksCacheShape {
       if (cached !== undefined && isUsable(cached, kid, nowMs)) {
         return cached;
       }
-      // If the latest refresh failed, do not re-hit the issuer until the
-      // cooldown ends. In the "TTL expired + issuer down" state `isUsable`
-      // returns false at its first branch (the TTL) and never reaches the
-      // forced-refresh cooldown, so the failure side needs its own interval
       const failedAt = snapshot.lastFailureAtMs[issuer];
       if (failedAt !== undefined && nowMs - failedAt < FAILED_REFRESH_COOLDOWN_MS) {
         if (isWithinGrace(cached, nowMs)) {
@@ -600,20 +369,12 @@ export function makeJwksCache(): JwksCacheShape {
         (current, exit, settledAtMs) => {
           const dropped = { ...current, jwksInFlight: dropKey(current.jwksInFlight, issuer) };
           if (Exit.isSuccess(exit)) {
-            // The good value updates **only on success**; the failure
-            // cooldown is cleared by the next success
             return {
               ...dropped,
               lastGoodJwks: { ...current.lastGoodJwks, [issuer]: exit.value },
               lastFailureAtMs: dropKey(current.lastFailureAtMs, issuer),
             };
           }
-          // Record the failure as a cooldown origin — unconditionally,
-          // even when every caller was interrupted (that is why it runs
-          // in the load's own settle, not in caller continuations). A
-          // held stale set inside the grace window keeps the seed
-          // forcedRefreshAtMs, so hammering unknown kids inside the TTL
-          // stays one fetch per cooldown, not one per request
           const after = current.lastGoodJwks[issuer];
           return {
             ...dropped,
@@ -633,16 +394,8 @@ export function makeJwksCache(): JwksCacheShape {
         onSuccess: Effect.succeed,
         onFailure: (error) =>
           Effect.gen(function* () {
-            // The failure stamp and the held-stale stamp already landed
-            // atomically inside the load's own settle — this
-            // continuation only reads the final verdict, so an
-            // interrupted caller cannot strand the bookkeeping
             const settledAtMs = yield* Clock.currentTimeMillis;
             const after = (yield* SynchronizedRef.get(state)).lastGoodJwks[issuer];
-            // stale-while-revalidate: if a good value is inside the grace
-            // window, keep verifying with it. Signature verification
-            // itself always runs (rejection only happens when no key is
-            // available at all)
             if (!isWithinGrace(after, settledAtMs)) {
               return yield* Effect.fail(error);
             }
@@ -662,12 +415,6 @@ export function makeJwksCache(): JwksCacheShape {
       if (algorithm === null) {
         return null;
       }
-      // The import is effect/jose's: it re-checks the JWK's declared
-      // metadata (`use` / `alg` / `key_ops`) against the algorithm the
-      // JWK side determined, refuses JWKs carrying private members,
-      // and validates the key material. A key it refuses is skipped
-      // (null), the verdict the old WebCrypto import's failure
-      // produced
       const publicJwk = Schema.decodeUnknownOption(Jwk.PublicJwk)(jwk);
       if (Option.isNone(publicJwk)) {
         return null;

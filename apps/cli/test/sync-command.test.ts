@@ -1,16 +1,3 @@
-// Tests for `maruhi sync plan` / `sync apply`: repository config →
-// reading the receipts environment → verifying the sync source (plan
-// never decrypts) → driving the vendor CLIs (values on stdin only) →
-// writing the receipts (a signed push per §4.1).
-//
-// Properties pinned down: values never appear on argv / stdout / stderr
-// / error text, the stdin format (wrangler = a single JSON, Vercel = the
-// value itself), the telemetry-off env vars, production defaults to plan
-// only (`--yes`), only the receipt's diff is written, a failure leaves
-// only what arrived on the receipt, blocked values send nothing, and
-// config validation. The vendor CLIs are fake ProcessRunners (recording
-// argv / cwd / env / stdin).
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -105,7 +92,6 @@ afterEach(async () => {
   servers = [];
 });
 
-/** One variable on the sync source (statement + value; takes version and required). */
 async function sourceVariable(input: {
   readonly variableId: string;
   readonly name: string;
@@ -138,7 +124,6 @@ async function sourceVariable(input: {
   return { variableId: input.variableId, statement, value };
 }
 
-/** An existing receipt placed on the receipts environment (the previous sync's result). */
 async function storedReceipt(input: {
   readonly target: string;
   readonly preset: "vercel" | "cloudflare-workers" | "github-actions";
@@ -182,7 +167,6 @@ interface Fixture {
   readonly configPath: string;
 }
 
-/** The default config (a Vercel production target `web` and a Workers staging target `worker`). */
 function defaultConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     version: 1,
@@ -255,7 +239,6 @@ function allOutput(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-/** The value (and each line of a multi-line value) appears nowhere on stdout / stderr / argv. */
 function expectNoSecretLeak(env: TestEnv): void {
   const shown = [
     allOutput(env),
@@ -307,12 +290,8 @@ describe("maruhi sync plan", () => {
     expect(out).toContain("+ ALPHA\tversion 3 (new)");
     expect(out).toContain("+ BETA\tversion 1 (new)");
     expect(fixture.env.execCalls).toEqual([]);
-    // Guides that production's default is plan only (apply needs --yes)
     expect(fixture.env.errors.join("\n")).toContain("`maruhi sync apply web` needs --yes");
     expectNoSecretLeak(fixture.env);
-    // Never calls the variable-write API (plan only reads; the
-    // head-declaration PUT is part of the earlier sync and touches
-    // neither values nor metadata)
     const server = servers[0] as MockServer;
     expect(
       server.requests.filter(
@@ -465,8 +444,6 @@ describe("maruhi sync plan", () => {
         `maruhi: Cannot read the sync config ${join(missing.configDir, "nope.json")}. Create it with \`maruhi sync init\` (see the Deploy targets page in the docs), or pass --config <file>`,
       ]),
     );
-    // A disagreement between the config's project and the flag is a
-    // usage error (2). It never hits the network
     const mismatched = await startFixture({
       config: defaultConfig({ project: "1".repeat(64) }),
     });
@@ -521,12 +498,9 @@ describe("maruhi sync apply", () => {
     expect(calls.map(stdinText)).toEqual([ALPHA_VALUE, BETA_VALUE]);
     for (const call of calls) {
       expect(call.extraEnv).toEqual({ VERCEL_TELEMETRY_DISABLED: "1" });
-      // cwd is the config file's location (no cwd specified)
       expect(call.cwd).toBe(fixture.configDir);
     }
     expectNoSecretLeak(fixture.env);
-    // The receipt = the name → version mapping (no value-derived
-    // digest). One creation push
     expect(fixture.receipts.writes.map((write) => write.kind)).toEqual(["create"]);
     const receipt = await decryptReceipt(fixture, "web");
     expect(receipt).toMatchObject({
@@ -541,12 +515,10 @@ describe("maruhi sync apply", () => {
       "Applied to target web: 2 variables written, 0 deleted. Receipt saved as version 1 of sync-receipt:web in environment sync-receipts",
     );
 
-    // Second run: no diff → sends nothing, writes no receipt
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(0);
     expect(fixture.env.execCalls).toHaveLength(2);
     expect(fixture.receipts.writes).toHaveLength(1);
     expect(fixture.env.logs.join("\n")).toContain("Nothing to apply");
-    // plan too shows everything unchanged
     expect(await sync(fixture, "plan", "web")).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain("= ALPHA\tversion 3 (unchanged)");
   });
@@ -594,7 +566,6 @@ describe("maruhi sync apply", () => {
       ["vercel", "env", "rm", "OLD_NAME", "production", "--yes", "--non-interactive"],
     ]);
     expect(vercel.env.execCalls.map(stdinText)).toEqual([ALPHA_VALUE, ""]);
-    // A new version on the existing receipt (not a creation)
     expect(vercel.receipts.writes.map((write) => write.kind)).toEqual(["version"]);
     expect(await decryptReceipt(vercel, "web")).toMatchObject({
       variables: { ALPHA: 3, BETA: 1 },
@@ -662,8 +633,6 @@ describe("maruhi sync apply", () => {
     expect(errors).toContain("  vercel: Error: rejected [redacted] and line [redacted] here");
     expect(errors).toContain("  vercel: second line");
     expectNoSecretLeak(fixture.env);
-    // Only the successful ALPHA lands on the receipt → the next plan
-    // shows BETA alone
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
@@ -692,14 +661,8 @@ describe("maruhi sync apply", () => {
     expect(errors).toContain(
       "reset the receipt with `maruhi var rm sync-receipt:web --env sync-receipts` and apply again",
     );
-    // It stops at the first deletion so the second is never attempted —
-    // rebuilding the receipt would forget it, so it's named
     expect(errors).toContain("remove these at the target yourself first: GONE_TOO");
-    // The unattempted deletion was never invoked (stopped at the
-    // first)
     expect(fixture.env.execCalls.filter((call) => call.command[2] === "rm")).toHaveLength(1);
-    // The unremovable name stays on the receipt (don't silently treat
-    // it as gone)
     expect(fixture.receipts.writes).toEqual([]);
   });
 
@@ -736,7 +699,6 @@ describe("maruhi sync apply", () => {
     );
     expect(fixture.env.execCalls).toEqual([]);
     expect(fixture.receipts.writes).toEqual([]);
-    // The same value can be carried to wrangler (JSON)
     const workers = await startFixture({
       sourceVariables: [
         await sourceVariable({
@@ -765,7 +727,6 @@ describe("maruhi sync apply", () => {
       },
     });
     const fixture = await startFixture({ config });
-    // Repository secrets (no Environment) count as production
     expect(await sync(fixture, "apply", "actions")).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain(
       "Target actions is a production target, so apply needs an explicit --yes",
@@ -787,8 +748,6 @@ describe("maruhi sync apply", () => {
     expect(calls[0]?.cwd).toBe(fixture.configDir);
     expectNoSecretLeak(fixture.env);
     expect(fixture.env.logs.join("\n")).toContain(`Running gh in ${fixture.configDir}`);
-    // The header line names the sync destination via the preset's
-    // describeOptions (repo / environment / app)
     expect(fixture.env.logs.join("\n")).toContain(
       "Sync plan for target actions (environment prod -> github-actions acme/app dependabot via exec)",
     );
@@ -797,8 +756,6 @@ describe("maruhi sync apply", () => {
       variables: { ALPHA: 3 },
     });
 
-    // Names dropped from the selection go through `gh secret delete`
-    // (deleted by name — never listed)
     const deleting = await startFixture({
       config,
       receipts: [
@@ -818,8 +775,6 @@ describe("maruhi sync apply", () => {
   });
 
   it("GitHub Actions: a trailing-newline value (even multi-line) and a lowercase name are stopped before sending (Nothing was sent)", async () => {
-    // The default BETA is multi-line with a trailing newline (carriable
-    // to Vercel but not to gh)
     const fixture = await startFixture({
       config: defaultConfig({
         targets: {
@@ -861,8 +816,6 @@ describe("maruhi sync apply", () => {
         },
       }),
     });
-    // The name rules need no plaintext, so they become ! at plan time
-    // (apply's check is a defense line)
     expect(await sync(lower, "plan", "actions")).toBe(1);
     expect(lower.env.logs.join("\n")).toContain(
       "! apiKey\tversion 1 (cannot be synced: a name the gh CLI cannot store as is: GitHub stores secret names in uppercase and accepts only uppercase letters, digits, and _, not starting with a digit or with GITHUB_)",
@@ -875,30 +828,18 @@ describe("maruhi sync apply", () => {
   });
 
   it("a vendor CLI that can't launch is a failure (it doesn't chase it). When the first launch fails = nothing arrived, no receipt is written", async () => {
-    // An exit-127 equivalent (the shape the shell returns for a missing
-    // command) is also treated as a failure
     const fixture = await startFixture({});
     fixture.env.setExecHandler(() => ({ exitCode: 127, output: "vercel: command not found\n" }));
     expect(await sync(fixture, "apply", "web", "--yes")).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("vercel exited with code 127");
-    // On a first-run failure where nothing arrived, don't write an
-    // empty receipt (don't waste a version)
     expect(fixture.receipts.writes).toEqual([]);
 
-    // A launch failure itself (a typed error — the execStartFailure
-    // shape in live.ts; the production wording is pinned in
-    // live-exec.test.ts) becomes that invocation's failure and likewise
-    // writes no receipt
     const missing = await startFixture({});
     missing.env.setExecHandler(() =>
       cliError("Cannot start vercel (ENOENT): is it installed and on PATH"),
     );
     expect(await sync(missing, "apply", "web", "--yes")).toBe(1);
     const errors = missing.env.errors.join("\n");
-    // The launch-failure reason (maruhi's own sentence) continues the
-    // body. A process that never ran has no output, so it isn't phrased
-    // in the vendor-output slot (`  vercel: …`) or as 'Its output is
-    // shown above'
     expect(errors).toContain(
       "maruhi: vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
@@ -922,8 +863,6 @@ describe("maruhi sync apply", () => {
       "maruhi: vercel could not be started while writing BETA (delivered before that: 1 variable written, 0 deleted). Cannot start vercel (ENOENT)",
     );
     expectNoSecretLeak(fixture.env);
-    // Only the successful ALPHA lands on the receipt → the next plan
-    // shows BETA alone
     expect(await decryptReceipt(fixture, "web")).toMatchObject({ variables: { ALPHA: 3 } });
     expect(await sync(fixture, "plan", "web")).toBe(0);
     const out = fixture.env.logs.join("\n");
@@ -960,9 +899,6 @@ describe("maruhi sync apply", () => {
   });
 
   it("a receipt written by a different preset is refused (switching presets = a different destination; names the rebuild)", async () => {
-    // The shape where the vercel-era receipt still has names 'as
-    // delivered' that are illegal under gh's rules: it stops earlier as
-    // a receipt mix-up, not as a name-rule error
     const fixture = await startFixture({
       sourceVariables: [
         await sourceVariable({ variableId: "vl", name: "apiKey", version: 1, plaintext: "k" }),

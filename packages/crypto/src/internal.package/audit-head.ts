@@ -1,26 +1,3 @@
-// AUDIT_SPEC §5.1: the normalized form of the audit-head cumulative hash.
-//
-//   row_digest = lower_hex(SHA-256(LP(seq, row_id, server_ts, client_ts, event,
-//                                     actor_type, actor_user_id,
-//                                     actor_key_fingerprint, actor_api_token_id,
-//                                     target_user_id, target_key_fingerprint,
-//                                     environment_id, variable_id, epoch,
-//                                     version, chain_seq, payload)))
-//   h_n = lower_hex(SHA-256(LP("<suite>/audit-head", h_{n-1}, seq, row_digest)))
-//     (h_0 = the empty string. h_{n-1} / row_digest go onto the LP field as
-//      lowercase hex **strings** — the uniform representation pinned by audit-head.json)
-//
-// - NULL-allowed columns (the 13 columns other than seq / server_ts / event /
-//   actor_type) are tagged byte strings: NULL = the single byte 0x00;
-//   non-NULL = 0x01 + the value's bytes
-//   (NULL and the empty string must not share a preimage — §5.1)
-// - Numbers use the §2.1 base-10 stringification. payload uses the stored
-//   TEXT's bytes as-is (no JSON normalization — §5.1)
-// - The producing side is the project DO (acceptance verification and
-//   GET /audit-head — AUTH_SPEC §16-2); the verifying side is the admin's
-//   cross-check (AUDIT_SPEC §6 — the follow-up CLI tool). Both share this
-//   single implementation. Test vectors: test-vectors/audit-head.json
-
 import { concatBytes, encodeHex, utf8Encode } from "./bytes.ts";
 import { encodeLengthPrefixed, type LengthPrefixedField } from "./encoding.ts";
 import type { CryptoResult } from "./errors.ts";
@@ -29,13 +6,6 @@ import { invalidInput, isLowercaseHexOfLength } from "./validate.ts";
 
 const SHA256_HEX_LENGTH = 32 * 2;
 
-/**
- * One audit-event row as stored by the project DO (AUDIT_SPEC §5.1 — the
- * fixed 17-column enumeration). `null` means the stored column is NULL,
- * which is digested distinctly from the empty string (tagged bytes).
- * `payloadText` is the stored TEXT exactly as persisted (no JSON
- * re-normalization).
- */
 export interface AuditHeadRow {
   readonly seq: number;
   readonly rowId: string | null;
@@ -60,7 +30,6 @@ function isCountingNumber(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
-/** A tagged byte string (NULL = 0x00 / non-NULL = 0x01 + the value's bytes — §5.1). */
 function taggedField(value: string | null): Uint8Array {
   if (value === null) {
     return Uint8Array.of(0x00);
@@ -78,10 +47,6 @@ function taggedNumberField(value: number | null, field: string): CryptoResult<Ui
   return { ok: true, value: taggedField(String(value)) };
 }
 
-/**
- * Computes the canonical digest of one audit row (AUDIT_SPEC §5.1). Rejects
- * non-safe-integer numeric inputs (the §2.1 numeric bounds — fail-closed).
- */
 export async function computeAuditRowDigest(row: AuditHeadRow): Promise<CryptoResult<string>> {
   if (!isCountingNumber(row.seq) || row.seq < 1) {
     return invalidInput("seq");
@@ -127,12 +92,6 @@ export async function computeAuditRowDigest(row: AuditHeadRow): Promise<CryptoRe
   return { ok: true, value: encodeHex(await sha256(encodeLengthPrefixed(fields))) };
 }
 
-/**
- * Advances the cumulative audit-head hash by one row (AUDIT_SPEC §5.1):
- * `h_n = lower_hex(SHA-256(LP("<suite>/audit-head", h_{n-1}, seq,
- * row_digest)))`. `prevHeadHashHex` is the empty string for the first row
- * (h_0), otherwise the previous 64-char lowercase-hex head.
- */
 export async function computeAuditHeadHash(
   suite: string,
   prevHeadHashHex: string,

@@ -1,13 +1,3 @@
-// Unit tests of strict acceptance (AUTH_SPEC §12-10 (1)).
-//
-// Since Effect rc.113, a schema AST's parseOptions is not read by the
-// parser. strict is a wrapper around the payload schema, and
-// HttpApiBuilder decodes Schema.Union([payload]) with no options. An
-// endpoint's HttpApi.ParseOptions is not used (strict-encoding an error
-// response becomes HTTP 500).
-// The 400 rejection on the acceptance path (a real workerd
-// environment) is covered by apps/server/test/strict-payload.test.ts
-
 import { Result, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -21,7 +11,6 @@ import {
 
 const payload = Schema.Struct({ nested: Schema.Struct({ a: Schema.String }) });
 
-/** The shape in which HttpApiBuilder assembles the payload decoder (an options-less Union). */
 const decodeAsBuilder = (schema: Schema.Top, input: unknown) =>
   Schema.decodeUnknownResult(
     Schema.Union([schema]) as unknown as Schema.ConstraintDecoder<unknown>,
@@ -78,7 +67,6 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("covers every §12-10 (1) implemented surface", () => {
-    // Regression protection for the list (including §16-1 head attestation = membership.attest)
     expect(SECURITY_CRITICAL_PAYLOAD_ENDPOINTS).toEqual([
       ["membership", "init"],
       ["membership", "append"],
@@ -89,17 +77,14 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["environments", "remove"],
       ["variables", "create"],
       ["variables", "push"],
-      // the activation composite (§12-5)
       ["variables", "activate"],
       ["variables", "rename"],
       ["variables", "remove"],
       ["deks", "register"],
       ["auth", "recoveryPut"],
-      // master-key wrap ledger (§13-7 — KL3): wraps / segments / re-sealed values = ciphertext of key material
       ["keyWraps", "passkeyRegister"],
       ["keyWraps", "guardianCreate"],
       ["keyWraps", "handoffApprove"],
-      // device registry (§13-11 — DK K3): registering public keys = the key-declaration class
       ["devices", "register"],
       ["devices", "requestCreate"],
       ["lease", "issue"],
@@ -108,26 +93,19 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
       ["rotation", "resolveProposal"],
       ["invites", "issue"],
       ["invites", "accept"],
-      // A replication page carries the source's chain, ciphertexts and wraps (§11-7)
       ["mirror", "pages"],
     ]);
   });
 
   it("classifies every payload-bearing endpoint (no overlap between strict and exempt)", () => {
-    // Regression protection for the exempt list: only surfaces outside
-    // §12-10 (1) (mutations carrying no signed structure, ciphertext, or
-    // key material) may appear
     expect(STRICT_EXEMPT_PAYLOAD_ENDPOINTS).toEqual([
       ["authCli", "cliStart"],
       ["authCli", "cliPoll"],
       ["authCli", "cliApprove"],
       ["deks", "remove"],
       ["rotation", "dismiss"],
-      // schemaPolicy's PUT (§12-11 — a 2-value Literal carrying no signed structure)
       ["schemaPolicy", "set"],
-      // handoff request (§13-7 — KL3): request_id only
       ["keyWraps", "handoffCreate"],
-      // The mirror mark names a source origin only (§11-7)
       ["mirror", "mark"],
     ]);
   });
@@ -142,7 +120,6 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("throws for a payload-bearing endpoint in neither list (fail-closed)", () => {
-    // An unclassified new endpoint does not silently stay non-strict — it fails at load time
     const fakeApi = fakeApiFromRegistry(true);
     const membership = fakeApi.groups["membership"];
     if (membership === undefined) {
@@ -159,10 +136,6 @@ describe("assertSecurityCriticalPayloadsStrict", () => {
   });
 
   it("throws for a stale exempt entry (endpoint no longer exists)", () => {
-    // If an exemption for a removed or renamed surface lingered, it
-    // would masquerade as "deliberately exempt" when a security-critical
-    // surface later reuses that name, so the exempt side also gets an
-    // existence check
     const fakeApi = fakeApiFromRegistry(true);
     const rotation = fakeApi.groups["rotation"];
     if (rotation === undefined) {
@@ -187,12 +160,6 @@ type FakeApi = {
   groups: Record<string, { endpoints: Record<string, FakeEndpoint> }>;
 };
 
-/**
- * A fake API whose enumerated surfaces are strictPayload (or a plain
- * Struct) and whose exempt surfaces are plain Structs (positive /
- * negative cases of the sweep — both lists' coordinates aligned so the
- * existence check passes).
- */
 function fakeApiFromRegistry(strict: boolean): FakeApi {
   const schema = Schema.Struct({ a: Schema.String });
   const entries: readonly (readonly [string, string, boolean])[] = [

@@ -1,14 +1,3 @@
-// Reporting UX of fork evidence (CRYPTO_SPEC §6.3 / §14.2-5).
-//
-// A floor-check mismatch is "a contradiction between data that both
-// passed §6.3 signature verification", so both coordinates, the
-// signed-bytes hashes, and the declared heads are output in a form a
-// human can present to a third party (two valid signatures with
-// different content at the same coordinate = non-repudiable evidence
-// of server equivocation or key compromise — §14.2-5). **No plaintext
-// values or key material is included** (everything is identified by
-// ID and hash — the diskless invariant).
-
 import { type EnvironmentId, type ProjectId, type UserId, type VariableId } from "@maruhi/core";
 
 import { displayText } from "./display.ts";
@@ -16,7 +5,6 @@ import type { FloorViolation } from "./floor-check.ts";
 import { floorViolationLabel } from "./floor-check.ts";
 import type { AttestationEvidenceRecord, FloorConflict } from "./floor.ts";
 
-/** Coordinates included in the evidence (all IDs — no names: a name itself can be the disputed object). */
 export interface FloorEvidenceCoordinates {
   readonly projectId: ProjectId;
   readonly environmentId?: EnvironmentId;
@@ -49,7 +37,6 @@ function floorVariableLines(violation: Extract<FloorViolation, { kind: "variable
         `    metaVersion=${floor.metaVersion} meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ]
     : [
-        // declared / deleted are meta-side only (no value floor — floor.ts)
         `  floor record (previously verified): status=${floor.status} metaVersion=${floor.metaVersion}`,
         `    meta_signed_bytes_hash=${floor.metaSigHashHex}`,
       ];
@@ -74,7 +61,6 @@ function pulledValueLines(pulled: {
     `  this distribution: version=${pulled.version} epoch=${pulled.epoch}`,
     `    value_signed_bytes_hash=${pulled.valueSigHashHex}`,
     `    declared head: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
-    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    writer signature: writer=${displayText(pulled.writerUserId)} fp=${pulled.writerKeyFingerprintHex}`,
     `    signature=${pulled.signatureHex}`,
   ];
@@ -100,7 +86,6 @@ function metaEvidenceLines(violation: MetaViolation): readonly string[] {
     `  this distribution: status=${violation.pulled.status} metaVersion=${violation.pulled.metaVersion}`,
     `    meta_signed_bytes_hash=${violation.pulled.metaSigHashHex}`,
     `    declared head: ${headText(violation.pulled.chainHeadSeq, violation.pulled.chainHeadHashHex)}`,
-    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    author signature: author=${displayText(violation.pulled.authorUserId)} fp=${violation.pulled.authorKeyFingerprintHex}`,
     `    signature=${violation.pulled.signatureHex}`,
   ];
@@ -127,7 +112,6 @@ function pulledManifestLines(pulled: {
     `  this distribution: manifestVersion=${pulled.manifestVersion} epoch=${pulled.epoch}`,
     `    manifest_signed_bytes_hash=${pulled.signedBytesHashHex}`,
     `    declared head: ${headText(pulled.chainHeadSeq, pulled.chainHeadHashHex)}`,
-    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    issuer signature: issuer=${displayText(pulled.issuerUserId)} fp=${pulled.issuerKeyFingerprintHex}`,
     `    signature=${pulled.signatureHex}`,
   ];
@@ -195,7 +179,6 @@ function variableEvidenceLines(
   ) {
     return [coordinateLine(coordinates, violation.variableId), ...valueEvidenceLines(violation)];
   }
-  // The four meta kinds (a violation of an environment meta has variableId = null — the coordinate rows go to the environment)
   return [coordinateLine(coordinates, violation.variableId), ...metaEvidenceLines(violation)];
 }
 
@@ -216,11 +199,6 @@ function evidenceLines(
   return variableEvidenceLines(coordinates, violation);
 }
 
-/**
- * Formats a floor-check mismatch into multi-line text: a refusal
- * message + presentable evidence (coordinates, both signed-bytes
- * hashes, declared heads).
- */
 export function formatFloorViolation(
   coordinates: FloorEvidenceCoordinates,
   violation: FloorViolation,
@@ -271,7 +249,6 @@ function attestationEvidenceLines(record: AttestationEvidenceRecord): readonly s
     record.kind === "head-mismatch"
       ? "  [head-mismatch] a verified member attestation names a different entry hash at a seq within this view"
       : "  [unresolved-after-resync] a verified member attestation names a head beyond this view that one bounded re-sync could not resolve as an extension",
-    // user_id is a free-form string on the wire with only a length constraint — neutralize before emitting to the terminal
     `    attester: ${displayText(attestation.attesterUserId)} fp=${attestation.attesterKeyFingerprintHex}`,
     `    attested head: ${headText(attestation.chainHeadSeq, attestation.chainHeadHashHex)}`,
     `    attestation signature: ${attestation.signatureHex}`,
@@ -280,14 +257,6 @@ function attestationEvidenceLines(record: AttestationEvidenceRecord): readonly s
   ];
 }
 
-/**
- * Warning message for a contradictory-head declaration (CRYPTO_SPEC
- * §6.6 check (a)). The declaration already passed §6.6 signature
- * verification, so a contradiction with our view is non-repudiable
- * evidence of "server equivocation (split view) or attester key
- * compromise" (§14.2-5). The evidence body is already saved to the
- * append-only evidence file (the path is shown as the route).
- */
 export function formatAttestationEvidence(
   projectId: ProjectId,
   records: readonly AttestationEvidenceRecord[],
@@ -300,14 +269,6 @@ export function formatAttestationEvidence(
   ].join("\n");
 }
 
-/**
- * Refusal message for a same-coordinate conflict (join undefined —
- * CRYPTO_SPEC §6.3 rule (b)'s merge semantics) detected by the
- * observation log's fold. Both observations are facts that passed
- * §6.3 verification, and the contradiction is non-repudiable evidence
- * of equivocation or key compromise — the log is append-only, so the
- * evidence itself does not disappear (only preservation is guided).
- */
 export function formatFloorConflicts(
   projectId: ProjectId,
   conflicts: readonly FloorConflict[],

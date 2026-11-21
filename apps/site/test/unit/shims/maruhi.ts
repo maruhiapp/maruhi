@@ -1,7 +1,3 @@
-// Test shim for `maruhi run [flags] -- <command...>` (docs recipes — apps/site/test/unit/recipes.test.ts).
-// Mimics only what the recipes rely on: the values named in RECIPE_TEST_VALUES (a JSON file) are
-// injected into the child's environment, stdio is inherited, and the child's exit code is returned.
-// The real CLI's flags are accepted and recorded so the test can assert on them.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 
@@ -40,9 +36,6 @@ if (executable === undefined) {
   console.error("maruhi shim: a command is required after `--`");
   process.exit(2);
 }
-// RECIPE_TEST_XTRACE: apply xtrace to the recipe's inner `sh -c '…'` too (xtrace is not
-// inherited by child shells, so the check side launches `sh` as `sh -x` — checking that no
-// value appears in the trace)
 const traced = process.env["RECIPE_TEST_XTRACE"] !== undefined && executable === "sh";
 const child = spawnSync(executable, traced ? ["-x", ...args] : args, {
   env: { ...process.env, ...values },

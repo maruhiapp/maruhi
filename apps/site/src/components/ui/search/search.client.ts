@@ -59,8 +59,6 @@ function initSearch(config: SearchConfig): SearchInstance {
     input.removeAttribute("aria-activedescendant");
   }
 
-  // A result's link is reached with the arrow keys through its option, never
-  // with Tab: Tab leaves the listbox.
   function resultLink(title: string, href: string, className: string): HTMLAnchorElement {
     const link = document.createElement("a");
     link.tabIndex = -1;
@@ -71,7 +69,6 @@ function initSearch(config: SearchConfig): SearchInstance {
     return link;
   }
 
-  // One option, named by its single link: a click anywhere on it follows it.
   function resultOption(link: HTMLAnchorElement, className: string): HTMLElement {
     const option = document.createElement("div");
     option.id = `search-result-${resultIdCounter++}`;
@@ -87,8 +84,6 @@ function initSearch(config: SearchConfig): SearchInstance {
     return option;
   }
 
-  // A result is an option, then one option per sub-result after it, so the
-  // arrow keys reach every link and each option's name is its own title.
   function buildResult(result: SearchResult): HTMLElement[] {
     const option = resultOption(
       resultLink(
@@ -108,7 +103,6 @@ function initSearch(config: SearchConfig): SearchInstance {
       option.setAttribute("aria-describedby", snippet.id);
     }
 
-    // Pagefind's first sub-result is often the page itself: skip it.
     const subs = (result.subResults ?? [])
       .filter((sub) => sub.url !== result.url)
       .slice(0, 3)
@@ -200,7 +194,6 @@ function initSearch(config: SearchConfig): SearchInstance {
       event.preventDefault();
       updateActive(activeIndex - 1);
     } else if (event.key === "Home" && activeIndex >= 0) {
-      // Only while an option is active; otherwise Home and End move the caret.
       event.preventDefault();
       updateActive(0);
     } else if (event.key === "End" && activeIndex >= 0) {
@@ -236,12 +229,6 @@ function initSearch(config: SearchConfig): SearchInstance {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap — imported for its side effects by SearchDialog.astro
-// (`import "./search.client"`). Wires each dialog through mount() and binds the
-// global open shortcut once.
-// ---------------------------------------------------------------------------
-
 type SearchDialogElement = HTMLDialogElement & {
   openSearchDialog?: () => void;
 };
@@ -250,12 +237,6 @@ function primaryDialog(): SearchDialogElement | null {
   return document.querySelector<SearchDialogElement>("[data-search-dialog][data-search-ready]");
 }
 
-// The open shortcut and trigger delegation live on `document`, which survives
-// view transitions, so they are bound once for the page's lifetime — never
-// through mount()'s per-element setup/teardown. A module-scoped boolean (not an
-// <html> attribute) is the guard: ClientRouter resets <html> on every swap but
-// keeps document listeners, so an attribute guard would stack a duplicate
-// keydown handler each navigation (Cmd+K then toggles twice).
 let globalsBound = false;
 
 function bindGlobals() {
@@ -277,9 +258,6 @@ function bindGlobals() {
   });
 }
 
-// Per-element wiring: idempotent discovery now and on astro:page-load, teardown
-// on astro:before-swap. Replaces the hand-rolled data-search-ready init loop;
-// data-search-ready is now just the "wired" marker primaryDialog() selects on.
 mount("[data-search-dialog]", (root) => {
   const dialog = root as SearchDialogElement;
   dialog.setAttribute("data-search-ready", "true");

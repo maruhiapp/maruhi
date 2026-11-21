@@ -1,8 +1,3 @@
-// Tests for the retry policy of the sync http send (sync-http-send.ts):
-// the schedule's waits, the attempt count, the Retry-After cap, and both
-// Retry-After forms (seconds and HTTP-date). Time is driven by TestClock,
-// so no real time passes.
-
 import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer, Redacted } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -27,10 +22,6 @@ const DEFAULT_RETRY: HttpRetryPolicy = {
   maxDelay: Duration.seconds(30),
 };
 
-/**
- * Runs `send` against a scripted client under TestClock and returns the
- * exit plus the timestamps of every request the client saw.
- */
 async function run(
   script: readonly Step[],
   retry: HttpRetryPolicy = DEFAULT_RETRY,

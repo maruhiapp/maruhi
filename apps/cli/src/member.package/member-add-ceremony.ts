@@ -1,8 +1,3 @@
-// `maruhi member add`'s invitee confirmation: choosing the accepted
-// invitation row -> the FP-confirmation ceremony (interactive-terminal +
-// non-agent gate — ADR-0016 decision 7) -> GitHub-signing-keys verification
-// when possible (the group's overview lives in member.ts).
-
 import { type UserId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
@@ -23,18 +18,12 @@ import {
 } from "../known-fingerprints.ts";
 import { logNote } from "../notice.ts";
 
-/** An accepted row (every row carries the issuance text). */
 export type AddableRow = InvitationRow & { readonly acceptance: InviteAcceptance };
 
 const withAcceptance = (
   row: InvitationRow,
 ): row is InvitationRow & { readonly acceptance: InviteAcceptance } => row.acceptance !== null;
 
-/**
- * Choosing the accepted invite: a given id picks that row; without one,
- * auto-select only when exactly one accepted row exists (multiple or zero
- * requires an explicit choice).
- */
 export function selectInvitation(
   rows: readonly InvitationRow[],
   inviteId: string | null,
@@ -65,10 +54,6 @@ export function selectInvitation(
   const accepted = rows.filter(withAcceptance).filter((row) => row.status === "accepted");
   const first = accepted[0];
   if (first === undefined) {
-    // completed rows are never auto-selected (ambiguous: every past
-    // member's row stays completed forever). The resume of a backfill for
-    // an already add_member'd invite takes the explicit-id path — that
-    // route is shown here
     return Effect.fail(
       cliError(
         "There is no accepted invite. To resume the backfill of an invite that completed through add_member, look up the id with `maruhi invite list` and pass it explicitly: `maruhi member add <invite-id>`",
@@ -85,31 +70,6 @@ export function selectInvitation(
   return Effect.succeed(first);
 }
 
-/**
- * The inviter's mutual confirmation (§6.5 — mandatory UX): displays the
- * acceptance key's FP word list and the granted role, and requires an
- * explicit confirmation of the out-of-band match. The ceremony is not
- * skipped even on a re-run (a backfill-only interruption recovery) — same
- * discipline as server-grant (never skip verifying the key wraps are about
- * to be dealt to).
- *
- * The verified fingerprint book (KF — known-fingerprints.ts): when it
- * matches the fingerprint of a previously out-of-band-verified
- * counterpart (origin × user_id), the 12-word out-of-band recital is
- * waived. **The explicit confirmation (yes input) of the grant itself is
- * still required on a hit**, and in agent environments the book is never
- * used as an auto-pass (a flag stays required — the book records a past
- * verification and does not substitute a human's consent to this grant).
- * Furthermore **the book is usable only when stdin / stdout are an
- * interactive terminal** (the same allow-list as ADR-0016 decision 7's
- * primary boundary): the 12-word ceremony requires re-typing the last word
- * on each run so a blind pipe can't pass it, but a yes confirmation is not
- * like that, so on a pipe / CI / undetected agent the book is disabled and
- * the full ceremony returns (fail-closed). An explicit flag beats the
- * book; a mismatch warns and returns to the normal ceremony (not an
- * automatic failure — a legitimate key update is possible). A successful
- * ceremony / flag match is recorded into the book.
- */
 export const confirmInviteeFingerprint = Effect.fn("member-add-ceremony.confirmInviteeFingerprint")(
   function* (input: {
     readonly origin: string;
@@ -128,10 +88,6 @@ export const confirmInviteeFingerprint = Effect.fn("member-add-ceremony.confirmI
       userId: input.targetUserId,
       fingerprintHex: input.fingerprintHex,
     });
-    // A book hit is usable only on the interactive-terminal + no-flag +
-    // non-agent path (judged by usableBookHit). In that case the 2 lines
-    // instructing the recital comparison are dropped (never say "not
-    // needed" right after instructing the call)
     const hit = yield* usableBookHit({
       book,
       flagProvided: input.expectFingerprintHex !== null,
@@ -195,13 +151,6 @@ export const confirmInviteeFingerprint = Effect.fn("member-add-ceremony.confirmI
   },
 );
 
-/**
- * Resolving the destination login (adequacy form 4's (iii)): `--github` →
- * the issuance pin's destination. Absent = null = go to the ceremony. No
- * interactive input is provided (it would mix with the ceremony's re-input
- * prompt, and a typo becomes a query for "someone else's GitHub" — naming
- * is limited to issuance time or an explicit flag).
- */
 const resolveAddresseeLogin = Effect.fn("member-add-ceremony.resolveAddresseeLogin")(
   function* (input: {
     readonly flagLogin: string | null;
@@ -221,13 +170,6 @@ const resolveAddresseeLogin = Effect.fn("member-add-ceremony.resolveAddresseeLog
   },
 );
 
-/**
- * The two choices when unregistered (supplement 21 ruling D ④): when the
- * counterpart's GitHub carries no key, ask before entering the ceremony —
- * "ask them and re-run" or "ceremony right now". Only on an interactive
- * terminal + non-agent + no flag (non-interactive stays flag-only, as
- * before). yes = proceed to the ceremony.
- */
 const askCeremonyOrWait = Effect.fn("member-add-ceremony.askCeremonyOrWait")(function* (input: {
   readonly login: string;
   readonly flagProvided: boolean;
@@ -255,17 +197,6 @@ const askCeremonyOrWait = Effect.fn("member-add-ceremony.askCeremonyOrWait")(fun
   }
 });
 
-/**
- * The inviter's adequacy form 4 (CRYPTO_SPEC §6.5 — IV2): in addition to
- * verifying the issuance text and both signatures (done by the caller),
- * when the backing source can confirm "the acceptance's sig key is the
- * named counterpart's key", it may proceed to add_member **without a
- * confirmation input** (the naming was the explicit act at issuance). If
- * `--expect-fingerprint` is also given, it is required on top of the
- * match, and a mismatch refuses. An impossible match (backing `none`, no
- * destination, unregistered, unfetchable) = false = falls back to adequacy
- * forms 1-3 (confirmInviteeFingerprint).
- */
 export const confirmInviteeViaBacking = Effect.fn("member-add-ceremony.confirmInviteeViaBacking")(
   function* (input: {
     readonly identityBacking: IdentityBacking;

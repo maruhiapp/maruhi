@@ -1,24 +1,3 @@
-// Integration tests for `maruhi server revoke` (CRYPTO_SPEC §7 / §6.2).
-//
-// Properties pinned down:
-//  1. Appending revoke_server (payload = the revoked server key's FP)
-//     and §7's forced rotation of every environment (reason =
-//     "server-revoked", forceNewEpoch). The rotation's compound contains
-//     **no server-bound wrap** (the revocation's effect)
-//  2. Mid-run recovery: with no progress file, the continuation is
-//     derived from the chain and verified statements alone — already
-//     appended → rotation only; epoch advanced but re-encryption
-//     unfinished → resume (no new epoch); everything done →
-//     confirmation only. Never exits 0 on 'the epoch merely advanced'
-//     pretend-completion
-//  3. A CAS conflict that detects a concurrent revoke doesn't append —
-//     it proceeds to the rotation
-//  4. A deleted environment is skipped **only with its delete_environment
-//     entry on the verified chain**, and one environment's failure doesn't stop the rest
-//     (exit 1 reports it — §7, never a silent skip)
-//  5. Authorization/selection branches: owner only, multiple grants
-//     require --fingerprint, nothing to revoke is an error
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -63,8 +42,6 @@ let member: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
-// The deployment server keys being revoked (public side only). B exists
-// to discriminate multiple grants
 const SERVER_ENC_PUB_A = "5a".repeat(32);
 const SERVER_ENC_PUB_B = "5b".repeat(32);
 let serverFpA: string;
@@ -91,7 +68,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** One variable in a pull response (verified statement + distribution-form value). */
 interface PulledVariable {
   readonly variableId: string;
   readonly statement: WireDistributedVariableStatement;
@@ -107,30 +83,17 @@ interface RevokeEnvironmentFixture {
 interface RevokeServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
-  /** Counts of append POSTs, including attempts refused by a stubbed response. */
   readonly counters: { appendAttempts: number };
   readonly rotateBodies: WireRotateBody[];
   readonly pushes: { readonly environmentId: string; readonly variableId: string }[];
 }
 
-/**
- * The stateful mock for revoke flows: the chain (GET / append POST),
- * the environment list (signed statements), and per-environment pull /
- * rotate / push. An accepted rotate is appended to the chain and its
- * owner-bound wraps land in the distribution set; an accepted push lands
- * in the latest values — so post-acceptance resyncs and re-scans run on
- * real data.
- */
 async function makeRevokeServer(input: {
   readonly built: BuiltChain;
   readonly environments?: Readonly<Record<string, RevokeEnvironmentFixture>>;
-  /** The environment-list statements (omitted = synthesized from environments' active statements). */
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
-  /** A stub into chain appends (409 etc.). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** When onAppend fires, swap the subsequent chain to this shape (a concurrent revoke). */
   readonly chainAfterConflict?: BuiltChain;
-  /** A stub into rotate (per environment). undefined = accept. */
   readonly onRotate?: (environmentId: string) => MockResponse | undefined;
 }): Promise<RevokeServerState> {
   const projectId = input.built.projectId;
@@ -155,18 +118,14 @@ async function makeRevokeServer(input: {
     ));
 
   const counters = { appendAttempts: 0 };
-  /** Per-environment stored latest manifest (lazily issued on first pull → replaced when a rotate is accepted). */
   const manifests = new Map<string, WireDistributedManifest>();
-  /** Per-environment stored checkpoint snapshots (§16-2). */
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
-  /** Bundles the stored row when present, otherwise no key (the §12-7 distribution shape — for the pull response's spread). */
   const snapshotFieldOf = (
     environmentId: string,
   ): { readonly checkpointSnapshot?: WireCheckpointSnapshot } => {
     const checkpointSnapshot = checkpointSnapshots.get(environmentId);
     return checkpointSnapshot === undefined ? {} : { checkpointSnapshot };
   };
-  /** Snapshot storage in the same transaction as the checkpoint's acceptance (§16-2). */
   const storeSnapshot = async (
     environmentId: string,
     variables: readonly { readonly value: WireDistributedValue }[] | undefined,
@@ -258,8 +217,6 @@ async function makeRevokeServer(input: {
           deletedVariables: [],
           deks: environment.deks,
           manifest: await serveManifest(environmentId, environment, statement),
-          // Always bundle the stored row of the base checkpoint when
-          // present (§12-7 — rule 2's material)
           ...snapshotFieldOf(environmentId),
           schemaPolicy: "enabled" as const,
         },
@@ -283,18 +240,13 @@ async function makeRevokeServer(input: {
       }
       const body = request.body as WireRotateBody;
       rotateBodies.push(body);
-      // Accept the two entries: rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);
       hashes.push(
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // Snapshot storage in the same transaction as acceptance
-      // (§16-2 — the distribution set as enumerated at accept time)
       await storeSnapshot(environmentId, environment.variables);
       environment.currentEpoch = body.entry.payload.newEpoch;
-      // Route the accepted bundled manifest (§12-4) into distribution
-      // as the stored latest (§12-5)
       manifests.set(environmentId, {
         ...body.manifest,
         issuerUserId: owner.userId,
@@ -402,16 +354,11 @@ describe("maruhi server revoke", () => {
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(0);
 
-    // The appended revoke_server (the revoked target is the server
-    // key's FP)
     expect(state.appendedEntries).toHaveLength(1);
     const revoke = state.appendedEntries[0];
     if (revoke?.op !== "revoke_server") throw new Error("revoke entry missing");
     expect(revoke.payload.serverKeyFingerprintHex).toBe(serverFpA);
 
-    // §7: forced rotation (newEpoch 2, fixed reason). The compound's
-    // wraps are member-only = the revoked server key never gets the new
-    // DEK disclosed
     expect(state.rotateBodies).toHaveLength(1);
     const rotate = state.rotateBodies[0];
     if (rotate === undefined) throw new Error("rotate body missing");
@@ -444,8 +391,6 @@ describe("maruhi server revoke", () => {
     const env = await startRevokeEnv(state, built.projectId, owner);
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(0);
-    // No append (no live grant) · rotates the current epoch (start seq
-    // 2 < revoke seq 4)
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.newEpoch).toBe(2);
@@ -461,8 +406,6 @@ describe("maruhi server revoke", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: await grantServerOp([ENV_ID], [], SERVER_ENC_PUB_A) },
     ]);
-    // The shape where a concurrent run stacked the revoke first (the
-    // first 3 entries are deterministically identical)
     const concurrent = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -493,8 +436,6 @@ describe("maruhi server revoke", () => {
     const env = await startRevokeEnv(state, built.projectId, owner);
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(0);
-    // One append attempt (409) · zero accepted appends. The rotation
-    // still runs
     expect(state.counters.appendAttempts).toBe(1);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(1);
@@ -514,9 +455,6 @@ describe("maruhi server revoke", () => {
       { actor: owner, operation: revokeServerOp(serverFpA) },
       { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
     ]);
-    // The latest value stranded on epoch 1 (the previous run was
-    // interrupted after the compound's acceptance but before
-    // re-encryption)
     const staleVariable: PulledVariable = {
       variableId: "var-stale-1",
       statement: await statementFor({
@@ -555,16 +493,12 @@ describe("maruhi server revoke", () => {
     const env = await startRevokeEnv(state, built.projectId, owner);
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(0);
-    // No append, no rotate compound (the epoch doesn't advance). Only
-    // the stale value's re-encryption push
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.rotateBodies).toHaveLength(0);
     expect(state.pushes).toEqual([{ environmentId: ENV_ID, variableId: "var-stale-1" }]);
     const logs = env.logs.join("\n");
     expect(logs).toContain("resumed re-encryption");
     expect(logs).toContain("Done: the revocation and the rotation of every environment completed");
-    // It must not count as 'already rotated' (don't exit 0 on
-    // pretend-completion)
     expect(logs).not.toContain("Already rotated (epoch newer than the revocation");
   });
 
@@ -605,8 +539,6 @@ describe("maruhi server revoke", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE_ID, dek2) },
       { actor: owner, operation: await grantServerOp([ENV_ID, GONE_ID], [], SERVER_ENC_PUB_A) },
-      // The deletion is a chain entry (CRYPTO_SPEC §6.2); it prunes GONE_ID
-      // from the grant's scope
       { actor: owner, operation: deleteEnvironmentOp(GONE_ID) },
     ]);
     const listedStatements = [
@@ -625,9 +557,6 @@ describe("maruhi server revoke", () => {
           currentEpoch: 1,
           deks: [await ownerWrap(built.projectId, ENV_ID, 1, dek1)],
         },
-        // GONE_ID has no environment fixture = pull / rotate would be
-        // 404 (same as a real server after the deletion). Pins that the
-        // chain deletion means they're never called
       },
       listedStatements,
     });
@@ -670,7 +599,6 @@ describe("maruhi server revoke", () => {
     const env = await startRevokeEnv(state, built.projectId, owner);
 
     expect(await runCli(["server", "revoke"], env.layer)).toBe(1);
-    // The failed ENV_B doesn't stop ENV_A's rotation
     expect(state.appendedEntries).toHaveLength(1);
     expect(state.rotateBodies.map((body) => body.entry.payload.environmentId)).toEqual([ENV_A]);
     const errors = env.errors.join("\n");
@@ -701,29 +629,23 @@ describe("maruhi server revoke", () => {
       { actor: owner, operation: await grantServerOp([], [], SERVER_ENC_PUB_B) },
     ]);
 
-    // None specified → error (which to revoke is ambiguous)
     const state1 = await makeRevokeServer({ built });
     const env1 = await startRevokeEnv(state1, built.projectId, owner);
     expect(await runCli(["server", "revoke"], env1.layer)).toBe(1);
     expect(env1.errors.join("\n")).toContain("Multiple grants are active");
     expect(state1.appendedEntries).toHaveLength(0);
 
-    // A non-matching FP → error (the error names --fingerprint)
     const state2 = await makeRevokeServer({ built });
     const env2 = await startRevokeEnv(state2, built.projectId, owner);
     expect(await runCli(["server", "revoke", "--fingerprint", "0".repeat(32)], env2.layer)).toBe(1);
     expect(env2.errors.join("\n")).toContain("No active grant matches --fingerprint");
     expect(state2.appendedEntries).toHaveLength(0);
 
-    // Malformed → names --fingerprint (not the nonexistent
-    // --expect-fingerprint)
     const state3 = await makeRevokeServer({ built });
     const env3 = await startRevokeEnv(state3, built.projectId, owner);
     expect(await runCli(["server", "revoke", "--fingerprint", "XYZ"], env3.layer)).toBe(2);
     expect(env3.errors.join("\n")).toContain("--fingerprint is malformed");
 
-    // Specify B → only B is revoked (no environments = completes with
-    // nothing to rotate)
     const state4 = await makeRevokeServer({ built });
     const env4 = await startRevokeEnv(state4, built.projectId, owner);
     expect(await runCli(["server", "revoke", "--fingerprint", serverFpB], env4.layer)).toBe(0);

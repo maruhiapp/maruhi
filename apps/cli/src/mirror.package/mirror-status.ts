@@ -1,9 +1,3 @@
-// `maruhi mirror status` (AUTH_SPEC §11-7): the server's verified chain
-// head and the mirror's, side by side, with the last replication. The
-// status fails on fork evidence in the mirror's head, as the sync does.
-//
-// TCB discipline: the same as mirror-sync.ts's — heads and counts only.
-
 import type { MirrorStatus } from "@maruhi/api-schema";
 import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -22,7 +16,6 @@ import {
   verifiedViewOf,
 } from "./mirror-target.ts";
 
-/** The server's verified view (the same keyless prologue as `project export`). */
 const verifiedServerView = Effect.fn("mirror-status.verifiedServerView")(function* (
   serverFlag: string | undefined,
   projectId: ProjectId,
@@ -32,13 +25,6 @@ const verifiedServerView = Effect.fn("mirror-status.verifiedServerView")(functio
   return { source, verified };
 });
 
-/**
- * `maruhi mirror status`: the server's verified head and the mirror's,
- * side by side. The one command for "is my mirror usable" must answer
- * while the server is down: a server that does not answer leaves the
- * mirror's head alone on the report (announced), any other failure of the
- * server side fails as usual.
- */
 export const mirrorStatusOp = Effect.fn("mirror-status.mirrorStatusOp")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -64,12 +50,8 @@ export const mirrorStatusOp = Effect.fn("mirror-status.mirrorStatusOp")(function
   for (const line of describeMirrorStatus(status, verified, target.mirrorOrigin)) {
     yield* io.log(line);
   }
-  // Fork evidence fails the status as it fails the sync (round 11): a
-  // cron or a member's "is my mirror usable" must not read it as fine
   const evidence = verified === null ? null : statusEvidence(status, verified);
   if (evidence !== null) {
-    // A recorded source that is this server under another hostname is
-    // this server (the fingerprints decide, on the failing path only — round 13)
     const recordedElsewhere =
       status.mirror &&
       status.sourceOrigin !== undefined &&
@@ -89,13 +71,6 @@ export const mirrorStatusOp = Effect.fn("mirror-status.mirrorStatusOp")(function
   }
 });
 
-/**
- * The status's fork evidence attributed to the state it was seen in (round
- * 12): a copy that is not marked (promoted and written to) diverging from
- * the server is two writable copies, a copy marked for another source was
- * judged against a server that is not its source, a marked mirror of this
- * server holds fork evidence against it.
- */
 function statusEvidenceText(
   status: MirrorStatus,
   mirrorOrigin: string,
@@ -112,12 +87,10 @@ function statusEvidenceText(
   return `The mirror ${mirrorOrigin} holds a chain head that is ${evidence} — against ${serverOrigin} and against the mirror`;
 }
 
-/** The fork evidence a mirror's reported head carries against the verified view (`maruhi mirror status` fails on it — round 11); null = none. */
 function statusEvidence(status: MirrorStatus, verified: VerifiedProject): string | null {
   return forkNote(status.head, verified);
 }
 
-/** The two heads side by side (`maruhi mirror status`); without the server's view (it did not answer) the mirror's head stands alone. */
 function describeMirrorStatus(
   status: MirrorStatus,
   verified: VerifiedProject | null,

@@ -2,35 +2,18 @@ import { defineConfig } from "vite-plus/test/config";
 
 import { vitestPoolAliases } from "./scripts/vitest-aliases.ts";
 
-// crypto / core / cli run in the normal environment; server uses
-// @cloudflare/vitest-plugin (a real workerd environment).
-// The web (dashboard) and site (LP + docs — Nimbus) e2e are separate
-// steps that assume a built dist.
+// See ADR-0021.
 export default defineConfig({
-  // For root invocations the Cloudflare pool resolves its in-workerd
-  // entry through this config's vite instance (see scripts/vitest-aliases.ts).
   resolve: { alias: vitestPoolAliases },
   test: {
     sequence: {
-      // File-order shuffle that enforces order independence in the server
-      // suite (audit T-2). It lives at the root because Vitest 5.0 derives
-      // file order from this root sequencer alone — a project's own
-      // sequence.shuffle is ignored when it runs as a project here. The
-      // rationale, reproduction steps, and cost are documented at the canonical
-      // site, apps/server/vitest.config.ts (the isolate: false note). The other
-      // projects keep default per-file isolation, so a shuffled file order is
-      // harmless for them.
       shuffle: { files: true },
     },
     projects: [
       "packages/*/vitest.config.ts",
       "apps/cli/vitest.config.ts",
       "apps/server/vitest.config.ts",
-      // web's e2e stays a separate step assuming a built dist (CI 9).
-      // Only unit is integrated
       "apps/web/vitest.unit.config.ts",
-      // site's e2e is likewise a separate step (CI 9b). Only unit
-      // (drift detection of the generated theme) is integrated
       "apps/site/vitest.unit.config.ts",
     ],
   },

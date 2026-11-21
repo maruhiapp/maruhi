@@ -1,8 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — recipient
-// class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9) and
-// expectedWrapRecipientCount.
-// See the top of data-dek.test.ts for how the suite is split.
-
 import type { ChainState, KeyFingerprintHex } from "@maruhi/crypto";
 import {
   computeServerKeyFingerprint,
@@ -43,9 +38,6 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-// The deployment's server enc public key (a dummy — an X25519 public key
-// is formally valid as any 32 bytes; the server cannot verify a wrap's
-// contents, so acceptance is judged on identification and signature only)
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 
 async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<KeyFingerprintHex> {
@@ -55,7 +47,6 @@ async function serverFingerprintHex(encPubHex = SERVER_ENC_PUB_HEX): Promise<Key
 }
 
 describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
-  /** The owner appends a grant_server (the generic chain API — an admin op of AUTH_SPEC §6). */
   async function grantServer(scope: readonly string[]): Promise<KeyFingerprintHex> {
     const fpHex = await serverFingerprintHex();
     await appendOperation(fixture, OWNER, {
@@ -90,9 +81,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   }
 
   it("backfills server wraps for all existing epochs right after the grant (the §12-6 post-grant backfill)", async () => {
-    // Establish epochs 1 / 2 before the grant (the complete set is
-    // members only) → grant → the owner bulk-registers server-directed
-    // wraps for every in-scope epoch via the append path
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     const fpHex = await grantServer([ENV]);
@@ -105,7 +93,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     });
     expect(response.status).toBe(204);
 
-    // The stored rows are recipient_class = 'server' with the server-key FP in the identifier column
     const rows = await queryProjectDo(
       projectId,
       "SELECT epoch, recipient_user_id FROM dek_wraps WHERE environment_id = ? AND recipient_class = 'server' ORDER BY epoch",
@@ -116,9 +103,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       [2, fpHex],
     ]);
 
-    // dek.registered is one row per recipient; a server row carries the
-    // FP in target_key_fingerprint (never mix a key identifier into the
-    // user_id column — AUDIT_SPEC §3.3 / §2)
     const events = await queryProjectDo(
       projectId,
       "SELECT epoch, target_user_id, target_key_fingerprint, actor_key_fingerprint FROM audit_events WHERE event = 'dek.registered' AND target_key_fingerprint IS NOT NULL ORDER BY epoch",
@@ -128,7 +112,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     expect(events[0]?.["target_key_fingerprint"]).toBe(fpHex);
     expect(events[0]?.["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
-    // No server row leaks into distribution (listMine) (distribution is to oneself only — §12-6)
     const mine = await requestJson("GET", `/environments/${ENV}/deks`, token(OWNER));
     const body = (await mine.json()) as { deks: readonly { epoch: number }[] };
     expect(body.deks.length).toBe(2);
@@ -153,7 +136,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   it("rejects a server wrap for an out-of-scope environment with 422 (scope-out-of-range)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
-    // An environment created after the grant is out of scope, so the composite's complete set is members only (§12-4)
     const outDek = await createEnvironmentOk(fixture, "env-out-0002", "Out");
     const wrap = await serverWrap({
       environmentId: "env-out-0002",
@@ -171,7 +153,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
   it("rejects a server wrap without a matching grant with 422 (recipient-not-granted)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
-    const fpHex = await serverFingerprintHex(); // no grant is appended
+    const fpHex = await serverFingerprintHex();
     const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
     const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [wrap],
@@ -185,8 +167,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
     const wrap = await serverWrap({ epoch: 1, dek: dek1, fpHex });
-    // The wire union types a server recipient as a key fingerprint, so a
-    // member's ULID in that position never reaches the DO's recipient check
     const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [{ ...wrap, recipientUserId: OWNER }],
     });
@@ -196,7 +176,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   it("rejects a server wrap whose enc pub differs from the grant with 422 (recipient-key-mismatch)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
-    // The FP matches the grant but the enc public key differs (both FP + enc pub must match — §12-6)
     const wrap = await serverWrap({
       epoch: 1,
       dek: dek1,
@@ -223,7 +202,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
-    // A complete set missing the server-key direction is a 422 recipient-missing
     const missing = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -235,7 +213,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     const body = (await missing.json()) as Record<string, unknown>;
     expect(body["reason"]).toBe("recipient-missing");
 
-    // A complete set including the server-key direction is accepted (signed by the rotation's executor — §7)
     const full = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -253,14 +230,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
 
-    // add_member's target user_id is intentionally a free-form string
-    // with no existence check (AUTH_SPEC §11-1), so an admin can add a
-    // member whose "user_id = the server-key FP of a valid grant" to the
-    // chain. The stored row's primary key is the device axis
-    // (environment, epoch, recipient_user_id, recipient_enc_pub_hex —
-    // 2026-09-19 DK K3), so with different keys, both the fpHex-directed
-    // wrap as a member and the fpHex-directed wrap as a server can be
-    // written to separate slots (design notes §8 K3-4, second round)
     const encPair = await generateEncryptionKeyPair();
     const sigPair = await generateSigningKeyPair();
     const sockEncPubHex = encodeHex(await exportEncryptionPublicKey(encPair.publicKey));
@@ -318,11 +287,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       { recipient_class: "server", recipient_enc_pub_hex: SERVER_ENC_PUB_HEX },
     ]);
 
-    // The same id **and the same key** (the member's enc public key =
-    // the server key) never comes about: §6.2's key uniqueness keeps every
-    // key a grant has named off the current devices (2026-10-25), so the
-    // add_member is refused at chain-append time and no current member's
-    // device ever shares the grant's address
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: testUserId(fpHex) },
@@ -385,7 +349,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     expect(deleted[0]?.["target_user_id"]).toBeNull();
     expect(deleted[0]?.["target_key_fingerprint"]).toBe(fpHex);
 
-    // Re-registration via the append path (not a first-time complete-match since the epoch still has member-directed wraps)
     const reRegistered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [wrap],
     });
@@ -410,12 +373,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
   it("rejects a wrap deletion whose recipientClass does not match the stored row (closing manipulation of the audit columns)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A deletion that points at a member wrap as class server: the wire
-    // union types a server recipient as a key fingerprint, so a member's
-    // ULID there is refused at decode (400). If passed through, the
-    // member's ULID would land on the target_key_fingerprint column and
-    // this deletion would vanish from the (target_user_id, seq) index
-    // (AUDIT_SPEC §1-2)
     const crossClass = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -428,9 +385,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     });
     expect(crossClass.status).toBe(400);
 
-    // The reverse direction: a key fingerprint is a valid user-id string,
-    // so pointing at a server wrap as class member decodes and then
-    // mismatches the stored row's class = 404
     const fpHex = await grantServer([ENV]);
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [await serverWrap({ epoch: 1, dek: makeDek(), fpHex })],
@@ -448,7 +402,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     });
     expect(reverse.status).toBe(404);
 
-    // Neither attempt left a deletion or an audit row (the verification phase rejects the whole request)
     const deleted = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'dek.deleted'",
@@ -464,10 +417,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
   it("rejects class-only-differing refs in one deletion request (never stack 2 audit rows on 1 row)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // Pointing at the same (epoch, recipient) as both member and server
-    // classes: the server arm types its recipient as a key fingerprint, so
-    // a member's ULID there is refused at decode (400), rejecting the
-    // whole request before either ref is resolved
     const response = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -493,7 +442,6 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   });
 });
 
-/** A one-device member with its own key bytes (no two devices share a key — CRYPTO_SPEC §6.2 key uniqueness). */
 const memberOf = (userId: string, encByte: string, sigByte: string) =>
   [
     testUserId(userId),
@@ -501,7 +449,6 @@ const memberOf = (userId: string, encByte: string, sigByte: string) =>
       userId: testUserId(userId),
       role: "member",
       scope: { kind: "all" },
-      // One initial key = one device (the cap is structurally (owner, all) — CRYPTO_SPEC §6.2 DK)
       devices: new Map([
         [
           `${encByte}${sigByte}`.repeat(8),
@@ -531,13 +478,6 @@ const grantOf = (fingerprintHex: string, scope: readonly string[], serverEncPubH
 
 describe("expectedWrapRecipientCount", () => {
   it("counts a member named by a grant's FP and that grant as two slots (the (id, key) device axis — K3)", () => {
-    // add_member's target user_id is a free-form string with no existence
-    // check (AUTH_SPEC §11-1), so a member can carry a grant's FP as its
-    // user_id. Its device key is its own (§6.2's key uniqueness keeps every
-    // key a grant has named off the current devices), and a wrap is
-    // addressed by (id, enc public key), so the member and the grant are
-    // two slots (counting by recipient id would give one). The state keeps
-    // that invariant: every key is distinct and both grants' keys are named
     const collidingFp = "ab".repeat(16);
     const otherFp = "cd".repeat(16);
     const state: ChainState = {
@@ -557,11 +497,8 @@ describe("expectedWrapRecipientCount", () => {
       headSeq: 1,
       headHashHex: "00".repeat(32),
     };
-    // env-a: {user-1, collidingFp (its device), collidingFp (the grant), otherFp} — 4 slots
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-a"))).toBe(4);
-    // env-b: the only in-scope grant is otherFp
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-b"))).toBe(3);
-    // Out-of-scope environments are members only
     expect(expectedWrapRecipientCount(state, testEnvironmentId("env-c"))).toBe(2);
   });
 });

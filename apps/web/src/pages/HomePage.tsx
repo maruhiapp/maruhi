@@ -1,21 +1,12 @@
-// Server component (baked into the RSC payload at build time).
-//
-// `my.maruhi.app/` is the top of the product origin (TCB). The LP and
-// docs moved to apex `maruhi.app` (apps/site — Nimbus), so this page
-// carries only minimal guidance (logo + a funnel to the dashboard + a
-// link to the product site) (DP2 ruling F — docs/notes/web-design-pass.md
-// §4). The e2e checks drive `to-dashboard` for SPA navigation and MPA
-// degradation.
 import { ResumeToDashboard } from "../dashboard/ResumeToDashboard.tsx";
 import { spaPaths } from "../dashboard/routes.ts";
 
 export function HomePage() {
   return (
     <main>
-      {/* Returns to /dashboard only when the sign-in round-trip marker is present (ruling BU).
-          A landing without the marker calls no API */}
+      {}
       <ResumeToDashboard />
-      {/* The brand mark is a bespoke SVG (DP1). The emoji ㊙ is limited to text contexts (CLI / README) */}
+      {}
       <h1 data-testid="home-heading">
         <img src="/logo.svg" alt="" width="40" height="40" /> maruhi
       </h1>

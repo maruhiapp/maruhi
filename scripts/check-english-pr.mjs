@@ -9,15 +9,10 @@
 
 import { execFileSync } from "node:child_process";
 
-// Same class as scripts/check-english.mjs, written with escapes so this file
-// holds no CJK itself: CJK punctuation, hiragana, katakana, katakana phonetic
-// extensions, halfwidth katakana, CJK ext-A, unified + compatibility
-// ideographs, fullwidth forms. U+3299 (the maruhi mark) stays out of range.
 const CJK = new RegExp(
   "[\\u3000-\\u303f\\u3040-\\u309f\\u30a0-\\u30ff\\u31f0-\\u31ff\\uff66-\\uff9f\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uff00-\\uff60]",
 );
 
-// Offending lines of one text, labelled with where the text came from.
 function offendingLines(label, text) {
   return (text ?? "")
     .split("\n")
@@ -25,7 +20,6 @@ function offendingLines(label, text) {
     .map((line) => `${label}: ${line.trim().slice(0, 100)}`);
 }
 
-// Every commit message in BASE_SHA..HEAD_SHA (the PR's own commits).
 function commitMessages() {
   const { BASE_SHA: base, HEAD_SHA: head } = process.env;
   if (!base || !head) return [];

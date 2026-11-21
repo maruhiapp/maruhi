@@ -1,8 +1,5 @@
 "use client";
 
-// The S7 rotation-flags tab. See ProjectScreen.tsx for the
-// screen's tab framework.
-
 import { Code } from "@astryxdesign/core/Code";
 import { VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -17,10 +14,6 @@ import { Callout, SectionBlock } from "./sections.tsx";
 import type { RotationFlag, RotationFlagList } from "./types.ts";
 import { useApiResource } from "./use-api-resource.ts";
 
-// ---------------------------------------------------------------------------
-// S7: rotation-needed flags
-// ---------------------------------------------------------------------------
-
 interface FlagRow extends Record<string, unknown> {
   id: string;
   environmentId: string;
@@ -30,10 +23,6 @@ interface FlagRow extends Record<string, unknown> {
   recommendedAtMs: number;
 }
 
-// The wording of person-targeted triggers (remove_member takes the
-// default removal wording).
-// As a Map it never hits a prototype-chain name (a hostile trigger
-// string)
 const USER_TRIGGER_LABELS: ReadonlyMap<string, string> = new Map([
   ["change_role", "member role/scope changed"],
   ["revoke_device", "device revoked"],
@@ -43,16 +32,6 @@ function userTriggerLabel(trigger: RotationFlag["trigger"]): string {
   return USER_TRIGGER_LABELS.get(trigger) ?? "member removed";
 }
 
-/**
- * The display form of a trigger (a removal / a demoted or narrowed
- * principal / the owner of a revoked device / a revoked server key).
- * When the target is a person it uses the `trigger` (AUDIT_SPEC §3.3
- * — 2026-09-14 ES; `revoke_device` is 2026-09-19 DK) wording.
- * The tail carries the triggering chain seq (`triggerChainSeq` —
- * carried by the response): a `revoke_device` row carries no device
- * FP, so the seq lets one trace the mirrored row on the Audit tab
- * (`chain.device_revoked` — which has the FP) (K5-5 re-exploration).
- */
 function flagTrigger(flag: RotationFlag): string {
   const subject =
     flag.targetUserId !== undefined
@@ -65,10 +44,6 @@ function flagTrigger(flag: RotationFlag): string {
     : `${subject} (chain seq ${flag.triggerChainSeq})${reopenedSuffix(flag)}`;
 }
 
-/**
- * A re-opened flag says why it came back: a rollback restored a value from
- * before the flag (AUDIT_SPEC §4.1-5 / §7 — 2026-09-27 VH).
- */
 function reopenedSuffix(flag: RotationFlag): string {
   return flag.reopenedByVersion === undefined
     ? ""
@@ -125,9 +100,6 @@ function RotationFlagsView({ flags }: { flags: ReadonlyArray<RotationFlag> }): R
       <EmptyNotice
         title="No rotation flags"
         description="No rotation flags are currently effective, as reported by the server."
-        // A box without a heading (inside a tab, directly under the
-        // page h1), so h2 — sitting level with the following Callout
-        // (h2)
         headingLevel={2}
         testId="rotation-empty"
       />
@@ -155,7 +127,7 @@ export function RotationTab({ projectId }: { projectId: string }): ReactNode {
       <SectionBlock>
         <RotationFlagsView flags={state.value.flags} />
       </SectionBlock>
-      {/* Dismissing is not on the web (ADR-0018 amendment 2 — erasing a warning is a governance operation) */}
+      {}
       <Callout title="Rotating and dismissing" headingLevel={2} testId="rotation-note">
         A flag means the upstream credential should be rotated. Rotate the value, then dismiss the
         flag from the CLI: <Code>maruhi rotation dismiss</Code> (admin). Dismissing is not available

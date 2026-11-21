@@ -1,5 +1,3 @@
-// `maruhi key` (discipline: see commands/index.ts).
-
 import { PASSKEY_LABEL_PATTERN } from "@maruhi/api-schema";
 import { Effect, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -49,7 +47,6 @@ export const keyRecoverConfig = {
     "Keep the device key already on this machine and only register it on the projects where it is still missing (re-run after an interrupted recovery)",
   ),
 };
-/** The passkey's label (the ledger's display name — the api-schema acceptance shape is checked early on the declaration side). */
 const PasskeyLabel = Schema.String.check(
   Schema.isPattern(PASSKEY_LABEL_PATTERN, { message: PASSKEY_LABEL_MESSAGE }),
 );
@@ -288,9 +285,6 @@ export function makeKeyCommands(onExitCode: (code: number) => void) {
     Command.withDescription(
       "Create the reserve key and its recovery code (first time), replace a ledger key that cannot serve as your reserve key, or reissue the recovery code",
     ),
-    // --passkey is a way to open the ledger and --replace presumes never
-    // opening it, so they cannot combine — with a passkey, opening and
-    // reissuing keeps the same reserve key (noted by pullfrog)
     Command.validate((values) =>
       values.passkey && values.replace
         ? invalidFlagCombination(

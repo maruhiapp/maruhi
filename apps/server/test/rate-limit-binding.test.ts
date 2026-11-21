@@ -1,14 +1,3 @@
-// The failure directions of the per-source-IP rate-limit binding pattern
-// (AUTH_SPEC §4-1 (1) — 2026-10-11 S-2): every endpoint the pattern guards
-// answers 503 SetupIncomplete (`rate-limit-unconfigured`) when its own
-// binding is absent from the deployment, passes the request when a present
-// binding's call fails (with one static warning that carries neither the
-// address nor the failure's message), and otherwise consults its binding
-// keyed by the source address.
-//
-// The worker is called directly with a swapped env (the auth.test.ts
-// pattern); under vitest-pool-workers the worker shares the test's isolate,
-// so a console spy sees its log lines (log-hygiene.test.ts).
 import { testUserId, testVariableId } from "@maruhi/crypto/test-support";
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -32,10 +21,6 @@ const SOURCE_IP = "203.0.113.50";
 const workloadPath = (suffix: string): string =>
   `${BASE}/projects/${"ab".repeat(32)}/environments/env-app-0001/${suffix}`;
 
-/**
- * The workload credential's wire shape (it passes the Schema and falls at
- * OIDC verification — lease-binding.test.ts's rate-limit barrage).
- */
 const WORKLOAD_CREDENTIAL = { oidcToken: "aaaa.bbbb.cccc", ephemeralPubHex: "cd".repeat(32) };
 
 interface LimitedRoute {
@@ -44,9 +29,7 @@ interface LimitedRoute {
   readonly method: "GET" | "POST";
   readonly url: string;
   readonly body?: Record<string, unknown>;
-  /** A form-urlencoded body instead of JSON (the scriptless approval form's shape). */
   readonly form?: Record<string, string>;
-  /** The answer once the limiter lets the request through (the handler's next stage). */
   readonly passedStatus: number;
 }
 
@@ -65,7 +48,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     method: "POST",
     url: `${BASE}/auth/cli/poll`,
     body: { flowId: "ab".repeat(16), flowToken: "not-a-flow-token" },
-    // CliFlowRejected — the stateless MAC check after the limit
     passedStatus: 400,
   },
   {
@@ -73,8 +55,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     binding: "CLI_VERIFY_RATE_LIMIT",
     method: "GET",
     url: `${BASE}/auth/cli/verify`,
-    // The uniform error page — a query with no vsig fails the stateless
-    // verification after the limit
     passedStatus: 400,
   },
   {
@@ -83,7 +63,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     method: "POST",
     url: `${BASE}/auth/cli/approve`,
     form: { decision: "approve" },
-    // The uniform error page — no flowId / ticket after the limit
     passedStatus: 400,
   },
   {
@@ -91,7 +70,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     binding: "OAUTH_CALLBACK_RATE_LIMIT",
     method: "GET",
     url: `${BASE}/auth/github/callback?code=dummy-code&state=dummy-state`,
-    // AuthFlow state-mismatch — no state cookie
     passedStatus: 400,
   },
   {
@@ -99,7 +77,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     binding: "SIGNUP_START_RATE_LIMIT",
     method: "GET",
     url: `${BASE}/auth/github/start?signup_code=maruhi_sgn_unknown`,
-    // The script-free invalid-code page — the D1 pre-validation after the limit
     passedStatus: 400,
   },
   {
@@ -108,7 +85,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
     method: "POST",
     url: workloadPath("lease"),
     body: WORKLOAD_CREDENTIAL,
-    // LeaseUnauthorized malformed-token — OIDC verification after the limit
     passedStatus: 401,
   },
   {
@@ -155,7 +131,6 @@ const LIMITED_ROUTES: readonly LimitedRoute[] = [
   },
 ];
 
-/** Calls the worker for `route` under `routeEnv`, with or without a source address. */
 function call(route: LimitedRoute, routeEnv: TestEnv, sourceIp?: string): Promise<Response> {
   const headers: Record<string, string> =
     route.form !== undefined
@@ -180,17 +155,14 @@ function call(route: LimitedRoute, routeEnv: TestEnv, sourceIp?: string): Promis
   return worker.fetch(request, routeEnv);
 }
 
-/** The env as a deployment whose config lacks `binding`. */
 function envWithout(binding: RateLimitBinding): TestEnv {
   return Object.fromEntries(Object.entries(env).filter(([name]) => name !== binding)) as TestEnv;
 }
 
-/** The env with `binding` replaced by a stand-in limiter. */
 function envWith(binding: RateLimitBinding, limiter: RateLimit): TestEnv {
   return { ...env, [binding]: limiter };
 }
 
-/** A limiter that records the keys it is asked about and answers `success`. */
 function recordingLimiter(success: boolean): {
   readonly limiter: RateLimit;
   readonly keys: string[];
@@ -209,7 +181,6 @@ function recordingLimiter(success: boolean): {
 
 const CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"] as const;
 
-/** Spies on every console method; returns each recorded call's arguments as one string. */
 function spyConsole(): { readonly lines: () => string[]; readonly warn: () => unknown[][] } {
   const spies = CONSOLE_METHODS.map(
     (method) => [method, vi.spyOn(console, method).mockImplementation(() => {})] as const,
@@ -237,8 +208,6 @@ describe("a missing rate-limit binding fails closed (503 SetupIncomplete)", () =
   for (const route of LIMITED_ROUTES) {
     it(`${route.name} answers 503 rate-limit-unconfigured without ${route.binding}`, async () => {
       const unconfigured = envWithout(route.binding);
-      // Judged ahead of the source-address attribution: an unattributable
-      // request (no CF-Connecting-IP) does not slip past a missing binding
       for (const sourceIp of [SOURCE_IP, undefined]) {
         const response = await call(route, unconfigured, sourceIp);
         expect(response.status).toBe(503);
@@ -275,8 +244,6 @@ describe("a present binding is consulted per source address (the normal path)", 
       expect(limited.status).toBe(429);
       expect(refusing.keys).toEqual([SOURCE_IP]);
 
-      // An IPv6 source is keyed by its /64 (rateLimitKeyOf): rotating the
-      // lower 64 bits must not mint a fresh window
       const ipv6 = recordingLimiter(true);
       const v6 = await call(
         route,
@@ -286,7 +253,6 @@ describe("a present binding is consulted per source address (the normal path)", 
       expect(v6.status).toBe(route.passedStatus);
       expect(ipv6.keys).toEqual(["2001:db8:1:2::/64"]);
 
-      // An unattributable request (direct arrival only) is not counted
       const unattributed = recordingLimiter(false);
       const direct = await call(route, envWith(route.binding, unattributed.limiter));
       expect(direct.status).toBe(route.passedStatus);
@@ -309,8 +275,6 @@ describe("a failing limiter call fails open with one static warning", () => {
         "rate limiter call failed; allowing the request (fail-open)",
         "TypeError",
       ]);
-      // Neither the address (the limiter key) nor the failure's message
-      // reaches any log line
       const logged = logs.lines().join("\n");
       expect(logged).not.toContain(SOURCE_IP);
       expect(logged).not.toContain("internal-detail-marker");

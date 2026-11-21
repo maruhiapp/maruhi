@@ -1,28 +1,3 @@
-// `maruhi key publish [--gh]` and the key-registration route
-// (CRYPTO_SPEC §6.5 backing source — IV2, supplement 21 rulings G ④ /
-// G ⑥).
-//
-// Display and assistance for registering my maruhi sig public key
-// (Ed25519) as a GitHub **SSH signing key**. The only key material is
-// the public key, so this is not a ceremony and needs no display
-// gate.
-//
-// - Default: emits one OpenSSH public-key line (`ssh-ed25519 …`) to
-//   stdout and the registration procedure
-//   (https://github.com/settings/ssh/new — Key type = Signing Key) to
-//   stderr
-// - `--gh`: calls an installed gh CLI (`gh ssh-key add - --type
-//   signing`) via ProcessRunner (never fetches it — same as
-//   supplement 16). Direct API is not allowed (maruhi holds no GitHub
-//   token — AUTH_SPEC §4). The key line goes via stdin
-// - The registration route (G ⑥): right after key generation (`key
-//   generate` / the generation inside `invite accept`), when on an
-//   interactive terminal and not an agent, ask "register now?" and
-//   call gh only on yes (never register silently — do not change the
-//   user's GitHub account without consent). Non-interactive / EOF is
-//   treated as "do not register" and only the guidance is shown (the
-//   key generation itself is already complete)
-
 import { fromCryptoResult } from "@maruhi/core";
 import { decodeHex, encodeOpenSshEd25519PublicKey } from "@maruhi/crypto";
 import { Effect, Redacted, Stdio } from "effect";
@@ -36,10 +11,8 @@ import { ProcessRunner } from "../run.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 import { GH_ENV } from "../sync.package/index.ts";
 
-/** The manual registration destination (GitHub's settings page). */
 const GITHUB_SSH_SETTINGS_URL = "https://github.com/settings/ssh/new";
 
-/** My sig public key's OpenSSH line (no comment — an interop encoding, not a new primitive). */
 function openSshSigningKeyLine(keys: MasterKeys): Effect.Effect<string, CliError> {
   const raw = decodeHex(keys.record.sigPubHex);
   if (raw === null) {
@@ -52,17 +25,10 @@ function openSshSigningKeyLine(keys: MasterKeys): Effect.Effect<string, CliError
   );
 }
 
-/** The title on the gh side (carries the FP so the key is recognizable as maruhi's in the list). */
 function keyTitleOf(keys: MasterKeys): string {
   return `maruhi ${keys.fingerprintHex}`;
 }
 
-/**
- * Calls `gh ssh-key add - --type signing` (stdin = the key line).
- * gh not installed / not logged in / refused is a CliError (the
- * output contains only the public key, so it is formatted and
- * attached).
- */
 const registerViaGh = Effect.fn("key-publish.registerViaGh")(function* (input: {
   readonly line: string;
   readonly keys: MasterKeys;
@@ -72,7 +38,6 @@ const registerViaGh = Effect.fn("key-publish.registerViaGh")(function* (input: {
     command: ["gh", "ssh-key", "add", "-", "--type", "signing", "--title", keyTitleOf(input.keys)],
     cwd: ".",
     extraEnv: GH_ENV,
-    // A public key is not secret, but exec's stdin contract takes Redacted (run.ts)
     stdin: Redacted.make(new TextEncoder().encode(`${input.line}\n`), {
       label: "openssh-public-key",
     }),
@@ -87,7 +52,6 @@ const registerViaGh = Effect.fn("key-publish.registerViaGh")(function* (input: {
   }
 });
 
-/** The manual registration procedure (stderr). */
 const manualInstructions = Effect.fn("key-publish.manualInstructions")(function* (
   keys: MasterKeys,
 ): Effect.fn.Return<void, never, CliIo> {
@@ -100,7 +64,6 @@ const manualInstructions = Effect.fn("key-publish.manualInstructions")(function*
   );
 });
 
-/** `maruhi key publish [--gh]`. */
 export const keyPublishOp = Effect.fn("key-publish.keyPublishOp")(function* (input: {
   readonly session: CliSession;
   readonly viaGh: boolean;
@@ -109,7 +72,6 @@ export const keyPublishOp = Effect.fn("key-publish.keyPublishOp")(function* (inp
   const keys = yield* loadMasterKeys(input.session);
   const line = yield* openSshSigningKeyLine(keys);
   if (!input.viaGh) {
-    // stdout carries only the key line (usable via `maruhi key publish > key.pub` / `| pbcopy`)
     yield* io.log(line);
     yield* manualInstructions(keys);
     return;
@@ -123,13 +85,6 @@ export const keyPublishOp = Effect.fn("key-publish.keyPublishOp")(function* (inp
   );
 });
 
-/**
- * The registration route right after key generation (ruling G ⑥
- * (b)): on an interactive terminal + non-agent, a yes completes
- * registration via `gh`. Everything else (non-interactive, agent,
- * EOF, no) only shows guidance. A failure here must not affect the
- * key generation's success (registration can be done later).
- */
 export const offerGithubRegistration = Effect.fn("key-publish.offerGithubRegistration")(
   function* (input: {
     readonly session: CliSession;

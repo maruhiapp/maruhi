@@ -1,24 +1,3 @@
-// Generating the complete wrap set of an epoch DEK (CRYPTO_SPEC §5 /
-// §5.1 / §6.3, AUTH_SPEC §12-4 / §12-6).
-//
-// Shared implementation that generates the "complete wrap set" a composite
-// request (environment creation = epoch 1, rotation = new epoch) embeds
-// so it exactly matches the recipient set R(E) of the verified ChainState
-// (wrapRecipientsOf in @maruhi/crypto, the single definition of CRYPTO_SPEC
-// §6.2: the in-scope devices of the current members + the server keys of
-// valid grant_server whose disclosure scope contains the target
-// environment — §12-4). The wrap-recipient match check (§6.3's
-// ghost-member defense) has its main line on the client side; the
-// server's §12-6 verification is the auxiliary line (session-07 §5). The
-// recipient position of a server-addressed wrap's HPKE info /
-// registration signature is the server key FP (CRYPTO_SPEC §9).
-//
-// Wrap generation → signDekWrap → registration run as one sequence (the
-// signer = the calling principal — §5.1 / session-10 §5). On a CAS retry
-// the set is rebuilt only when the resync changed the recipient set
-// (members + in-scope grants) (§12-4 — HPKE Seal is random, so unneeded
-// re-wraps are avoided).
-
 import type { WrappedDek } from "@maruhi/api-schema";
 import {
   cryptoEffect,
@@ -54,18 +33,12 @@ import { displayText } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { outOfScopeMessage, refuseChainDeletedEnvironment } from "./scope.ts";
 
-/**
- * A wrap recipient's identifier: a member's user_id, a server's key FP (it
- * goes verbatim into HPKE info and the recipient position of the §5.1
- * signature target — CRYPTO_SPEC §9).
- */
 function recipientId(recipient: WrapRecipient): UserId | KeyFingerprintHex {
   return recipient.kind === "member"
     ? recipient.member.userId
     : recipient.grant.serverKeyFingerprintHex;
 }
 
-/** The wire recipient position: the class decides the id's brand (api-schema's WrappedDek union). */
 function recipientPositionOf(
   recipient: WrapRecipient,
 ):
@@ -80,12 +53,10 @@ function recipientEncPubHex(recipient: WrapRecipient): string {
   return recipient.kind === "member" ? recipient.device.encPubHex : recipient.grant.serverEncPubHex;
 }
 
-/** Result of building one wrap (a tagged Result with the real reason code — do not crush multiple causes into one generic message). */
 type WrapBuildResult =
   | { readonly kind: "ok"; readonly wrap: WrappedDek }
   | { readonly kind: "failed"; readonly reason: string };
 
-/** Why building one wrap failed (the reason is folded into the caller's message verbatim). */
 class WrapBuildFailed extends Data.TaggedError("WrapBuildFailed")<{
   readonly reason: string;
 }> {}
@@ -100,9 +71,6 @@ function wrapAndSignForEffect(input: {
   readonly signingKeyPair: SigningKeyPair;
 }): Effect.Effect<WrappedDek, WrapBuildFailed> {
   const { environmentId, epoch, dek, recipient } = input;
-  // Recipient identifier: member = user_id / server = server key FP (§9 —
-  // the same value goes into HPKE info and the recipient_user_id position
-  // of the §5.1 signature target)
   const id = recipientId(recipient);
   const encPubHex = recipientEncPubHex(recipient);
   return Effect.gen(function* () {
@@ -122,7 +90,6 @@ function wrapAndSignForEffect(input: {
     const wrapped = yield* cryptoEffect(() =>
       wrapDek({
         recipientPublicKey: recipientKey,
-        // Why it is unwrapped: input to the HPKE wrap (the crypto boundary). The product is the wrapped ciphertext
         dek: Redacted.value(dek),
         context: {
           projectId: input.projectId,
@@ -185,13 +152,6 @@ export function wrapAndSignFor(input: {
   );
 }
 
-/**
- * Builds the wrap set for one epoch: one wrap per recipient of R(E)
- * (wrapRecipientsOf — the in-scope devices of the current members plus the
- * server keys of active grants whose scope covers the environment — §6.2 /
- * §6.3 / §12-4), each wrap signed by the caller (§5.1). The recipients come
- * in wrapRecipientsOf's fixed order, so a request is reproducible.
- */
 export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
@@ -203,7 +163,6 @@ export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(f
   const recipients = wrapRecipientsOf(input.verified.state, input.environmentId);
   const wraps: WrappedDek[] = [];
   for (const recipient of recipients) {
-    // Identifiers are chain-derived free-form strings — always neutralize before emitting to the terminal
     const label =
       recipient.kind === "member"
         ? `member ${displayText(recipient.member.userId)} (device ${recipient.device.keyFingerprintHex})`
@@ -226,18 +185,11 @@ export const buildWrapCompleteSet = Effect.fn("dek-wrap.buildWrapCompleteSet")(f
   return wraps;
 });
 
-/**
- * Sameness of the target environment's wrap recipient set (members +
- * in-scope grants). Judges whether the wrap set may be reused on a CAS
- * retry (§12-4).
- */
 export function sameWrapRecipientSet(
   a: VerifiedProject,
   b: VerifiedProject,
   environmentId: EnvironmentId,
 ): boolean {
-  // wrapRecipientsOf lists R(E) in one fixed order, so equal sets give
-  // equal lists
   const left = wrapRecipientsOf(a.state, environmentId);
   const right = wrapRecipientsOf(b.state, environmentId);
   if (left.length !== right.length) {
@@ -254,68 +206,26 @@ export function sameWrapRecipientSet(
   });
 }
 
-/**
- * Order of roles (CRYPTO_SPEC §6.2). **Do not write it in the negative
- * form (`=== "reader"`)**: when Role gains a value below member, a
- * negative-form check silently passes. With `satisfies Record<Role,
- * number>`, this becomes a type error the moment a value is added.
- */
 export const ROLE_RANK = { reader: 0, member: 1, admin: 2, owner: 3 } satisfies Record<
   Role,
   number
 >;
 
-/** The signing member with the device that signs and its effective permission (§3 / §6.2). */
 interface WritingMember {
   readonly member: ChainMember;
   readonly device: ChainDevice;
   readonly permission: EffectivePermission;
 }
 
-/**
- * The shared guard of composite operations (environment creation,
- * rotation): that I am a chain-derived current member, that the signing
- * device (the key at hand) is a valid device of that person, that the
- * **device's effective role** is member or above (admin or above for
- * environment deletion — minimumRole), and that **the target
- * environment is included in the device's effective scope** (§6.2 / §6.3
- * — 2026-09-15 ES K4; device effective permission 2026-09-19 DK K4-17:
- * for create, `listed` cannot contain a nonexistent id, so only devices
- * with effective scope = all pass = the same single predicate as the
- * server). All exist to drop the request **before** DEK generation, HPKE
- * wrap, and pull (= recording `var.read`); they do not wait for the
- * server's 403. There is no refusal guard for when grant_server is valid
- * — the complete set includes the server-key recipient
- * (buildWrapCompleteSet / §12-4).
- *
- * The environment-existence check (rotate) and the ID-duplication check
- * (create) are operation-specific, so they stay with the callers.
- */
 export const requireWritingMember = Effect.fn("dek-wrap.requireWritingMember")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
-  /**
-   * Whether the operation acts on an environment the chain already holds
-   * (`existing`: a chain-deleted one is refused first — §6.2 pruned it from
-   * every listed scope, so the scope judgment would misreport it) or names a
-   * new one (`new`: env create, whose own check reports a burned ID as
-   * duplicate-environment). Required, so every caller decides.
-   */
   readonly target: "existing" | "new";
   readonly signerUserId: UserId;
-  /** The signing device's key (the computation point of effective permission — the person's (role, scope) is not passed to the check directly). */
   readonly signingKeyPair: SigningKeyPair;
-  /** Operation name embedded in the message (e.g. "rotation"). */
   readonly operation: string;
-  /** Wording for insufficient permission (written concretely per operation). */
   readonly forbidden: string;
-  /**
-   * Wording for out-of-scope (omitted = the default "ask for a widening"
-   * guidance). create guides with "creation requires scope = all" ("ask
-   * for a widening" does not apply).
-   */
   readonly outOfScope?: string;
-  /** The device's minimum effective role (omitted = member; environment deletion = admin — §12-3). */
   readonly minimumRole?: "member" | "admin";
 }): Effect.fn.Return<WritingMember, CliError> {
   const minimumRank = ROLE_RANK[input.minimumRole ?? "member"];

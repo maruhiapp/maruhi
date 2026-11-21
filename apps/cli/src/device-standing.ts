@@ -1,27 +1,3 @@
-// The standing of a device key on the chain (DK K13-1 — design
-// record dk-design.md §18).
-//
-// One place answers "what is this key on this project": active,
-// revoked (the target of an applied `revoke_device` addressed to
-// it), absent, or unsyncable. `device add` (branching on an
-// existing key, checking completion, expiry, `--replace` display),
-// `device list`, and `ownDeviceOrFail` (the revocation branch) use
-// the same predicate.
-//
-// The pure function `keyStandingIn` only applies to an
-// already-verified chain (`device list` and `key recover`
-// registrations do not double the sync). `keyStandingsOf` syncs
-// each project of the project list (server declaration — for
-// discovery) at the keyless pre-stage and calls the pure
-// function; a list/sync failure does not drop the command and
-// folds into facts (tamper signals ride on `evidence`). It does
-// not produce wording (the reporting side does — K12-10).
-//
-// Whether a ledger key is a reserve key is decided by the
-// reserve-key mark in the ledger's contents (CRYPTO_SPEC §8 — DK
-// K16). The only thing the chain says about a ledger key is
-// "whether it is revoked" (`ledgerKeyVerdictOf`).
-
 import { type ProjectId, type UserId } from "@maruhi/core";
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Effect, Result } from "effect";
@@ -35,7 +11,6 @@ import { fetchProjectMemberships } from "./project.package/index.ts";
 import { compareCodePoints } from "./scope.ts";
 import type { CliSession } from "./session.ts";
 
-/** A key's standing on a verified chain (excludes sync success/failure). */
 export type ChainKeyStanding =
   | {
       readonly kind: "active";
@@ -45,11 +20,6 @@ export type ChainKeyStanding =
   | { readonly kind: "revoked" }
   | { readonly kind: "absent" };
 
-/**
- * The standing of `fingerprintHex` for `userId` on one verified chain. A key that
- * is active wins over an earlier revocation (it can only be active again as a
- * new registration, which the chain would show).
- */
 export function keyStandingIn(
   verified: VerifiedProject,
   userId: UserId,
@@ -65,7 +35,6 @@ export function keyStandingIn(
     : { kind: "absent" };
 }
 
-/** The standing on one project (when unsyncable, that fact — not confused with "absent"). */
 export type KeyStanding =
   | (Extract<ChainKeyStanding, { readonly kind: "active" }> & {
       readonly context: ProjectContextBase;
@@ -74,11 +43,9 @@ export type KeyStanding =
   | {
       readonly kind: "unsynced";
       readonly message: string;
-      /** A contradiction in signed data (a chain-verification failure etc. — a tamper signal). */
       readonly evidence: boolean;
     };
 
-/** Syncs one project (the keyless front half) and derives the key's standing on it. */
 export function keyStandingOnProject(input: {
   readonly session: CliSession;
   readonly projectId: ProjectId;
@@ -90,18 +57,11 @@ export function keyStandingOnProject(input: {
   );
 }
 
-/** The standing across every project of the list (`listFailure` when it cannot be fetched). */
 export interface KeyStandings {
   readonly projects: readonly { readonly projectId: ProjectId; readonly standing: KeyStanding }[];
-  /** The failure of fetching the project list (null = fetched). On failure `projects` is empty. */
   readonly listFailure: string | null;
 }
 
-/**
- * The key's standing on every project the server lists for the caller (server-
- * reported — discovery only). Never fails: a list failure and each sync failure
- * are carried as facts.
- */
 export const keyStandingsOf = Effect.fn("device-standing.keyStandingsOf")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -125,7 +85,6 @@ export const keyStandingsOf = Effect.fn("device-standing.keyStandingsOf")(functi
   return { projects, listFailure: null };
 });
 
-/** From one sync's result (success / failure), produces one key's standing (when unsyncable, that fact). */
 function standingFrom(
   synced: Result.Result<ProjectContextBase, CliError>,
   session: CliSession,
@@ -143,7 +102,6 @@ function standingFrom(
   return standing.kind === "active" ? { ...standing, context } : standing;
 }
 
-/** The projects by standing (the material for reporting and branching). */
 export interface StandingGroups {
   readonly active: readonly {
     readonly projectId: ProjectId;
@@ -177,31 +135,15 @@ export function groupStandings(standings: KeyStandings): StandingGroups {
   return groups;
 }
 
-/**
- * What the chain says about a key opened from the ledger (DK
- * K16): whether it is a reserve key is decided by the mark in
- * the ledger's contents (CRYPTO_SPEC §8); the only thing the
- * chain says is "whether it is revoked anywhere". A revoked
- * reserve key does not work as a ledger key (when the user
- * revoked the reserve key with `device revoke`). It does not
- * produce wording (K12-10).
- */
 export type ReserveVerdict =
   | {
       readonly kind: "revoked";
       readonly projectIds: readonly ProjectId[];
-      /** Projects where it is not revoked (where it is still actively listed). */
       readonly activeProjectIds: readonly ProjectId[];
     }
   | {
       readonly kind: "usable";
-      /**
-       * Projects that could not be synced and so were not checked (a revocation there
-       * would be invisible). They do not stop the operation (DK K16-6), but the
-       * reporting side names them in a Note.
-       */
       readonly uncheckedProjectIds: readonly ProjectId[];
-      /** Failure to fetch the project list (null = fetched). If it failed, no project was checked. */
       readonly listFailure: string | null;
     };
 
@@ -220,13 +162,6 @@ export function reserveVerdictOf(standings: KeyStandings): ReserveVerdict {
       };
 }
 
-/**
- * Checks whether the ledger key is revoked anywhere by syncing
- * every project the server lists (`key recovery`, the pre-stage
- * of a ledger change). `key recover` applies `reserveVerdictOf`
- * directly on the chain it opened for registration (no double
- * sync).
- */
 export function ledgerKeyVerdictOf(input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;

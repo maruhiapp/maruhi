@@ -1,5 +1,3 @@
-// Tests for key generate / show and project init (genesis) / verify.
-
 import { computeChainEntryHash, verifyChain, type ChainEntry } from "@maruhi/crypto";
 import { Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -39,7 +37,6 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
   return env;
 }
 
-/** The recovery-registration status response (called by the tail of key show / generate). */
 function recoveryStatusHandler(registered: boolean): MockHandler {
   return onRequest("GET", "/auth/recovery/status", () => ({
     status: 200,
@@ -47,16 +44,10 @@ function recoveryStatusHandler(registered: boolean): MockHandler {
   }));
 }
 
-/** Accepts the recovery-wrap registration (the PUT of generate / recovery). */
 function recoveryPutHandler(): MockHandler {
   return onRequest("PUT", "/auth/recovery", () => ({ status: 204 }));
 }
 
-/**
- * Extracts the recovery-code line (4 chars × 13 groups) from the stderr
- * output. Being key material, the code never goes to stdout (which can be
- * redirected).
- */
 function displayedRecoveryCode(env: TestEnv): string {
   const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
   if (line === undefined) {
@@ -65,7 +56,6 @@ function displayedRecoveryCode(env: TestEnv): string {
   return line.trim();
 }
 
-/** Lazily queues the correct answer (the code's final group) to the save-confirmation prompt. */
 function queueSaveConfirmation(env: TestEnv): void {
   env.setPromptResponses([
     () => {
@@ -87,15 +77,10 @@ describe("maruhi key", () => {
     expect(record).not.toBeNull();
     if (record === null) throw new Error("expected a parsed master-key record");
     expect(record.suite).toBe("maruhi/v1");
-    // The secret side is a Redacted. Inspecting the raw value (length, no
-    // leakage into output) unwraps it first
     const encSkHex = Redacted.value(record.encSkHex);
     const sigSkSeedHex = Redacted.value(record.sigSkSeedHex);
     expect(encSkHex).toHaveLength(64);
-    // No redaction was stored = a record capable of restoring the key was
-    // written
     expect(stored).toContain(encSkHex);
-    // No secret-key material leaks into the output
     const output = env.logs.join("\n");
     expect(output).toContain("key fingerprint:");
     expect(output).not.toContain(encSkHex);
@@ -127,15 +112,8 @@ describe("maruhi key", () => {
     );
     expect(await runCli(["key", "show"], env.layer)).toBe(1);
     const message = env.errors.join("\n");
-    // It names the cause (which suite)
     expect(message).toContain("maruhi/v2");
-    // Unlike corruption, it must **not** be deleted: letting a user delete
-    // a key a future version wrote means permanent loss. Show the same
-    // guidance as the overwrite-prevention guard
-    // (ensureNoStoredMasterKey)
     expect(message).toContain("keep this record");
-    // The escape hatch is shown only in its **reversible** form (copy the
-    // value down before deleting)
     expect(message).toContain("Copy down the value first");
   });
 
@@ -155,8 +133,6 @@ describe("maruhi key", () => {
 
   it("show does not fail when the recovery status can't be fetched (usable offline)", async () => {
     const user = await makeTestUser("user-0001");
-    // No recovery/status handler = the situation where the server does
-    // not respond
     const maruhi = await start([]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -198,7 +174,6 @@ function meHandler(userId: string, orgs: readonly { orgId: string; slug: string 
   }));
 }
 
-/** Accepts genesis and returns the entry hash as the ID, like the real server. */
 function initHandler(record: (body: { orgId: string; entry: ChainEntry }) => void): MockHandler {
   return async (request) => {
     if (request.method !== "POST" || request.path !== "/projects") {
@@ -226,8 +201,6 @@ describe("maruhi project init", () => {
     seedSession(env, maruhi.origin, user);
 
     expect(await runCli(["project", "init"], env.layer)).toBe(0);
-    // The personal org is auto-selected (the display layer doesn't show
-    // org — §9-1), and the submitted genesis is verifiable on its own
     const body = submitted as { orgId: string; entry: ChainEntry } | null;
     expect(body?.orgId).toBe("org_personal");
     const verified = await verifyChain([body?.entry as ChainEntry]);

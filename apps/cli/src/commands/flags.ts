@@ -1,5 +1,3 @@
-// Shared flag/argument building blocks for the command declarations (discipline: see commands/index.ts).
-
 import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
 import { Effect, Schema } from "effect";
 import { Argument, CliError as EffectCliError, Flag, Param } from "effect/cli";
@@ -7,33 +5,11 @@ import { Argument, CliError as EffectCliError, Flag, Param } from "effect/cli";
 import { type CommandSpec, NON_BLANK_MESSAGE } from "../cli-formatter.ts";
 import { RUN_COMMAND_REQUIRED } from "../run.ts";
 
-/* -------------------------------------------------------------------------- */
-/* Declarations (checks ride on Effect's mechanisms — no hand-rolled scan) */
-/* -------------------------------------------------------------------------- */
-
-/**
- * A string that accepts no empty / whitespace-only value. Blocks the
- * accident of `maruhi push API_KEY --env "$ENV"` silently writing into the
- * default environment when ENV is unset.
- */
 const nonBlank = Schema.isPattern(/\S/, { message: NON_BLANK_MESSAGE });
 export const NonBlank = Schema.String.check(nonBlank);
 
-/**
- * A non-blank internal user id. A command argument is where a typed user
- * id enters the CLI, so decoding it mints the UserId that a chain entry's
- * target requires.
- */
 export const NonBlankUserId = UserIdSchema.check(nonBlank);
 
-/**
- * One value-taking option. `atMost(1)` expresses **the refusal of a
- * duplicated flag** in the declaration (effect's default is first-wins,
- * silently). The accident shape `maruhi pull --no-show $FLAGS` that would
- * display every secret is blocked here. With `noUncheckedIndexedAccess:
- * true` the result is `string | undefined` = meshes directly with
- * context.ts's {@link CommonFlags} (no Option conversion).
- */
 export function singleValued(name: string, description: string) {
   return Flag.String(name).pipe(
     Flag.withDescription(description),
@@ -43,11 +19,6 @@ export function singleValued(name: string, description: string) {
   );
 }
 
-/**
- * One value-taking option decoding through a branded-id schema — the flag
- * is where the id enters the CLI, so decoding mints the brand at the
- * declaration boundary.
- */
 export function singleValuedAs<A>(
   name: string,
   description: string,
@@ -61,14 +32,6 @@ export function singleValuedAs<A>(
   );
 }
 
-/**
- * One boolean option. **A boolean also needs `atMost(1)`**: a raw
- * `Flag.Boolean` resolves duplicates silently, and **the result changes
- * with the order typed** (measured: `--show --no-show` is `true` under
- * first-wins, `--no-show --show` is `false`). The shape where `--show`
- * sneaks into `$FLAGS` of `maruhi pull --no-show $FLAGS` (ef7cba1) must
- * not depend on the order.
- */
 export function singleFlag(name: string, description: string) {
   return Flag.Boolean(name).pipe(
     Flag.withDescription(description),
@@ -77,15 +40,6 @@ export function singleFlag(name: string, description: string) {
   );
 }
 
-/**
- * Derive the diagnostics' command declaration from **the command
- * definition itself**. A hand-written copy would leave only the
- * diagnostics stale when a flag is added. `Param` is a public type
- * carrying `kind` (`"flag"` / `"argument"`), so they can be sorted
- * straight off the declaration listing. The name uses the object key (=
- * the spelling typed: `--<key>` for a flag, `<key>` for a positional;
- * command-specs.test.ts checks both against the command's --help).
- */
 export function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec {
   const flags: string[] = [];
   const positionals: string[] = [];
@@ -95,11 +49,6 @@ export function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec
   return { flags, positionals };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Command definitions                                                        */
-/* -------------------------------------------------------------------------- */
-
-/** The common flags an environment command takes (same names as context.ts's CommonFlags). */
 export const commonFlags = () => ({
   ...projectFlags(),
   env: singleValuedAs(
@@ -109,7 +58,6 @@ export const commonFlags = () => ({
   ),
 });
 
-/** The common flags a project-level command takes (no env). */
 export const projectFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
   project: singleValuedAs(
@@ -119,12 +67,10 @@ export const projectFlags = () => ({
   ),
 });
 
-/** The common flags a session-level command takes (neither project nor env). */
 export const serverOnlyFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
 });
 
-/** `--mirror <url>` (PF2 — AUTH_SPEC §11-7): the read-only replica a read falls back to when the server is unreachable. */
 export const mirrorFlag = () => ({
   mirror: singleValued(
     "mirror",
@@ -132,15 +78,7 @@ export const mirrorFlag = () => ({
   ),
 });
 
-/** The declaration of the run target (after `--`) shared by `run` / `ci run`. */
 export const runCommandArgument = () =>
-  // Everything after `--` lands here (empty strings are kept too).
-  // `atLeast(1)` drops "a run with no run target" and `filter` drops "a
-  // run target that is an empty string" (the unset shape of `maruhi run --
-  // "$CMD"`). Both are declarations, and a second-or-later empty string is
-  // **kept as a child-process argument**. On rc.117 an atLeast of 0 becomes
-  // `MissingArgument`. The wording mapping lives in cli-formatter.ts (only
-  // the command argument is RUN_COMMAND_REQUIRED)
   Argument.String("command").pipe(
     Argument.withDescription("The command to run, written after `--` (passed to the child as-is)"),
     Argument.atLeast(1),
@@ -150,11 +88,6 @@ export const runCommandArgument = () =>
     ),
   );
 
-/**
- * The expiry flag taken by commands that can become proposals under
- * four-eyes (CRYPTO_SPEC §6.2 — K6). Never read on an operation the
- * policy doesn't target (a direct append).
- */
 export const proposalFlags = () => ({
   expires: singleValued(
     "expires",
@@ -162,37 +95,20 @@ export const proposalFlags = () => ({
   ),
 });
 
-/** `--env <id>` (repeatable) — the scope of invite / change-role (CRYPTO_SPEC §6.2 — 2026-09-15 ES K4). */
 export function scopeEnvFlag(description: string) {
   return Flag.String("env").pipe(
     Flag.withDescription(description),
     Flag.withSchema(EnvironmentIdSchema),
-    // Express repetition in the declaration (0 or more — atLeast(0) gives readonly EnvironmentId[])
     Flag.atLeast(0),
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Combination rules (`Command.validate`)                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The refusal of a `Command.validate` rule (contradictory or dependent
- * flags). The rule runs after parsing and before the handler, so the
- * refusal is reported like a parse error — the usage line plus this
- * message, exit 2 — and never costs a network round trip. The message is
- * fixed text: it names flags, never a typed value.
- */
 export function invalidFlagCombination(
   message: string,
 ): Effect.Effect<never, EffectCliError.ValidationError> {
   return Effect.fail(new EffectCliError.ValidationError({ message }));
 }
 
-/**
- * `--env` / `--all-envs` / `--no-envs` each set the whole scope, so at
- * most one of them is given (member change-role, device approve).
- */
 export function rejectCombinedScopeFlags(values: {
   readonly env: readonly string[];
   readonly "all-envs": boolean;
@@ -204,11 +120,6 @@ export function rejectCombinedScopeFlags(values: {
     : Effect.void;
 }
 
-/**
- * `--no-sync` reads no sync config, so also naming one with `--config` is
- * a contradiction (push, var rollback, var rotate). Refused rather than
- * silently skipping the config that was pointed at.
- */
 export function rejectNoSyncWithConfig(values: {
   readonly config: string | undefined;
   readonly "no-sync": boolean;

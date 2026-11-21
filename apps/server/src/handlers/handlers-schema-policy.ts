@@ -1,13 +1,3 @@
-// Handlers for the schemaPolicy configuration API (AUTH_SPEC §12-11).
-//
-// Check order (§12-3): authentication (middleware) → token scope
-// (GET = read / PUT = admin; out of scope 404 / insufficient level
-// 403) → DO (membership 404 / chain role — GET = reader or above /
-// PUT = admin or above). A session principal is outside the allowed
-// enumeration for both GET / PUT → 403 (session-capability.ts — §5).
-// The payload carries no signed structure (outside the strict-target
-// class — §12-10 (1)).
-
 import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";

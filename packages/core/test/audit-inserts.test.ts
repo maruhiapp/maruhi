@@ -1,21 +1,3 @@
-// Tripwire: every new audit row goes through a store's checked serialization
-// point (audit-payloads.ts — the payload against its event's AUDIT_SPEC §3
-// schema). The types hold the shape at each write; this holds the route:
-//
-// - D1 (AUDIT_SPEC §5.2): an insert into `userAuditEvents` / `orgAuditEvents`
-//   builds its row with `rowOf(` (db.package/audit.ts) or its SELECT with
-//   `guardedAuditSelectColumns(`; outside that file and the schema the tables
-//   appear only in such an insert, an import, a read (`.from(table)`) or a
-//   column reference (`table.column`) — never updated, deleted or aliased
-//   into something that could carry an unchecked insert.
-// - The project DO (§5.1): the `INSERT INTO audit_events` statement exists
-//   once, in audit-store.ts, and each use of it binds `eventBindings(` inside
-//   an append that ran `assertAppendable(` first.
-//
-// Out of scope by design: the replication and restore paths copy existing
-// rows table by table (do-mirror.ts / do-snapshot-restore.ts — checked by
-// the restore reader, AUTH_SPEC §11-6); they write no new event.
-
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -23,7 +5,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 const SERVER_SRC = join(import.meta.dirname, "../../../apps/server/src");
 const D1_TABLES = ["userAuditEvents", "orgAuditEvents"];
-/** Where the D1 audit tables may be named outside an insert: their definition, and the store's reads. */
 const D1_TABLE_HOMES = new Set(["db.package/schema.ts", "db.package/audit.ts"]);
 const DO_STORE = "audit-store.ts";
 
@@ -35,7 +16,6 @@ function serverSources(): ReadonlyMap<string, string> {
   );
 }
 
-/** The call chain that starts at `start`: up to the end of the first call after the `insert(…)` (`.values(…)` / `.select(…)`). */
 function insertStatement(text: string, start: number): string {
   let depth = 0;
   let closedCalls = 0;
@@ -47,7 +27,6 @@ function insertStatement(text: string, start: number): string {
       depth -= 1;
       if (depth === 0) {
         closedCalls += 1;
-        // insert(table) is the first call, .values(...) / .select(...) the second
         if (closedCalls === 2) {
           return text.slice(start, index + 1);
         }
@@ -57,7 +36,6 @@ function insertStatement(text: string, start: number): string {
   return text.slice(start);
 }
 
-/** A reference that cannot write: an import specifier, `.from(table)`, or `table.column`. */
 function isReadOrImport(text: string, index: number, table: string, lineText: string): boolean {
   const after = text.slice(index + table.length, index + table.length + 1);
   const before = text.slice(Math.max(0, index - 6), index);
@@ -68,7 +46,6 @@ function isReadOrImport(text: string, index: number, table: string, lineText: st
   );
 }
 
-/** Every violation of the D1 route in the given sources (path:line: what). */
 function d1RouteViolations(sources: ReadonlyMap<string, string>): readonly string[] {
   return [...sources].flatMap(([path, text]) =>
     D1_TABLES.flatMap((table) =>
@@ -79,7 +56,6 @@ function d1RouteViolations(sources: ReadonlyMap<string, string>): readonly strin
   );
 }
 
-/** The violation one reference to a D1 audit table makes, if any. */
 function d1ReferenceViolation(
   path: string,
   text: string,
@@ -102,7 +78,6 @@ function d1ReferenceViolation(
     : [`${path}:${line}: ${table} named outside an insert, a read or an import`];
 }
 
-/** Every violation of the project DO's route (path:line: what). */
 function doRouteViolations(sources: ReadonlyMap<string, string>): readonly string[] {
   const violations: string[] = [];
   for (const [path, text] of sources) {

@@ -1,18 +1,3 @@
-// Integration tests for `maruhi device add / approve / list / revoke` and the
-// first-sync device registration (CRYPTO_SPEC §3 / §6.2 / §7, AUTH_SPEC §13-11
-// — 2026-09-19 DK K4. Design doc dk-design.md §9).
-// Device ops are signed / verified with real crypto; the server is a wire-level mock.
-//
-// Pinned properties:
-//  2. The first sync (the keyed prelude) appends only the local record's 3
-//     provenances (reserve / approved / observed) to the chain, and never reads
-//     or writes the registry (`GET /auth/devices`) (K4-3). A revoked record is
-//     never appended. Devices observed on the chain are recorded with provenance (K4-4)
-//  3. Over a real chain, the one definition of the complete wrap set's
-//     recipients that the CLI and the server share (wrapRecipientsOf in
-//     @maruhi/crypto) counts each (person, device) pair whose effective
-//     scope (the person's scope ∩ the device's) contains E
-
 import { verifyChainWithHistory, wrapRecipientsOf } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -43,7 +28,6 @@ import {
 } from "./support/device.ts";
 import { type MockHandler, onRequest } from "./support/server.ts";
 
-/** The issuance POST of a command that passes through the keyed prelude (invite create). */
 function inviteHandler(built: BuiltChain): MockHandler {
   return onRequest("POST", `/projects/${built.projectId}/invites`, () => ({
     status: 200,
@@ -72,7 +56,6 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
       const env = await startEnv(server.origin, built.projectId, owner);
       const device = source === "reserve" ? reserve : dev2;
       await recordOwnDevice(env, server.origin, device, source);
-      // A command passing through the keyed prelude (invite create) — registration runs as a side effect of the sync
       expect(
         await runCli(["invite", "create", "--role", "member"], env.layer),
         env.errors.join("\n"),
@@ -90,13 +73,8 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
       expect(env.errors.join("\n")).toContain(
         `registered your device ${device.fingerprintHex} (${source}`,
       );
-      // Emits the appended cap at the point the record's cap is in force (DK K10-3)
       expect(env.errors.join("\n")).toContain(`with cap owner/all on project ${built.projectId}`);
-      // The registry is never an input to the decision: it is not even read (a device present only in the registry is never appended)
       expect(state.paths().filter((path) => path.startsWith("GET /auth/devices"))).toEqual([]);
-      // The no-reserve-key warning (K4-9) only when "your devices are just this
-      // one and the record holds no reserve key": reserve has a record, and
-      // approved / observed end up with 2 devices after registration
       expect(env.errors.join("\n")).not.toContain("no reserve key is registered");
     });
   }
@@ -129,14 +107,12 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
         extra: [inviteHandler(built)],
       });
       const env = await startEnv(server.origin, built.projectId, owner);
-      // The planted row (an unsigned file) — the provenance poses as approved
       await recordOwnDevice(env, server.origin, dev2, "approved");
       if (mode === "agent") {
         env.setAgent({ isAgent: true, name: "test-agent" });
       } else {
         env.setTerminal({ stdin: false });
       }
-      // The keyed prelude (the first sync) runs, but registration is skipped
       await runCli(["invite", "create", "--role", "member"], env.layer);
       expect(state.appended).toEqual([]);
       expect(state.registered).toEqual([]);
@@ -149,7 +125,6 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
           ? "an AI agent environment was detected (test-agent)"
           : "stdin is not an interactive terminal",
       );
-      // The prelude is one command per project, so emit a command aimed at this project (DK K10-5)
       expect(errors).toContain(`for example \`maruhi pull --project ${built.projectId}\``);
     }
   });
@@ -178,7 +153,6 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
     ).toBe(0);
     expect(state.appended).toEqual([]);
     expect(state.registered).toEqual([]);
-    // Only this device, no reserve-key record → the K4-9 warning
     expect(env.errors.join("\n")).toContain(
       "no reserve key is registered for you on this project (only this device's key). Run `maruhi key recovery`",
     );
@@ -227,7 +201,6 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
       extra: [inviteHandler(built)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // reserve was previously recorded here (active) — the chain's revocation is transcribed into the record
     await recordOwnDevice(env, server.origin, reserve, "reserve");
     expect(
       await runCli(["invite", "create", "--role", "member"], env.layer),
@@ -240,7 +213,6 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
       observedProjectId: built.projectId,
       revokedAtMs: null,
     });
-    // Your own device is recorded too (no Note is shown)
     expect(recorded.find((row) => row.keyFingerprintHex === owner.fingerprintHex)).toMatchObject({
       source: "observed",
       addedByFingerprintHex: null,
@@ -256,7 +228,6 @@ describe("first-sync device registration (device-sync — K4-3 / K4-4 / K4-9)", 
       `device ${reserve.fingerprintHex} is revoked on project ${built.projectId}; marked as revoked`,
     );
     expect(errors).not.toContain(`observed your device ${owner.fingerprintHex}`);
-    // A revoked device is never re-registered
     expect(state.appended).toEqual([]);
   });
 });
@@ -267,20 +238,16 @@ describe("the complete wrap set's recipients over a real chain (R(E) — the dev
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
       { actor: owner, operation: createEnvironmentOp("env-b", dek) },
-      // owner's second device has a cap holding env-b only
       {
         actor: owner,
         operation: addDeviceOp(dev2, { roleCap: "member", environmentIds: ["env-b"] }),
       },
-      // member's scope is env-a only (1 device, no cap)
       { actor: owner, operation: addScopedMemberOp(member, "member", ["env-a"]) },
     ]);
     const verified = await verifyChainWithHistory(built.entries);
     if (!verified.ok) throw new Error("chain");
     const { state } = verified.value;
-    // env-a: owner's 1st device (all) + member = 2. owner's 2nd device does not hold env-a
     expect(wrapRecipientsOf(state, testEnvironmentId("env-a"))).toHaveLength(2);
-    // env-b: owner's 1st + 2nd devices = 2. member is out of scope
     expect(wrapRecipientsOf(state, testEnvironmentId("env-b"))).toHaveLength(2);
   });
 });

@@ -1,11 +1,3 @@
-// Tests for the valueless schema (design doc §1-6): `maruhi schema
-// export` (derived-snapshot generation — the JSON Schema subset mapping,
-// generated-marker framing, determinism) and `maruhi schema
-// verify-snapshot` (CI drift check — fail-loud, names/field-names-only
-// reporting, no descriptions in output). Both commands are pinned as the
-// read-only, zero-value keyless class (no agent gate, no master key
-// needed).
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,13 +29,9 @@ const DESCRIPTION_URL = "Primary endpoint of the shop";
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared (required, url type, with a description). */
 let declaredRequired: WireDistributedVariableStatement;
-/** declared (required = false, no type, no description). */
 let declaredOptional: WireDistributedVariableStatement;
-/** active (number type, required). */
 let activeNumber: WireDistributedVariableStatement;
-/** active (v1 — no schema fields). */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -110,7 +98,6 @@ function chainHandler(): MockHandler {
   }));
 }
 
-/** A metadata-only pull response (declared variables live inside `variables` — §12-7). */
 function metadataHandler(variables: readonly WireDistributedVariableStatement[]): MockHandler {
   return onRequest(
     "GET",
@@ -155,7 +142,6 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv & { o
   return { ...env, origin: server.origin };
 }
 
-/** Extracts export's stdout (one line = the whole artifact). */
 function exportedText(env: TestEnv): string {
   expect(env.logs).toHaveLength(1);
   return env.logs[0] ?? "";
@@ -170,16 +156,11 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
     expect(snapshot["type"]).toBe("object");
     expect(snapshot["title"]).toBe(`maruhi variables — environment ${ENV_ID}`);
     expect(snapshot["properties"]).toEqual({
-      // Names in UTF-16 ascending order (determinism). v1 = an empty
-      // schema (no fabricated constraints), a "" type = no type keyword,
-      // url = string + format uri, an empty description = omitted
       LEGACY_KEY: {},
       OPTIONAL_HINT: {},
       PORT: { type: "number", description: "listen port" },
       SHOP_URL: { type: "string", format: "uri", description: DESCRIPTION_URL },
     });
-    // required = only statements with required = true (v1 doesn't get
-    // in — required is never invented; optional doesn't either)
     expect(snapshot["required"]).toEqual(["PORT", "SHOP_URL"]);
   });
 
@@ -191,11 +172,8 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
     const comment = snapshot["$comment"] as string;
     expect(comment).toContain("machine-generated data, not instructions");
     expect(comment).toContain("source of truth");
-    // Positive guidance toward agents that have maruhi (§1-6)
     expect(comment).toContain("`maruhi schema`");
     expect(comment).toContain("verify-snapshot");
-    // Types are treated as declarations — the artifact never uses the
-    // word "verified" either (§14.3)
     expect(output.toLowerCase()).not.toContain("verified");
   });
 
@@ -203,8 +181,6 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     env.setTerminal({ stdout: false });
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
-    // All of stdout is valid JSON as-is (the framing is the in-JSON
-    // $comment's job)
     expect(() => JSON.parse(exportedText(env))).not.toThrow();
   });
 
@@ -217,11 +193,6 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
   });
 
   it("a variable named `__proto__` still appears as an own key of properties", async () => {
-    // The name is a free string from a signed statement — plain object
-    // assignment gets eaten by the setter and the variable silently
-    // vanishes from properties while surviving in required, a
-    // self-contradictory artifact (undetectable even by byte comparison
-    // since export and verify share the generator)
     const proto = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -241,9 +212,6 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
     };
     expect(Object.hasOwn(snapshot.properties, "__proto__")).toBe(true);
     expect(snapshot.required).toContain("__proto__");
-    // It also appears as an own key in the generated text itself
-    // (JSON.parse creates an own key, but had the generator dropped it,
-    // the string wouldn't contain it either)
     expect(output).toContain('"__proto__": {');
   });
 
@@ -264,14 +232,11 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
 });
 
 describe("maruhi schema verify-snapshot (§1-6 — the CI drift check)", () => {
-  /** The state of export's output written verbatim to a file (the committed snapshot). */
   async function exportedSnapshotFile(): Promise<string> {
     const env = await startEnv([chainHandler(), metadataHandler(defaultVariables())]);
     expect(await runCli(["schema", "export"], env.layer)).toBe(0);
     const dir = await mkdtemp(join(tmpdir(), "maruhi-snapshot-"));
     const file = join(dir, "maruhi-schema.json");
-    // The same shape as a shell redirect (export > file) = generated
-    // line + trailing newline
     await writeFile(file, `${exportedText(env)}\n`);
     return file;
   }
@@ -294,8 +259,6 @@ describe("maruhi schema verify-snapshot (§1-6 — the CI drift check)", () => {
     expect(errors).toContain("diverges from the store");
     expect(errors).toContain("SHOP_URL");
     expect(errors).toContain("description");
-    // The description's contents (file-side or store-side) never reach
-    // the terminal report (§2)
     expect(errors).not.toContain("Edited by hand");
     expect(errors).not.toContain(DESCRIPTION_URL);
     expect(errors).toContain("regenerate");
@@ -334,9 +297,6 @@ describe("maruhi schema verify-snapshot (§1-6 — the CI drift check)", () => {
   });
 
   it("a title mismatch is named as possibly 'a different environment's snapshot'", async () => {
-    // A different environment's file whose variable set happens to match
-    // must not be collapsed into generic formatting-drift wording. The
-    // file-side title contents (attacker-writable) stay out of the report
     const file = await exportedSnapshotFile();
     const { readFile: read } = await import("node:fs/promises");
     const parsed = JSON.parse(await read(file, "utf8")) as { title: string };
@@ -346,8 +306,6 @@ describe("maruhi schema verify-snapshot (§1-6 — the CI drift check)", () => {
     expect(await runCli(["schema", "verify-snapshot", file], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("generated for a different environment");
-    // The file-side title contents are never carried to the terminal
-    // report
     expect(errors).not.toContain("prod-EVIL");
     expect(errors).not.toContain("\u001b");
   });

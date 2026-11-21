@@ -1,7 +1,3 @@
-// Tests for pull (§5.1 distribution-time verification + §12-7 all-epoch DEKs)
-// and run (memory injection), and for the AI-agent-detection boundary
-// (value display is refused / run is allowed).
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -16,7 +12,6 @@ import {
 } from "./support/pull-run.ts";
 import { type MockHandler, onRequest } from "./support/server.ts";
 
-/** The version history of one variable, as the server declares it (PF7a — the push time behind the max-age note). */
 function historyHandler(variableId: string, pushedAtMs: number, status = 200): MockHandler {
   const { built, owner } = fixture;
   return onRequest(
@@ -47,7 +42,6 @@ function historyHandler(variableId: string, pushedAtMs: number, status = 200): M
 describe("the max-age note at the point of use (PF7a S-E)", () => {
   const day = 24 * 60 * 60 * 1000;
 
-  /** ALPHA re-declared under layout v3 with a 30-day max age (the value is unchanged). */
   async function expiringAlpha() {
     const { built, owner, entryAlpha } = fixture;
     return {
@@ -78,12 +72,10 @@ describe("the max-age note at the point of use (PF7a S-E)", () => {
     expect(errors).toMatch(
       /Note: 1 value past the max age its schema declares: ALPHA \(max age 30d, pushed \d{4}-\d{2}-\d{2}, expired 10 days ago\) — rotate it \(`maruhi rotation list` shows the next step for each\)/,
     );
-    // BETA declares no interval: no history call was made for it
     const server = servers[servers.length - 1];
     expect(
       server?.requests.filter((request) => request.path.includes("/variables/vb/versions")),
     ).toHaveLength(0);
-    // The same note on pull
     const pullEnv = await startEnv([
       chainHandler(),
       pullHandler({ variables: [alpha, fixture.entryBeta] }),

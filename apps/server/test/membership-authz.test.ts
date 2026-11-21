@@ -1,10 +1,3 @@
-// Integration tests for the membership log's chain-API authorization
-// (AUTH_SPEC §11) + GET /chain + CAS (the CRYPTO_SPEC §6.4 optimistic
-// lock).
-// The shared fixture and vector-replay helpers live in
-// support/membership-scenario.ts (for the split's motivation see the
-// top of the scenario module).
-
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
@@ -39,7 +32,6 @@ import {
 } from "./support/membership-scenario.ts";
 import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
 
-/** The user-table names of a project DO (empty = never materialized — Sc-7 / A-4). */
 async function projectDoTableNames(projectId: string): Promise<string[]> {
   const rows = await queryProjectDo(
     projectId,
@@ -71,7 +63,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     const get = await getChain(vectorProjectId, bearer(strangerToken));
     expect(get.status).toBe(404);
 
-    // Signatures are rejected at membership before verification (no current-head info is returned either)
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const forged: ChainEntry = {
@@ -97,9 +88,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
   });
 
   it("removed members are concealed too: the §11-2 mapping of actor-not-member (via composite)", async () => {
-    // user-member-0002 is removed at seq 5. Later writes (rotate goes
-    // through the composite) are rejected not by chain verification
-    // (422) but by the membership judgment's 404 (existence hiding)
     const nonmember = vectorAuthzNegatives.find((n) => n.name === "authz-nonmember-actor");
     if (nonmember === undefined) throw new Error("missing authz-nonmember-actor vector");
     const { head } = await replayVectorChain(nonmember.entry.seq - 1);
@@ -113,8 +101,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     await replayVectorChain(4);
     const entry5 = vectorEntries[4];
     if (entry5 === undefined) throw new Error("missing vector entry 5");
-    // entry5 (remove_member)'s actor is user-owner-0001. Sending it
-    // under a member token does not match
     const response = await appendEntry(
       vectorProjectId,
       entry5.prev_hash_hex,
@@ -167,12 +153,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
   });
 
   it("distinguishes write from admin ops (the §6 op→required-permission table)", async () => {
-    // seq 3 (create_environment) and seq 4 (rotate_epoch) are write
-    // requirements via the composite endpoint and pass under a
-    // write-scope token. Under the same write scope, remove_member (an
-    // admin requirement, via generic append) is a 403 — this test
-    // distinguishes a regression that would crush every op to write
-    // (or admin)
     await replayVectorChain(2);
     const writeScope: readonly TokenScope[] = [{ project: "*", permission: "write" }];
     const memberWrite = await cliToken(9002, writeScope);
@@ -189,9 +169,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
       ...bearer(memberWrite),
     });
     expect(created.status).toBe(200);
-    // Since the creation composite's boundary checkpoint (H+2)
-    // advances the head, the rotate is re-signed at the real head (op
-    // / payload / actor stay the vector's)
     const createdHead = (await created.json()) as { headSeq: number; headHashHex: string };
     const { entry: entry4 } = await resignEntryAt(
       toWireEntry(vector4),
@@ -207,7 +184,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     });
     expect(rotated.status).toBe(200);
 
-    // seq 5 is remove_member (admin required), actor user-owner-0001
     const ownerWrite = await cliToken(9001, writeScope);
     const entry5 = vectorEntries[4];
     if (entry5 === undefined) throw new Error("missing vector entry 5");
@@ -238,9 +214,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     if (genesis === undefined) throw new Error("missing genesis vector");
     const session = await loginSession(9001);
 
-    // Chain appends and init are §5's explicit rejection surface:
-    // uniformly 403 session-not-allowed regardless of the CSRF header
-    // (the capability judgment precedes the CSRF check)
     const headers = sessionHeaders(session);
     const withoutCsrf: Record<string, string> = { cookie: headers["cookie"] ?? "" };
     const rejected = await initChain(toWireEntry(genesis), {
@@ -255,7 +228,6 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     expect(withCsrf.status).toBe(403);
     expect(((await withCsrf.json()) as { reason: string }).reason).toBe("session-not-allowed");
 
-    // The same body is accepted under a token principal (proving the rejection was due to the session principal)
     const accepted = await initChain(toWireEntry(genesis), {
       headers: { ...JSON_HEADERS, ...bearer(await cliToken(9001)) },
     });
@@ -268,14 +240,10 @@ describe("GET /projects/:projectId/chain", () => {
     const never = "ab".repeat(32);
     const response = await getChain(never);
     expect(response.status).toBe(404);
-    // The DO's tables are created only at genesis acceptance: an authenticated
-    // GET to an arbitrary project ID leaves no storage (Sc-7 / A-4).
     expect(await projectDoTableNames(never)).toEqual([]);
   });
 
   it("materializes the DO's tables at genesis acceptance (Sc-7 / A-4)", async () => {
-    // A never-touched project ID holds no tables (the negative above); the
-    // genesis acceptance (init) is what materializes them.
     await replayVectorChain(1);
     const tables = await projectDoTableNames(vectorProjectId);
     expect(tables).toContain("chain_entries");
@@ -289,8 +257,6 @@ describe("GET /projects/:projectId/chain", () => {
 
   it("allows every chain-derived member including reader to fetch (§6.2)", async () => {
     await replayVectorChain(6);
-    // At seq 5 user-admin-0003 is added as a reader and change_role'd
-    // at seq 6. At any point, a chain-derived member can fetch
     const response = await getChain(vectorProjectId, bearer(tokenFor("user-admin-0003")));
     expect(response.status).toBe(200);
   });
@@ -304,9 +270,6 @@ describe("CAS (the §6.4 optimistic lock)", () => {
     if (entry2 === undefined || genesis === undefined) {
       throw new Error("missing vector entries");
     }
-    // CAS is checked with a test-time-signed remove_member (seq 3, an
-    // op subject to generic append) (vector seq 3 is create_environment
-    // and goes through the composite — covered by data tests)
     const { entry } = await signEntryAt({
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
@@ -314,14 +277,12 @@ describe("CAS (the §6.4 optimistic lock)", () => {
       operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
 
-    // Setting the parent to the genesis hash (a head one step stale) is rejected and returns the current head
     const stale = await appendEntry(vectorProjectId, genesis.entry_hash_hex, entry);
     expect(stale.status).toBe(409);
     const body = (await stale.json()) as { currentHeadSeq: number; currentHeadHashHex: string };
     expect(body.currentHeadSeq).toBe(2);
     expect(body.currentHeadHashHex).toBe(entry2.entry_hash_hex);
 
-    // Retrying with the correct parent is accepted (the client's re-sync/retry flow)
     const retried = await appendEntry(vectorProjectId, entry2.entry_hash_hex, entry);
     expect(retried.status).toBe(200);
   });
@@ -336,9 +297,6 @@ describe("CAS (the §6.4 optimistic lock)", () => {
       actorUserId: "user-owner-0001",
       operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
-    // The format of the CAS comparison target is pinned as Sha256Hex
-    // (64 lowercase hex chars): a malformed one never reaches the 409
-    // (with current-head info) and falls at the schema boundary's 400
     for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {
       const response = await appendEntry(vectorProjectId, bad, entry);
       expect(response.status).toBe(400);
@@ -351,23 +309,15 @@ describe("CAS (the §6.4 optimistic lock)", () => {
     const uninitialized = "cd".repeat(32);
     const response = await appendEntry(uninitialized, "0".repeat(64), toWireEntry(entry2));
     expect(response.status).toBe(404);
-    // A write to a never-initialized project folds to 404 without materializing the DO (Sc-7 / A-4).
     expect(await projectDoTableNames(uninitialized)).toEqual([]);
   });
 });
 
 describe("init materializes only after the genesis is accepted (Sc-7 / A-4)", () => {
-  // These call the DO's init RPC directly: the tables must be created after
-  // every refusal branch (verifyAcceptableEntry, the project-id-mismatch
-  // check), so a rejected genesis leaves no storage. Moving the
-  // materialization ahead of either check would pass every other test but
-  // these.
   it("a rejected genesis (a bad signature) leaves no tables", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
     const fresh = "a1".repeat(32);
-    // A genesis whose signature does not verify: verifyAcceptableEntry rejects
-    // it before any table is created
     const tampered = { ...toWireEntry(genesis), signatureHex: "00".repeat(64) };
     const outcome = await callProjectDo(fresh, (instance) =>
       instance.init(fresh, tampered, { admitFresh: true }),
@@ -379,8 +329,6 @@ describe("init materializes only after the genesis is accepted (Sc-7 / A-4)", ()
   it("a genesis routed to a mismatched project id leaves no tables", async () => {
     const genesis = vectorEntries[0];
     if (genesis === undefined) throw new Error("missing genesis vector");
-    // A valid genesis, but the DO it is routed to is not its hash: the
-    // project-id-mismatch check refuses it before any table is created
     const fresh = "a2".repeat(32);
     const outcome = await callProjectDo(fresh, (instance) =>
       instance.init(fresh, toWireEntry(genesis), { admitFresh: true }),

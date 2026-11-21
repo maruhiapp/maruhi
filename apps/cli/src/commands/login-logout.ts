@@ -1,5 +1,3 @@
-// `maruhi login` / `maruhi logout` (discipline: see commands/index.ts).
-
 import { hostname } from "node:os";
 
 import {
@@ -37,13 +35,6 @@ export const loginConfig = {
 
 export const logoutConfig = serverOnlyFlags();
 
-/**
- * The length check of `--token-name` (**the given value itself never
- * appears in the error**). The bound reads the same constant as
- * `@maruhi/api-schema`'s declaration (transcribing the number onto the
- * CLI side would keep refusing under a stale bound when the declaration
- * is relaxed).
- */
 function requireTokenName(value: string | undefined): Effect.Effect<string, CliError> {
   const name = value ?? `cli:${hostname()}`;
   return name.length > MAX_TOKEN_NAME_LENGTH
@@ -51,13 +42,6 @@ function requireTokenName(value: string | undefined): Effect.Effect<string, CliE
     : Effect.succeed(name);
 }
 
-/**
- * The range check of `--token-ttl-days` (AUTH_SPEC §6). The bound and
- * default read the same constants as `@maruhi/api-schema`'s declaration
- * (same reason as requireTokenName: a misspelling drops before the
- * browser approval completes). An omitted one is returned as undefined,
- * left to the server-side default (90 days).
- */
 function requireTokenTtlDays(
   value: number | undefined,
 ): Effect.Effect<number | undefined, CliError> {
@@ -78,20 +62,8 @@ export function makeLoginLogoutCommands() {
         import("../login.ts").then((m) => ({ loginOp: m.loginOp })),
       );
 
-      // Checked **before any communication**. The bound is shared with
-      // api-schema (MAX_TOKEN_NAME_LENGTH). Without it, a too-long name
-      // surfaces as start's encode failure (a diagnostic confusingly close
-      // to a connection failure)
       const tokenName = yield* requireTokenName(values["token-name"]);
       const expiresInDays = yield* requireTokenTtlDays(values["token-ttl-days"]);
-      // --show-token prints the issued PAT's raw value to the terminal
-      // (AUTH_SPEC §6's "one place of terminal display at issuance" —
-      // ruling CK). The displayability is judged by the same fail-closed
-      // two-layer gate as value display (ADR-0016 decision 7), **before
-      // any communication**: on an environment where it is refused, a
-      // completed browser approval would revoke only the old token through
-      // a same-name rotation and end with no new raw value obtained (the
-      // worst failure shape — just breaking the CI token to be replaced)
       if (values["show-token"]) {
         yield* ensureValueDisplayAllowed;
       }
@@ -101,10 +73,6 @@ export function makeLoginLogoutCommands() {
         origin,
         tokenName,
         showToken: values["show-token"],
-        // The default-name judgment uses the resolved actual name
-        // (explicitly passing cli:<hostname> also counts as the default
-        // name — the branch keys on the fact that a plain re-login becomes
-        // a same-name rotation. Ruling CM)
         tokenNameIsDefault: tokenName === `cli:${hostname()}`,
         ...(expiresInDays === undefined ? {} : { expiresInDays }),
       });

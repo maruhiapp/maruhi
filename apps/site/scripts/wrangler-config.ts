@@ -1,18 +1,3 @@
-// The wrangler-native rendering of cloudflare.config.ts's serving fields,
-// for local serving of the built site (scripts/preview.ts and the site
-// e2e).
-//
-// `cf dev` delegates to the framework's dev server when it detects one
-// (Astro → `astro dev`), which serves the source tree, not the built
-// output, and applies none of the production serving semantics (the
-// _headers of Workers Static Assets, htmlHandling, notFoundHandling).
-// Production deploys evaluate the Alchemy declaration (alchemy.run.ts
-// at the repo root — ADR-0012 revision 1); cloudflare.config.ts's
-// serving fields mirror it (the drift check in apps/server pins the
-// values), and wrangler.config.ts supplies the assets directory.
-// Rendering those values into the config format `wrangler dev` reads
-// keeps preview and e2e serving the same bytes the same way production
-// does — generated from the cf config, never a second hand-kept copy.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -20,7 +5,6 @@ import config from "../cloudflare.config.ts";
 
 const siteRoot = join(import.meta.dirname, "..");
 
-/** The wrangler-native rendering of cloudflare.config.ts's serving fields. */
 export function wranglerConfigJson(): string {
   const { name, compatibilityDate, assets } = config.worker;
   if (assets === undefined) {
@@ -31,7 +15,6 @@ export function wranglerConfigJson(): string {
       name,
       compatibility_date: compatibilityDate,
       assets: {
-        // Relative to the generated file (apps/site/.cloudflare/)
         directory: "../dist",
         html_handling: assets.htmlHandling,
         not_found_handling: assets.notFoundHandling,
@@ -42,7 +25,6 @@ export function wranglerConfigJson(): string {
   )}\n`;
 }
 
-/** Writes the generated config under .cloudflare/ and returns its path. */
 export function writeWranglerConfig(): string {
   const path = join(siteRoot, ".cloudflare", "preview-wrangler.jsonc");
   mkdirSync(dirname(path), { recursive: true });

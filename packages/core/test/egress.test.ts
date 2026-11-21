@@ -12,7 +12,6 @@ interface Captured {
   readonly redirect: RequestRedirect | undefined;
 }
 
-/** A fetch stub recording what reached the wire. */
 function captureFetch(): { readonly fetch: typeof fetch; readonly seen: Captured[] } {
   const seen: Captured[] = [];
   const stub = (async (_url: unknown, init?: RequestInit) => {
@@ -29,7 +28,6 @@ const request = HttpClientRequest.get("https://egress.test/x").pipe(
   HttpClientRequest.setHeaders({ accept: "application/json", "x-caller": "set-by-caller" }),
 );
 
-/** Two requests under one parent span — one on the parent fiber, one forked. */
 const twoRequests = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   yield* client.execute(request);
@@ -71,11 +69,6 @@ describe("egressHttpClientLayer", () => {
   });
 
   it("keeps the fixed fetch options when provided under an ambient egress client", async () => {
-    // The CLI command environment already holds an egress client; a module
-    // that needs `redirect: "manual"` provides its own layer inside it. A
-    // build-time RequestInit would be dropped there (the ambient
-    // FetchHttpClient build is reused), and a redirect would re-send the
-    // caller's credentials
     const { fetch, seen } = captureFetch();
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -94,9 +87,6 @@ describe("egressHttpClientLayer", () => {
 });
 
 describe("outbound clients are built only in packages/core/src/egress.ts", () => {
-  // The import of FetchHttpClient / BunHttpClient is pinned by oxlint
-  // (vite.config.ts no-restricted-imports); a client built from scratch with
-  // HttpClient.make / makeWith would bypass both, so it is pinned here
   const repoRoot = join(import.meta.dirname, "../../..");
   const sourceRoots = ["apps", "packages"].flatMap((group) =>
     readdirSync(join(repoRoot, group)).map((name) => join(repoRoot, group, name, "src")),

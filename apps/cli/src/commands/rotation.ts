@@ -1,5 +1,3 @@
-// `maruhi rotation` (discipline: see commands/index.ts).
-
 import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -49,7 +47,6 @@ export const rotationDismissConfig = {
     EnvironmentIdSchema,
   ),
   all: singleFlag("all", "Dismiss every currently-active flag (an explicit acceptance of risk)"),
-  // Not taken on a --all run. atMost(1) expresses "omitted under --all" in the declaration
   variable: Argument.String("variable").pipe(
     Argument.withDescription("Variable ID to dismiss (omit with --all)"),
     Argument.withSchema(VariableIdSchema),
@@ -114,7 +111,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     Command.withDescription(
       "List the currently active rotation flags and the values past their max age (--fail-on-due / --fail-on-flags make a CI cron out of it)",
     ),
-    // --due-within sets the window of --fail-on-due / --fail-on-pending, so it needs one of them
     Command.validate((values) =>
       values["due-within"] !== undefined && !values["fail-on-due"] && !values["fail-on-pending"]
         ? invalidFlagCombination("--due-within applies to --fail-on-due / --fail-on-pending only")
@@ -135,8 +131,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
           })),
         );
 
-      // The targets' format is checked by the declarations, and the
-      // request's shape (a missing target) is settled before communication too
       const request = yield* parseDismissRequest({
         all: values.all,
         environmentId: values.env ?? null,
@@ -170,8 +164,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
           )
         : Effect.void,
     ),
-    // A single dismissal names the pair <variableId> --env <environmentId>;
-    // --env without a variableId only narrows --all
     Command.validate((values) =>
       values.all || (values.variable === undefined) === (values.env === undefined)
         ? Effect.void
@@ -183,10 +175,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  // Neither list nor dismiss requires the master key (the flags are
-  // non-secret metadata, and the name resolution is only reading verified
-  // statements — the same keyless class as project verify). dismiss's
-  // authority (admin or above × admin scope) is enforced server-side
   const rotationProposals = Command.make(
     "proposals",
     rotationProposalsConfig,
@@ -232,9 +220,6 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
       );
 
       const io = yield* CliIo;
-      // The proposal decides the environment: it is looked up through a
-      // keyless project context first, then the environment context (the
-      // device key) is opened for its environment
       const lookup = yield* openMetadataProject(values);
       const proposal = yield* findProposal(yield* fetchRotationProposals(lookup), values.id);
       const context = yield* openEnvironment({ ...values, env: proposal.environmentId });

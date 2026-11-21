@@ -1,21 +1,3 @@
-// The command layer's lazy entry points into context.ts and session.ts
-// (P-6 — commands/shared.ts's note), and into two rotation helpers several
-// commands share (rotation.ts's reportRotationChecklist and sweep-rotate.ts's
-// sweepRotateFor, which import context.ts): one wrapper for each context.ts
-// and session.ts function a command calls, and one for each of the two
-// helpers (commands/rotation.ts loads the rest of rotation.ts itself). A
-// wrapper takes the arguments of the function it names and returns that
-// function's effect, which loads the module when it runs (sweepRotateFor's
-// returns its rotation function, which loads the module when a rotation
-// runs). So a command imports these statically, and parsing, help and
-// version still load none of the modules (test/startup-loads.test.ts runs
-// them and checks). A leaf: nothing here imports another commands/ file.
-//
-// The wrappers are exported under the names of the functions they wrap (the
-// list at the end), so a command's call reads as the direct call. Their
-// local names differ so that a load's binding, which must carry the wrapped
-// function's name, shadows nothing.
-
 import { Effect } from "effect";
 
 import type * as Context from "../context.ts";
@@ -23,10 +5,6 @@ import type { CliError } from "../errors.ts";
 import type * as Rotation from "../rotation.ts";
 import type * as Session from "../session.ts";
 import type * as SweepRotate from "../sweep-rotate.ts";
-
-/* -------------------------------------------------------------------------- */
-/* context.ts                                                                 */
-/* -------------------------------------------------------------------------- */
 
 const lazyCheckInviteAnchor = (
   ...args: Parameters<typeof Context.checkInviteAnchor>
@@ -148,7 +126,6 @@ const lazyResolveProjectId = (
     ({ resolveProjectId }) => resolveProjectId(...args),
   );
 
-/** Generic in the read's value, so it is declared rather than derived from context.ts's type. */
 const lazyWithMirrorFallback = <A>(
   flags: Context.CommonFlags,
   read: (flags: Context.CommonFlags) => Effect.Effect<A, CliError, Context.CliServices>,
@@ -159,10 +136,6 @@ const lazyWithMirrorFallback = <A>(
     ),
     ({ withMirrorFallback }) => withMirrorFallback(flags, read),
   );
-
-/* -------------------------------------------------------------------------- */
-/* session.ts                                                                 */
-/* -------------------------------------------------------------------------- */
 
 const lazyLoadMasterKeys = (
   ...args: Parameters<typeof Session.loadMasterKeys>
@@ -194,10 +167,6 @@ const lazyResolveServerOrigin = (
     ({ resolveServerOrigin }) => resolveServerOrigin(...args),
   );
 
-/* -------------------------------------------------------------------------- */
-/* rotation.ts and sweep-rotate.ts                                            */
-/* -------------------------------------------------------------------------- */
-
 const lazyReportRotationChecklist = (
   ...args: Parameters<typeof Rotation.reportRotationChecklist>
 ): ReturnType<typeof Rotation.reportRotationChecklist> =>
@@ -210,7 +179,6 @@ const lazyReportRotationChecklist = (
     ({ reportRotationChecklist }) => reportRotationChecklist(...args),
   );
 
-/** sweepRotateFor returns the rotation function, so the load waits for a rotation. */
 const lazySweepRotateFor =
   (
     ...args: Parameters<typeof SweepRotate.sweepRotateFor>

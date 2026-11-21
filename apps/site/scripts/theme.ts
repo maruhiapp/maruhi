@@ -1,28 +1,11 @@
-// Theme generation for the apex site (LP + docs — Nimbus) (ruling B —
-// docs/notes/web-design-pass.md §4 "rulings made while implementing DP2").
-//
-// The only home for brand definitions is apps/web/theme/ (ADR-0013). From
-// its artifact maruhi.css (the output of `astryx theme build` — the
-// vermilion pair + on-accent pair are fixed in tokens, warm neutral is
-// HCT-derived), this **writes** the site's Nimbus theme tokens (`--nb-*`,
-// src/styles/brand.css) and the constants the site's config / tests read. To avoid hand-writing raw hex on the
-// site side (no double bookkeeping), the artifacts are committed and
-// test/unit/theme.test.ts checks "regenerated = committed" (the same shape
-// as DP1's "matches the generated CSS" contract).
-//
-// Along the same path, brand assets (favicon / logo / OG / apple-touch-icon)
-// are copied from apps/web/public, and the dark-mode logo (an SVG with fill
-// swapped to the dark accent) is derived.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** A pair of values, light and dark. */
 export interface ModePair {
   readonly light: string;
   readonly dark: string;
 }
 
-/** Brand tokens extracted from maruhi.css (all hex). */
 export interface BrandTokens {
   readonly accent: ModePair;
   readonly onAccent: ModePair;
@@ -35,34 +18,18 @@ export interface BrandTokens {
   readonly radius: string;
 }
 
-/** Repo-relative paths (the catalog of generation inputs and outputs). */
 export const paths = {
-  /** Input: the Astryx theme's generated CSS (the canonical brand artifact). */
   webThemeCss: "apps/web/theme/maruhi.css",
-  /** Input: the single-color vermilion logo (painted with the light accent). */
   webLogo: "apps/web/public/logo.svg",
-  /** Output: the site's brand stylesheet (Nimbus token overrides + fonts). */
   themeCss: "apps/site/src/styles/brand.css",
-  /** Output: the constants the site's astro.config.ts / e2e read. */
   tokensTs: "apps/site/theme/tokens.ts",
-  /** Output: the dark-mode logo (fill swapped to the dark accent). */
   logoDark: "apps/site/public/logo-dark.svg",
 } as const;
 
-/** Brand assets copied unmodified from apps/web/public to apps/site/public. */
 export const copiedAssets = ["favicon.svg", "logo.svg", "og.png", "apple-touch-icon.png"] as const;
 
 const HEX = "#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?";
 
-/**
- * Returns the theme's own token block: the `:scope { ... }` rule inside the
- * maruhi `@scope` of `@layer astryx-theme`, where the generator declares
- * the theme's custom properties. Since @astryxdesign 0.7.15 the generator
- * also writes concrete light-dark pairs into component-state rules outside
- * this block (a selected item's --color-text-secondary, for example,
- * carries the neutral value, not the brand one), so brand extraction must
- * read only this block; whole-file uniqueness no longer holds.
- */
 function themeTokenBlock(css: string): string {
   const layerAt = css.indexOf("@layer astryx-theme {");
   const themeAt = layerAt < 0 ? -1 : css.indexOf('@scope ([data-astryx-theme="maruhi"])', layerAt);
@@ -84,12 +51,6 @@ function themeTokenBlock(css: string): string {
   throw new Error("apps/web/theme/maruhi.css: theme token block is not closed");
 }
 
-/**
- * Extracts exactly one `--<token>: light-dark(<hex>, <hex>)` declaration
- * from the theme token block. Uniqueness is required within the block
- * (multiple differing pairs means the generation rule's premise changed —
- * fail).
- */
 function pickPair(css: string, token: string): ModePair {
   const re = new RegExp(`--${token}:\\s*light-dark\\((${HEX}),\\s*(${HEX})\\)`, "g");
   const pairs = new Set<string>();
@@ -115,7 +76,6 @@ function pickLength(css: string, token: string): string {
   return [...values][0]!;
 }
 
-/** Extracts the brand tokens from maruhi.css's theme token block. */
 export function extractBrand(webThemeCss: string): BrandTokens {
   const block = themeTokenBlock(webThemeCss);
   return {
@@ -151,14 +111,6 @@ const nimbusTokenMap = (
   ["--nb-code-background", b.popover[mode]],
 ];
 
-/**
- * Renders the site's brand stylesheet. It is imported after Nimbus's
- * globals.css (src/layouts/BaseLayout.astro), so its `:root` /
- * `[data-mode="dark"]` definitions of the `--nb-*` tokens win, and the
- * Tailwind `@theme` mapping in globals.css picks them up. It also carries
- * the @font-face rules for the self-hosted woff2 fonts (public/fonts —
- * the same files the dashboard theme uses; no external font requests).
- */
 export function renderThemeCss(b: BrandTokens): string {
   const block = (selector: string, mode: keyof ModePair): string =>
     `${selector} {\n${nimbusTokenMap(b, mode)
@@ -196,34 +148,22 @@ ${block('[data-mode="dark"]', "dark")}`;
 
 const pair = (p: ModePair): string => `{ light: "${p.light}", dark: "${p.dark}" }`;
 
-/** Renders the constants module imported by the site e2e (on-accent and surface are used only on the brand.css side). */
 export function renderTokensTs(b: BrandTokens): string {
   return `// ${GENERATED_BANNER.split("\n").join("\n// ")}
 // Brand tokens extracted from the Astryx maruhi theme (docs/notes/web-design-pass.md §3 / §4).
 
-/** Vermilion accent — the red of the ㊙ mark (light) and its dark-mode tone. */
 export const accent = ${pair(b.accent)} as const;
 
-/** Page background (warm neutral body). */
 export const background = ${pair(b.background)} as const;
 
-/** Body text. */
 export const foreground = ${pair(b.foreground)} as const;
 
-/** Secondary text. */
 export const mutedForeground = ${pair(b.mutedForeground)} as const;
 
-/** Borders and dividers. */
 export const border = ${pair(b.border)} as const;
 `;
 }
 
-/**
- * Dark-mode logo: replaces the fill of apps/web/public/logo.svg (fill =
- * the light accent) with the dark accent. If no replacement target is
- * found, the premise (the SVG's red = light accent — DP1 ruling A) is
- * broken, so it fails.
- */
 export function renderLogoDark(logoSvg: string, b: BrandTokens): string {
   const light = b.accent.light.toLowerCase();
   const re = new RegExp(`fill="${light}"`, "gi");
@@ -234,12 +174,10 @@ export function renderLogoDark(logoSvg: string, b: BrandTokens): string {
   }
   const note = `<!-- @generated: apps/web/public/logo.svg with the fill swapped to the dark-mode accent (${b.accent.dark}) — see apps/site/scripts/build-theme.ts -->\n`;
   const swapped = logoSvg.replace(re, `fill="${b.accent.dark}"`);
-  // Insert the provenance right after the original leading comment (before <svg)
   const at = swapped.indexOf("<svg");
   return `${swapped.slice(0, at)}${note}${swapped.slice(at)}`;
 }
 
-/** The whole set of artifacts (path → content). Binary assets are copied as Buffer. */
 export function renderAll(repoRoot: string): ReadonlyMap<string, string | Buffer> {
   const css = readFileSync(join(repoRoot, paths.webThemeCss), "utf8");
   const brand = extractBrand(css);

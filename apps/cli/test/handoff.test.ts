@@ -1,25 +1,3 @@
-// Integration tests for the reserve-key handoff (CRYPTO_SPEC §8.4 /
-// AUTH_SPEC §13-7 — KL3, 2026-09-19 DK K4): `maruhi key recover --handoff`
-// (the requester) and `maruhi guardian approve <code>` (the approver).
-// Ephemeral keys and share sealing/decryption are real crypto; the server is
-// a wire-level mock.
-//
-// Properties pinned down:
-//  1. The requester prints the code (the encoding of E.pub = public
-//     information) to stderr; once enough guardian approvals arrive, it
-//     decrypts reserve key B from the ledger's group wrap and — **without
-//     storing it** — issues a fresh device key for this device (the
-//     recovery tail — key-recover.ts). E.pub itself is never sent to the
-//     server (only request_id). The old-device approval path (device
-//     migration) was removed in K4
-//  2. The approver (guardian) opens the share row sealed to their own
-//     device key (`deviceShares`) and re-seals it to E.pub. Only the
-//     ephemeral key's secret key can open it. An approval carries no blob
-//     column
-//  3. Anything but yes sends nothing. You cannot approve your own request.
-//     Agent environments and non-terminals refuse both requesting and
-//     approving
-
 import {
   computeHandoffRequestId,
   decodeHandoffCode,
@@ -60,7 +38,6 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 import { advanceUntilSettled, waitFor, withTestClock } from "./support/test-clock.ts";
 
 let ward: TestUser;
-/** ward's reserve key (the B the ledger seals — a different key from the device key). */
 let reserve: TestUser;
 let alice: TestUser;
 
@@ -84,7 +61,6 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-/** The key record the ledger holds (same shape as seedSession). */
 function recordOf(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
@@ -92,8 +68,6 @@ function recordOf(user: TestUser): StoredMasterKey {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
-    // The test's `reserve` is a CLI-generated reserve key (marked — DK K16).
-    // Everything else is a device key
     ...(user === reserve ? { kind: "reserve" as const } : {}),
   };
 }
@@ -111,7 +85,6 @@ async function start(handlers: readonly MockHandler[]): Promise<Started> {
   return { env, server };
 }
 
-/** A new device with no key (token only). */
 function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   env.keychain.set(
     tokenEntryName(origin),
@@ -124,7 +97,6 @@ function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
   );
 }
 
-/** The handoff code the requester printed to stderr (4 chars × 15 groups = 58 symbols + separators). */
 function displayedCode(env: TestEnv): string {
   const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{2,4}){14}$/.test(entry));
   if (line === undefined) {
@@ -133,7 +105,6 @@ function displayedCode(env: TestEnv): string {
   return line.trim();
 }
 
-/** Recovers E.pub and request_id from the code (the same derivation as the approver side). */
 async function decodeDisplayed(env: TestEnv): Promise<{
   readonly publicKey: Uint8Array;
   readonly requestId: string;
@@ -145,7 +116,6 @@ async function decodeDisplayed(env: TestEnv): Promise<{
   return { publicKey: decoded.value, requestId: requestId.value };
 }
 
-/** The approval's distribution form (HandoffApprovalResult — no blob column). */
 interface ApprovalWire {
   readonly source: string;
   readonly shareIndex: number;
@@ -156,7 +126,6 @@ interface ApprovalWire {
   readonly createdAtMs: number;
 }
 
-/** The ledger's group wrap (ward's reserve key B wrapped under the KEK — any: the KEK is the only share). */
 async function wrappedReserve(kek: Uint8Array): Promise<{
   readonly nonceHex: string;
   readonly ciphertextHex: string;
@@ -173,13 +142,6 @@ async function wrappedReserve(kek: Uint8Array): Promise<{
   };
 }
 
-/**
- * Builds guardian `approver`'s approval server-side: re-seals the share
- * (= the KEK) to the E.pub read from the requester's display (E.pub is
- * carried by the human). `sealedAs` is the approver of the sealing context
- * (defaults to `approver` itself — a different person produces a
- * context-mismatched approval).
- */
 async function guardianApprovalFor(
   env: TestEnv,
   approver: TestUser,
@@ -223,7 +185,6 @@ function statusHandler(groups: readonly unknown[]): MockHandler {
   }));
 }
 
-/** An `any` group of alice alone (ledger state — share rows are per device). */
 function aliceAnyGroup(): unknown {
   return {
     groupId: GROUP_ID,
@@ -239,7 +200,6 @@ function aliceAnyGroup(): unknown {
   };
 }
 
-/** `POST /auth/handoff` — receives only request_id (E.pub never rides along). */
 function createHandler(record: (body: { requestId: string }) => void): MockHandler {
   return onRequest("POST", "/auth/handoff", (request) => {
     record(request.body as { requestId: string });
@@ -247,7 +207,6 @@ function createHandler(record: (body: { requestId: string }) => void): MockHandl
   });
 }
 
-/** `GET /auth/handoff/:id/approvals` — returns the built approvals regardless of the path's request_id. */
 function approvalsHandler(build: () => Promise<readonly ApprovalWire[]>): MockHandler {
   return (request) =>
     request.method === "GET" && /^\/auth\/handoff\/[0-9a-f]{64}\/approvals$/.test(request.path)
@@ -255,7 +214,6 @@ function approvalsHandler(build: () => Promise<readonly ApprovalWire[]>): MockHa
       : null;
 }
 
-/** `GET /auth/key-wraps/guardians/:groupId` — the ledger's group wrap (carries no shares). */
 function groupHandler(wrap: {
   readonly nonceHex: string;
   readonly ciphertextHex: string;
@@ -271,7 +229,6 @@ function groupHandler(wrap: {
   }));
 }
 
-/** `GET /projects` — the project list the recovery tail scans (empty = nowhere to register). */
 const noProjectsHandler: MockHandler = onRequest("GET", "/projects", () => ({
   status: 200,
   json: { projects: [] },
@@ -284,8 +241,6 @@ const cancelHandler: MockHandler = (request) =>
 
 describe("maruhi key recover --handoff (the requester)", () => {
   it("guardian (any): opens the ledger wrap with the share, never stores the reserve key, and issues a fresh device key", async () => {
-    // Ledger: ward's reserve key B wrapped under the KEK, and the KEK (= the
-    // `any` share) already sealed to alice
     const kek = generateMasterWrapKek();
     const chain = await buildChain([
       { actor: ward, operation: genesisOp(ward) },
@@ -304,17 +259,11 @@ describe("maruhi key recover --handoff (the requester)", () => {
       cancelHandler,
     ]);
     seedTokenOnly(env, server.origin, ward);
-    // The recovery tail's single confirmation question (the reserve key is
-    // a key ward's device added via add_device — DK K14)
     env.setPromptResponses(["yes"]);
     expect(await runCli(["key", "recover", "--handoff"], env.layer)).toBe(0);
-    // request_id matches the code's derivation, and E.pub itself was never
-    // sent
     const { publicKey, requestId } = await decodeDisplayed(env);
     expect((createBody as { requestId: string } | null)?.requestId).toBe(requestId);
     expect(JSON.stringify(server.requests.map((r) => r.body))).not.toContain(encodeHex(publicKey));
-    // The keychain gets the **new device key**. The ledger's reserve key
-    // (B) is not stored
     const stored = env.keychain.get(masterKeyEntryName(server.origin, ward.userId));
     expect(stored).toBeDefined();
     expect(stored).not.toContain(reserve.encSkHex);
@@ -339,17 +288,12 @@ describe("maruhi key recover --handoff (the requester)", () => {
     expect(logs).toContain("Generated this device's key");
     expect(logs).toMatch(/key fingerprint: [0-9a-f]{32}/);
     expect(logs).not.toContain(`key fingerprint: ${reserve.fingerprintHex}`);
-    // A key marked as a reserve key is recorded without asking (DK K16-3 /
-    // K16-6)
     expect(env.prompts).toEqual([]);
     expect(errors).toContain(
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
     );
-    // No key material appears in the output
     expect(logs).not.toContain(reserve.encSkHex);
     expect(errors).not.toContain(reserve.encSkHex);
-    // It fetches the ledger wrap and deletes the request that served its
-    // purpose
     expect(
       server.requests.some(
         (r) => r.method === "GET" && r.path === `/auth/key-wraps/guardians/${GROUP_ID}`,
@@ -363,8 +307,6 @@ describe("maruhi key recover --handoff (the requester)", () => {
     const { env, server } = await start([
       createHandler(() => {}),
       statusHandler([aliceAnyGroup()]),
-      // The sealing context's approver (ward) differs from the attested
-      // approver (alice) → cannot be opened
       approvalsHandler(async () => [await guardianApprovalFor(env, alice, kek, ward)]),
       groupHandler(await wrappedReserve(kek)),
       noProjectsHandler,
@@ -376,7 +318,6 @@ describe("maruhi key recover --handoff (the requester)", () => {
       `Cannot open the approval from ${alice.userId}: it was not sealed to this request's key, or its context was altered in transit. The handoff was aborted — re-run and hand the new code to the guardians again`,
     );
     expect(env.keychain.get(masterKeyEntryName(server.origin, ward.userId))).toBeUndefined();
-    // Never reaches the ledger wrap
     expect(server.requests.some((r) => r.path === `/auth/key-wraps/guardians/${GROUP_ID}`)).toBe(
       false,
     );
@@ -393,9 +334,6 @@ describe("maruhi key recover --handoff (the requester)", () => {
   });
 
   it("ends the approval wait at the request's expiry with the full message (the round past the deadline never fetches)", async () => {
-    // A 2-second TTL: the first round fetches while valid and parks in the
-    // 3-second wait; the round past the deadline ends the wait without
-    // fetching — the failure carries the last page's count (0)
     let fetches = 0;
     const { env, server } = await start([
       onRequest("POST", "/auth/handoff", () => ({
@@ -411,8 +349,6 @@ describe("maruhi key recover --handoff (the requester)", () => {
     seedTokenOnly(env, server.origin, ward);
     const { layer, testClock } = await withTestClock(env.layer);
     const run = runCli(["key", "recover", "--handoff"], layer);
-    // One fetch lands while the request is valid; the next wake lands past
-    // the 2s TTL, so the round past the deadline is the terminal one
     await waitFor(() => (fetches === 1 ? true : undefined));
     await advanceUntilSettled(testClock, run);
     expect(await run).toBe(1);
@@ -450,7 +386,6 @@ describe("maruhi key recover --handoff (the requester)", () => {
   });
 });
 
-/** The requester's ephemeral key and code (the test plays the requester). */
 async function makeRequester(): Promise<{
   readonly keyPair: EncryptionKeyPair;
   readonly code: string;
@@ -464,7 +399,6 @@ async function makeRequester(): Promise<{
   return { keyPair, code: code.value, requestId: requestId.value };
 }
 
-/** The approval's payload (HandoffApproval — no blob column). */
 interface ApproveBody {
   readonly source: string;
   readonly shareIndex: number;
@@ -473,7 +407,6 @@ interface ApproveBody {
   readonly ciphertextHex: string;
 }
 
-/** The lookup response (`roles` is only the guardian-share shape — the legacy "device" is gone). */
 function lookupOf(wardUser: TestUser, wardLogin: string | null): unknown {
   return {
     wardUserId: wardUser.userId,
@@ -494,7 +427,6 @@ function approveHandler(requestId: string, record: (body: ApproveBody) => void):
   });
 }
 
-/** The ledger's share (the KEK sealed to guardian `guardian`'s device key). */
 async function sealedShareFor(
   guardian: TestUser,
   kek: Uint8Array,
@@ -516,10 +448,6 @@ async function sealedShareFor(
   return { encHex: encodeHex(share.value.enc), ciphertextHex: encodeHex(share.value.ciphertext) };
 }
 
-/**
- * `GET /auth/guardian/shares/:groupId` (GuardianShareResult): the leading
- * row's fields plus `deviceShares` (all of your device rows — K3-10).
- */
 function myShareHandler(
   rows: readonly {
     readonly guardianKeyFingerprintHex: string;
@@ -544,8 +472,6 @@ describe("maruhi guardian approve <code> (the approver)", () => {
   it("guardian: opens the share row addressed to their device and re-seals to E.pub (any)", async () => {
     const requester = await makeRequester();
     const kek = generateMasterWrapKek();
-    // The ledger's share rows: a row for alice's device key and a dummy
-    // row for another (e.g. revoked) device
     const mine = await sealedShareFor(alice, kek);
     const other = await sealedShareFor(ward, kek);
     let approved: ApproveBody | null = null;
@@ -597,7 +523,6 @@ describe("maruhi guardian approve <code> (the approver)", () => {
     expect(env.errors.join("\n")).toContain(
       "the approval was sealed to the requester's one-time key and nothing was stored on this device",
     );
-    // The share, KEK, and secret key never appear in the output
     expect(logs).not.toContain(encodeHex(kek));
     expect(logs).not.toContain(alice.encSkHex);
     expect(env.errors.join("\n")).not.toContain(alice.encSkHex);
@@ -608,8 +533,6 @@ describe("maruhi guardian approve <code> (the approver)", () => {
     const kek = generateMasterWrapKek();
     const { env, server } = await start([
       lookupHandler(requester.requestId, lookupOf(ward, null)),
-      // Only a row addressed to alice's other device (no row with this
-      // device's FP)
       myShareHandler([
         {
           guardianKeyFingerprintHex: "00".repeat(16),
@@ -631,8 +554,6 @@ describe("maruhi guardian approve <code> (the approver)", () => {
   it("you cannot approve your own request (device migration does not go through the handoff)", async () => {
     const requester = await makeRequester();
     const { env, server } = await start([
-      // Even if the server wrongly shows the request to ward themself,
-      // refuse locally
       lookupHandler(requester.requestId, lookupOf(ward, null)),
       approveHandler(requester.requestId, () => {}),
     ]);
@@ -691,8 +612,6 @@ describe("maruhi guardian approve <code> (the approver)", () => {
     const requester = await makeRequester();
     const kek = generateMasterWrapKek();
     const mine = await sealedShareFor(alice, kek);
-    // Well-formed but undecryptable: one flipped character in the
-    // ciphertext (e.g. the ward sealed to a previous key of this device)
     const tampered = `${mine.ciphertextHex.slice(0, -2)}${mine.ciphertextHex.endsWith("00") ? "01" : "00"}`;
     const { env, server } = await start([
       lookupHandler(requester.requestId, lookupOf(ward, null)),

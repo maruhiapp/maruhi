@@ -1,8 +1,4 @@
 ---
-/**
- * TabsList — container for tab triggers with animated indicator bar.
- * Renders `role="tablist"` with a sliding underline indicator.
- */
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 
@@ -36,8 +32,6 @@ const { class: className, ...attrs } = Astro.props;
 </div>
 
 <style>
-  /* A strip that scrolls fades at the edge with more tabs behind it, since its
-     scrollbar is hidden. tabs.client.ts sets data-overflow. */
   [data-nb-tabs-list][data-overflow="end"] {
     mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
   }
@@ -47,7 +41,6 @@ const { class: className, ...attrs } = Astro.props;
   [data-nb-tabs-list][data-overflow="both"] {
     mask-image: linear-gradient(to right, transparent, #000 2.5rem, #000 calc(100% - 2.5rem), transparent);
   }
-  /* Right to left, the strip starts at the right edge. */
   [data-nb-tabs-list][data-overflow="end"]:dir(rtl) {
     mask-image: linear-gradient(to left, #000 calc(100% - 2.5rem), transparent);
   }

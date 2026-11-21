@@ -1,26 +1,8 @@
-// Reference generator for sealed-value.json (CRYPTO_SPEC §5.3 — sealed
-// value proposals). Uses hpke-js for the same reason as dek-wrap.json:
-// an implementation family independent of the panva hpke the product
-// implementation adopts, and the Seal direction can be pinned
-// deterministically via ekm derandomize (impossible with panva.
-// docs/notes/spike-c.md). A disposable reference tool, not product code.
-// All keys and values are dummies.
-//
-// Reads dek-wrap.json and seals to the **same recipient device key** as
-// its `basic` vector, at the same project / environment coordinates: a
-// sealed value goes to the device key that also receives DEK wraps
-// (§5.3 — the recipient set W(E) is a subset of R(E)). The plaintext is
-// a dummy credential string, not a DEK.
-//
-// Regenerate: bun install && bun run generate (run in this directory —
-// after generate-dek-wrap.mjs)
 import { readFileSync, writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 length-prefixed encoding (each tool carries its own
-// independent definition — tools/ is disposable)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -51,7 +33,6 @@ const suite = new CipherSuite({
   aead: new Aes256Gcm(),
 });
 
-// --- Inherit the recipient device key and coordinates from dek-wrap.json ---
 const dekWrapDoc = JSON.parse(readFileSync(new URL("../dek-wrap.json", import.meta.url), "utf8"));
 const basicWrap = dekWrapDoc.vectors.find((v) => v.name === "basic");
 if (basicWrap === undefined) {
@@ -62,22 +43,14 @@ const environmentId = basicWrap.environment_id;
 const recipientUserId = basicWrap.recipient_user_id;
 const pkRm = fromHex(dekWrapDoc.recipient_keypair.pkRm_hex);
 
-// The proposal id is client-chosen (16 random bytes as lowercase hex —
-// §5.3). A fixed pattern for the vector
 const proposalId = hex(pat(0x30, 16));
 const otherProposalId = hex(pat(0x31, 16));
 const variableId = "var-database-url-0001";
 const companionVariableId = "var-database-user-0001";
 
-// Dummy proposed credentials (the plaintext of a sealed value is the
-// proposed variable value's bytes — a text credential here)
 const value = utf8("postgres://app_b:rotated-dummy-password@db.example:5432/shop");
 const companionValue = utf8("app_b");
 
-// --- The sealed value (§5.3) -------------------------------------------
-// info = LP("maruhi/v1/sealed-value", project_id, environment_id, proposal_id, variable_id, base_version, recipient_user_id)
-// base_version = the version the proposed value replaces (a server cannot
-// re-label a stale proposal as current — the member's Open fails)
 const SEALED_DOMAIN = "maruhi/v1/sealed-value";
 const DEK_WRAP_DOMAIN = "maruhi/v1/dek-wrap";
 const baseVersion = 3;
@@ -101,10 +74,10 @@ const companionInfo = sealedInfo(
   companionBaseVersion,
   recipientUserId,
 );
-const aad = new Uint8Array(0); // Same as §5: context binding is carried by info; aad is empty
+const aad = new Uint8Array(0);
 
 const ikmE = pat(0x50, 32);
-const ikmE2 = pat(0x60, 32); // an independent ekm per Seal
+const ikmE2 = pat(0x60, 32);
 
 async function seal(infoBytes, plaintext, ekm) {
   const sender = await suite.createSenderContext({
@@ -119,8 +92,6 @@ async function seal(infoBytes, plaintext, ekm) {
 const basic = await seal(info, value, ikmE);
 const companion = await seal(companionInfo, companionValue, ikmE2);
 
-// A tampered ciphertext (one byte flipped inside the AES-GCM body) must
-// fail Open — pins that the tag covers the whole body
 const tampered = basic.ct.slice();
 tampered[3] ^= 0x01;
 

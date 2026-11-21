@@ -1,17 +1,3 @@
-// Probe for the pipe semantics of the redacted relay (live.ts
-// startRedactedRelay — review finding pf4-design.md §19 C-1), run under Bun
-// by live-run.test.ts:
-//
-//   mode "flood":      the child writes lines forever; the test pipes this
-//                      probe into `head -c`, so our stdout closes early. The
-//                      relay must then stop and the child must be ended
-//                      (SIGPIPE), and this process must exit
-//   mode "grandchild": the child starts a background grandchild that holds
-//                      the pipes open for 20 s and exits at once. The relay
-//                      must not wait for the grandchild
-//
-// Writes the exit code as a JSON line on stderr (stdout is the child's).
-
 import { Effect } from "effect";
 
 import { liveLayer } from "../../src/live.ts";

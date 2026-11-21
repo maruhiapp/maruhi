@@ -1,14 +1,3 @@
-// Tests for `maruhi proxy run` (proxy-run.ts / proxy.package/command.ts — PF4,
-// docs/notes/pf4-design.md), end to end through runCli against a mock
-// maruhi server: the environment is pulled and verified like `run`, the
-// child receives placeholders for brokered variables and real values only
-// for pass-through ones, the control variables point it at the proxy and
-// the run's CA, a request made through that proxy with the placeholder
-// reaches the origin with the real value, and the temp directory is gone
-// afterwards. Also: the config's refusals, a connector whose input is
-// missing (child never started), `--project` mismatch, agent detection
-// (allowed, like run), `unlisted: passthrough`, and `--verbose`.
-
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -158,7 +147,6 @@ function handlers(): MockHandler[] {
   ];
 }
 
-/** A test environment with a session, the default project / environment, and a proxy config file. */
 async function startEnv(
   config: unknown,
   options: { readonly accepted?: boolean } = {},
@@ -175,9 +163,7 @@ async function startEnv(
   const configDir = await mkdtemp(join(tmpdir(), "maruhi-proxy-run-test-"));
   const configPath = join(configDir, "maruhi.proxy.json");
   await writeFile(configPath, typeof config === "string" ? config : JSON.stringify(config));
-  // The CA files land under XDG_RUNTIME_DIR when set (so the test can see them vanish)
   env.setEnvVar("XDG_RUNTIME_DIR", configDir);
-  // A person accepted the config on this machine (§21 R-8 / R-14) — unless a test says otherwise
   if (typeof config !== "string" && options.accepted !== false) {
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain("(first use)");
@@ -204,7 +190,6 @@ function proxyPortOf(call: RunnerCall): number {
   return Number(new URL(call.extraEnv["HTTPS_PROXY"] ?? "").port);
 }
 
-/** The run's proxy credential as the child sees it (the userinfo of HTTPS_PROXY). */
 function proxyAuthOf(call: RunnerCall): string {
   const url = new URL(call.extraEnv["HTTPS_PROXY"] ?? "");
   return `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
@@ -224,7 +209,6 @@ describe("maruhi proxy run", () => {
       expect(e["https_proxy"]).toBe(e["HTTPS_PROXY"]);
       expect(e["NO_PROXY"]).toBe("");
       expect(e["NODE_USE_ENV_PROXY"]).toBe("1");
-      // The CA files exist for the child's lifetime, under the private runtime dir
       caDir = dirname(e["SSL_CERT_FILE"] ?? "");
       expect(caDir.startsWith(join(configDir, "maruhi-proxy-"))).toBe(true);
       const bundle = await readFile(e["SSL_CERT_FILE"] ?? "", "utf8");
@@ -236,9 +220,7 @@ describe("maruhi proxy run", () => {
       expect(e["GIT_SSL_CAINFO"]).toBe(e["SSL_CERT_FILE"]);
       expect(e["DENO_CERT"]).toBe(e["NODE_EXTRA_CA_CERTS"]);
       expect(call.holdSignals).toBe(true);
-      // No value of the run is in the control variables
       expect(Object.values(e).join("\n")).not.toContain(REAL_TOKEN);
-      // The child, as a client behind HTTPS_PROXY trusting the CA, uses the placeholder
       expect(e["HTTPS_PROXY"]).toMatch(/^http:\/\/maruhi:[A-Za-z0-9]{22}@127\.0\.0\.1:\d+$/);
       const response = await httpsViaProxy({
         proxyPort: proxyPortOf(call),
@@ -259,16 +241,13 @@ describe("maruhi proxy run", () => {
     );
     expect(env.runnerCalls).toHaveLength(1);
     expect(env.runnerCalls[0]?.command).toEqual(["claude"]);
-    // The origin got the real token; the child got the placeholder back
     expect(origin.seen[0]?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
     expect(brokered).toEqual({
       status: 200,
       authorization: `Bearer ${env.runnerCalls[0]?.extraEnv["GITHUB_TOKEN"]}`,
     });
-    // Teardown: the CA directory is gone
     expect(caDir).not.toBe("");
     expect(existsSync(caDir)).toBe(false);
-    // The run's output names rules and counts, never a value
     const stderr = env.errors.join("\n");
     expect(stderr).toContain("proxy run: brokering GITHUB_TOKEN → api.example.test (header)");
     expect(stderr).toContain("proxy run: passing through with the real value: DATABASE_URL");
@@ -277,7 +256,6 @@ describe("maruhi proxy run", () => {
     expect(stderr).toContain(
       "proxy run: 1 requests brokered, 0 plain requests relayed, 0 connections tunnelled, 0 blocked, 0 failed",
     );
-    // The listening address is printed without the credential
     expect(stderr).toMatch(/proxy listening on 127\.0\.0\.1:\d+;/);
     expect(stderr).not.toContain(proxyAuthOf(env.runnerCalls[0] as RunnerCall).split(":")[1]);
     const everything = [...env.logs, ...env.errors].join("\n");
@@ -291,9 +269,6 @@ describe("maruhi proxy run", () => {
     const { env, configPath } = await startEnv(BROKER_CONFIG);
     env.setTerminal({ stdout: false });
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
-    // Pass-through values, the brokered values known at start (defence in
-    // depth), and the run's proxy credential (§21 R-10 — `printenv` must not
-    // leave it in a transcript)
     const redact = (env.runnerCalls[0]?.redact ?? []).map((bytes) =>
       new TextDecoder().decode(bytes),
     );
@@ -345,12 +320,10 @@ describe("maruhi proxy run", () => {
   it("applies a config only once a person accepted it with `proxy accept`; a new or changed file is refused everywhere, and a brokered project stays gated without its config (§21 R-8 / R-13 / R-14)", async () => {
     const { env, configPath, configDir } = await startEnv(BROKER_CONFIG, { accepted: false });
     const server = servers[servers.length - 1];
-    // The record lives under the account home (the test env's config dir stands in for it), not the config dir itself (§21 R-23)
     const recordPath = acceptedProxyConfigsPathOf(dirname(env.configPath));
     expect(recordPath).toBe(
       join(dirname(env.configPath), ".config", "maruhi", "proxy-accepted.json"),
     );
-    // Under an agent, before anyone accepted the file: refused before any network, child not started
     env.setAgent({ isAgent: true, name: "cursor" });
     const requestsBefore = server?.requests.length ?? 0;
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
@@ -359,13 +332,11 @@ describe("maruhi proxy run", () => {
     );
     expect(env.runnerCalls).toHaveLength(0);
     expect(server?.requests.length).toBe(requestsBefore);
-    // An agent cannot accept its own rules
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
       "Refused to accept the proxy config: an AI agent environment was detected (cursor)",
     );
     expect(existsSync(recordPath)).toBe(false);
-    // Without a terminal (a pipe): refused too, naming the command
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdout: false });
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
@@ -376,7 +347,6 @@ describe("maruhi proxy run", () => {
     expect(env.errors.join("\n")).toContain(
       "Refused to accept the proxy config: stdout is not an interactive terminal",
     );
-    // A person at a terminal is not accepted by the way either: the act is explicit (§21 R-14)
     env.setTerminal({ stdout: true });
     env.errors.length = 0;
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
@@ -384,14 +354,12 @@ describe("maruhi proxy run", () => {
       "it has not been accepted on this machine yet, and review it, then run `maruhi proxy accept` to accept it",
     );
     expect(env.runnerCalls).toHaveLength(0);
-    // The person accepts (recorded outside the repository, the rules summarized) — the agent may use it from then on
     env.errors.length = 0;
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(0);
     expect(env.errors.join("\n")).toContain(
       `${configPath} accepted on this machine for project ${fixture.built.projectId} (first use): brokers GITHUB_TOKEN → api.example.test (header); passes through DATABASE_URL; unlisted variables are withheld; hosts no rule names are tunnelled untouched`,
     );
     expect(existsSync(recordPath)).toBe(true);
-    // R-18: the project is marked at acceptance — deleting the file before any brokered run is gated already
     env.setAgent({ isAgent: true, name: "cursor" });
     const acceptedContent = await readFile(configPath, "utf8");
     await rm(configPath);
@@ -407,7 +375,6 @@ describe("maruhi proxy run", () => {
     await writeFile(configPath, acceptedContent);
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls).toHaveLength(1);
-    // The agent rewrites the file (passthrough everything): refused again until a person accepts the change
     await writeFile(configPath, JSON.stringify({ ...BROKER_CONFIG, unlisted: "passthrough" }));
     expect(await runCli(["proxy", "run", "--config", configPath, "--", "true"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
@@ -424,7 +391,6 @@ describe("maruhi proxy run", () => {
     expect(env.errors.join("\n")).toContain(
       "is already accepted on this machine with this content for this project; nothing changed",
     );
-    // R-24: a file accepted for another project is not accepted for this one — the acceptance is per project
     const otherProject = "f".repeat(64);
     const otherConfigDir = await mkdtemp(join(tmpdir(), "maruhi-proxy-other-"));
     const otherConfigPath = join(otherConfigDir, "maruhi.proxy.json");
@@ -454,16 +420,13 @@ describe("maruhi proxy run", () => {
       await runCli(["proxy", "run", "--config", otherConfigPath, "--", "true"], env.layer),
     ).toBe(0);
     env.setAgent({ isAgent: false });
-    // (that run is not part of the counts below)
     env.runnerCalls.pop();
-    // The record is keyed by the resolved path: `maruhi.proxy.json` from the working directory is the same entry
     const originalCwd = cwd();
     chdir(configDir);
     try {
       env.setAgent({ isAgent: true, name: "cursor" });
       expect(await runCli(["run", "--", "true"], env.layer)).toBe(0);
       expect(env.runnerCalls[1]?.extraEnv["GITHUB_TOKEN"]).toMatch(/^mhp_GITHUB_TOKEN_/);
-      // R-13: deleting the file is not a way around the rules — the project is brokered on this machine
       await rm(configPath);
       env.errors.length = 0;
       expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
@@ -471,7 +434,6 @@ describe("maruhi proxy run", () => {
         "Refused to run with the real values: an AI agent environment was detected (cursor), and this project is brokered on this machine (its proxy config",
       );
       expect(env.runnerCalls).toHaveLength(2);
-      // … nor is a pipe; a person at a terminal may, and is told what is happening
       env.setAgent({ isAgent: false });
       env.setTerminal({ stdout: false });
       expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
@@ -488,11 +450,9 @@ describe("maruhi proxy run", () => {
     } finally {
       chdir(originalCwd);
     }
-    // Running from another directory is the same gate
     env.setAgent({ isAgent: true, name: "cursor" });
     expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("this project is brokered on this machine");
-    // A corrupt record is reported, never overwritten
     await writeFile(configPath, JSON.stringify(BROKER_CONFIG));
     await writeFile(recordPath, "{ nope");
     env.setAgent({ isAgent: false });
@@ -502,7 +462,6 @@ describe("maruhi proxy run", () => {
     );
     expect(await runCli(["proxy", "accept", "--config", configPath], env.layer)).toBe(1);
     expect(await readFile(recordPath, "utf8")).toBe("{ nope");
-    // … and the no-config gate fails closed on it too (a corrupt record is not "never brokered")
     env.errors.length = 0;
     expect(await runCli(["run", "--", "true"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain(
@@ -577,9 +536,6 @@ describe("maruhi proxy run", () => {
   });
 
   it("proxy accept checks --project's format at its declaration, before the config read, and reports a malformed default project as the config's to fix", async () => {
-    // A malformed --project is refused while the command line is parsed
-    // (the usage line, exit 2): not taken for a mismatch with the config's
-    // `project`, and not hidden behind a missing file. The value is never shown
     const { env, configPath, configDir } = await startEnv(
       { ...BROKER_CONFIG, project: "b".repeat(64) },
       { accepted: false },
@@ -598,8 +554,6 @@ describe("maruhi proxy run", () => {
         "maruhi: Unacceptable value for flag --project (expected: project id (lowercase hex SHA-256 of the genesis entry))",
       ]);
     }
-    // With neither the flag nor the config's `project`, the default project
-    // names the project, and a malformed setting is the config's to fix (1)
     await writeFile(configPath, JSON.stringify(BROKER_CONFIG));
     await seedConfig(env, { defaultProject: "not-a-genesis" });
     env.errors.length = 0;
@@ -614,7 +568,6 @@ describe("maruhi proxy run", () => {
     const originalCwd = cwd();
     chdir(configDir);
     try {
-      // Plain `run` brokers: a placeholder, the pass-through value, the proxy variables
       expect(await runCli(["run", "--", "claude"], env.layer)).toBe(0);
       const brokered = env.runnerCalls[0]?.extraEnv ?? {};
       expect(brokered["GITHUB_TOKEN"]).toMatch(/^mhp_GITHUB_TOKEN_/);
@@ -624,7 +577,6 @@ describe("maruhi proxy run", () => {
       expect(env.errors.join("\n")).toContain(
         "proxy run: brokering GITHUB_TOKEN → api.example.test (header)",
       );
-      // --plain from a human terminal: the real values, the config not applied
       env.errors.length = 0;
       expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(0);
       const plain = env.runnerCalls[1]?.extraEnv ?? {};
@@ -634,7 +586,6 @@ describe("maruhi proxy run", () => {
       expect(env.errors.join("\n")).toContain(
         "--plain: injecting the real values; maruhi.proxy.json is not applied to this run",
       );
-      // --plain under a detected agent: refused before any decryption, child not started
       env.errors.length = 0;
       env.setAgent({ isAgent: true, name: "claude-code" });
       const server = servers[servers.length - 1];
@@ -645,7 +596,6 @@ describe("maruhi proxy run", () => {
       );
       expect(env.runnerCalls).toHaveLength(2);
       expect(server?.requests.length).toBe(requestsBefore);
-      // … and without a terminal (a pipe, CI): refused too; plain `run` still brokers there
       env.setAgent({ isAgent: false });
       env.setTerminal({ stdout: false });
       expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(1);
@@ -670,7 +620,6 @@ describe("maruhi proxy run", () => {
     } finally {
       chdir(originalCwd);
     }
-    // No config in the (repository) working directory: --plain changes nothing
     expect(configPath).toContain("maruhi.proxy.json");
     expect(await runCli(["run", "--plain", "--", "true"], env.layer)).toBe(0);
     expect(env.runnerCalls[0]?.extraEnv["GITHUB_TOKEN"]).toBe(REAL_TOKEN);
@@ -685,7 +634,6 @@ describe("maruhi proxy run", () => {
       const url = new URL(call.extraEnv["HTTPS_PROXY"] ?? "");
       expect(url.hostname).toBe("host.docker.internal");
       expect(url.port).not.toBe("");
-      // The proxy itself is bound to the loopback address given; the credential is required
       const response = await httpsViaProxy({
         proxyPort: Number(url.port),
         ca: [],
@@ -714,7 +662,6 @@ describe("maruhi proxy run", () => {
     expect(env.errors.join("\n")).toMatch(
       /proxy listening on 127\.0\.0\.1:\d+, told to the command as host\.docker\.internal:\d+/,
     );
-    // An IPv6 advertised address is bracketed in the URL the command receives (§21 R-11)
     env.setRunnerHandler(async (call) => {
       const url = new URL(call.extraEnv["HTTPS_PROXY"] ?? "");
       expect(url.hostname).toBe("[fd00::2]");

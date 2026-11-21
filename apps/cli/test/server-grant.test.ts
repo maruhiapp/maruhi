@@ -1,9 +1,3 @@
-// Integration tests for `maruhi server grant` (CRYPTO_SPEC §9 /
-// AUTH_SPEC §12-6). Pins at wire level: the server-key confirmation
-// ceremony, the grant_server append (a 4-field payload), the backfill
-// across every environment × every epoch, and mid-run recovery
-// (409 = already registered).
-
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -38,8 +32,6 @@ let member: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
-// The deployment's server key (public side only — grant never needs the
-// server secret key)
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 let serverFpHex: KeyFingerprintHex;
 let serverFpWords: readonly string[];
@@ -74,11 +66,6 @@ interface GrantServerState {
   };
 }
 
-/**
- * The stateful mock for grant flows: the chain (accepts appends),
- * /auth/config, per-environment listMine (your own wraps), and deks
- * registration (capture + response replacement).
- */
 async function makeGrantServer(input: {
   readonly built: Awaited<ReturnType<typeof buildChain>>;
   readonly deksByEnvironment: Readonly<
@@ -163,7 +150,6 @@ async function startGrantEnv(
   return env;
 }
 
-/** The canonical chain: create (epoch 1) → rotate (epoch 2). Two epochs to backfill. */
 async function builtWithTwoEpochs() {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -196,8 +182,6 @@ describe("maruhi server grant", () => {
       ),
     ).toBe(0);
 
-    // The appended grant_server payload (§6.2's 4-field structured
-    // form)
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "grant_server") throw new Error("grant entry missing");
@@ -206,8 +190,6 @@ describe("maruhi server grant", () => {
     expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID]);
     expect(entry.payload.leasePolicy).toEqual([]);
 
-    // Backfill: the server-bound wraps of every epoch (1 and 2)
-    // registered in one request
     expect(state.registerBodies).toHaveLength(1);
     const wraps = state.registerBodies[0]?.deks as readonly {
       recipientClass?: string;
@@ -222,8 +204,6 @@ describe("maruhi server grant", () => {
 
     const logs = env.logs.join("\n");
     expect(logs).toContain("Backfill: 2 newly registered, 0 already registered");
-    // §9: the always-on disclosure notice (Note — stderr) + the word
-    // display
     expect(env.errors.join("\n")).toContain("disclosed to the server");
     expect(logs).toContain(serverFpWords[11] ?? "");
   });
@@ -250,9 +230,6 @@ describe("maruhi server grant", () => {
       built,
       deksByEnvironment: { [ENV_ID]: await ownWraps(built.projectId) },
     });
-    // epoch 1 is already registered (the interrupted previous run's
-    // mid-state): the batch gets 409, and of the per-epoch calls only
-    // epoch 1 gets 409
     state.registerResponder.respond = (body) => {
       const epochs = (body.deks as readonly { epoch: number }[]).map((wrap) => wrap.epoch);
       if (epochs.includes(1)) {
@@ -276,7 +253,6 @@ describe("maruhi server grant", () => {
         env.layer,
       ),
     ).toBe(0);
-    // No append (identical content) · batch 409 → 2 per-epoch requests
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies.map((body) => body.deks.length)).toEqual([2, 1, 1]);
     const logs = env.logs.join("\n");
@@ -295,7 +271,6 @@ describe("maruhi server grant", () => {
     expect(await runCli(["server", "grant", "--environments", ENV_ID], env.layer)).toBe(0);
     expect(state.appendedEntries).toHaveLength(1);
 
-    // 3 mistypes → abort (no append)
     const state2 = await makeGrantServer({
       built: await builtWithTwoEpochs(),
       deksByEnvironment: {},
@@ -356,11 +331,6 @@ describe("maruhi server grant", () => {
     const state = await makeGrantServer({
       built,
       deksByEnvironment: {},
-      // The FP is genuine but the enc public key is something else: the
-      // shape where a malicious server pairs an arbitrary key with "the
-      // FP the user already verified from the record". If the
-      // recomputation check didn't catch it the ceremony would be
-      // meaningless
       authConfig: {
         githubClientId: "dummy-client-id",
         signupPolicy: "open",
@@ -419,8 +389,6 @@ describe("maruhi server grant", () => {
     if (entry?.op !== "grant_server") throw new Error("grant entry missing");
     expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID, ENV_B]);
 
-    // One request per environment × the server-bound wrap of its single
-    // epoch
     const byEnvironment = new Map(
       state.registerBodies.map((body) => [body.environmentId, body.deks]),
     );
@@ -514,8 +482,6 @@ describe("maruhi server grant", () => {
         {
           issuerUrl: "https://token.actions.githubusercontent.com",
           audience: "https://maruhi.example.com",
-          // Regardless of written order (repository → ref), it's
-          // normalized to ascending code points
           claimConstraints: { repository: "acme-dummy/app", ref: "refs/heads/main" },
         },
       ]),

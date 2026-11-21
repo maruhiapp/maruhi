@@ -1,5 +1,3 @@
-// Unit test of the single-GET hook's state transitions on reload
-// (src/dashboard/use-api-resource.ts).
 import { describe, expect, it } from "vite-plus/test";
 
 import { reloadingState } from "../../src/dashboard/use-api-resource.ts";

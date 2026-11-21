@@ -1,8 +1,3 @@
-// Test clients for the forward proxy (proxy-server.ts): CONNECT + TLS over
-// the tunnel (what every HTTPS client does behind HTTPS_PROXY), plain
-// absolute-form requests (HTTP_PROXY), and a tiny origin that records
-// what actually arrived. Node APIs only (vitest runs under Node).
-
 import http from "node:http";
 import https from "node:https";
 import type { AddressInfo } from "node:net";
@@ -16,7 +11,6 @@ export interface ClientResponse {
   readonly body: Buffer;
 }
 
-/** Sends `request` with `body` and resolves with the collected response. */
 function send(
   request: http.ClientRequest,
   body: Buffer | string | undefined,
@@ -45,14 +39,12 @@ function collect(response: http.IncomingMessage): Promise<ClientResponse> {
   });
 }
 
-/** `Proxy-Authorization: Basic …` for a `user:password` credential (undefined = none). */
 function proxyAuthHeaders(auth: string | undefined): Record<string, string> {
   return auth === undefined
     ? {}
     : { "proxy-authorization": `Basic ${Buffer.from(auth).toString("base64")}` };
 }
 
-/** CONNECT to `authority` through the proxy; resolves with the raw tunnel socket (or the proxy's refusal). */
 export function openTunnel(
   proxyPort: number,
   authority: string,
@@ -66,8 +58,6 @@ export function openTunnel(
       path: authority,
       headers: proxyAuthHeaders(auth),
     });
-    // Node emits 'connect' for every response to a CONNECT, whatever its
-    // status; a refusal (403 / 502) carries its body on the raw socket
     request.on("connect", (response, socket, head) => {
       if (response.statusCode === 200) {
         resolve({ socket });
@@ -91,7 +81,6 @@ export function openTunnel(
   });
 }
 
-/** TLS over an open tunnel, trusting `ca` for `servername`. */
 export function secureTunnel(
   socket: net.Socket,
   servername: string,
@@ -103,7 +92,6 @@ export function secureTunnel(
   });
 }
 
-/** One HTTPS request over an existing TLS socket (Node's HTTP client on a supplied connection). */
 export function requestOver(
   secure: tls.TLSSocket,
   input: {
@@ -115,8 +103,6 @@ export function requestOver(
     readonly agent?: http.Agent;
   },
 ): Promise<ClientResponse> {
-  // With no agent, Node honours `createConnection` (an agent of `false`
-  // would make a default one and connect to localhost:80 instead)
   return send(
     http.request({
       createConnection: () => secure,
@@ -129,7 +115,6 @@ export function requestOver(
   );
 }
 
-/** One HTTPS request through the proxy (CONNECT → TLS → request), the way curl or Bun does it. */
 export async function httpsViaProxy(input: {
   readonly proxyPort: number;
   readonly ca: readonly string[];
@@ -137,7 +122,6 @@ export async function httpsViaProxy(input: {
   readonly method?: string;
   readonly headers?: Record<string, string>;
   readonly body?: Buffer | string;
-  /** The run's proxy credential (`user:password`), when the proxy requires one. */
   readonly auth?: string;
 }): Promise<ClientResponse> {
   const url = new URL(input.url);
@@ -160,7 +144,6 @@ export async function httpsViaProxy(input: {
   }
 }
 
-/** One plain-HTTP request through the proxy (absolute-form request target). */
 export function httpViaProxy(input: {
   readonly proxyPort: number;
   readonly url: string;
@@ -183,7 +166,6 @@ export function httpViaProxy(input: {
   );
 }
 
-/** 4096 non-UTF-8 bytes (the byte-transparency specimen). */
 function binaryBody(): Buffer {
   const bytes = Buffer.alloc(4096);
   for (let i = 0; i < bytes.length; i++) {
@@ -192,7 +174,6 @@ function binaryBody(): Buffer {
   return bytes;
 }
 
-/** What the origin saw for one request. */
 export interface SeenRequest {
   readonly method: string;
   readonly url: string;
@@ -206,13 +187,6 @@ export interface Origin {
   readonly close: () => Promise<void>;
 }
 
-/**
- * A recording origin. `/echo` answers with a JSON of the authorization
- * header, URL, and body (so a real value sent to it comes straight back —
- * the response-scrubbing specimen); `/binary` answers 4096 non-UTF-8
- * bytes; `/big` answers a large body with `marker` repeated; anything
- * else answers `ok`.
- */
 export async function startOrigin(input: {
   readonly tls?: { readonly key: string; readonly cert: string };
   readonly marker?: string;
@@ -222,7 +196,6 @@ export async function startOrigin(input: {
   const responders: Record<string, Responder> = {
     "/echo": (req, res, body) => {
       res.setHeader("content-type", "application/json");
-      // The credential echoed in a header as well (the header-scrubbing specimen)
       res.setHeader("x-echo-authorization", req.headers.authorization ?? "none");
       res.end(
         JSON.stringify({ authorization: req.headers.authorization ?? null, url: req.url, body }),
@@ -233,7 +206,6 @@ export async function startOrigin(input: {
       res.end(binaryBody());
     },
     "/gzip": (req, res) => {
-      // Compresses whatever Accept-Encoding said (the scrubber must still see the value)
       res.setHeader("content-type", "text/plain");
       res.setHeader("content-encoding", "gzip");
       res.end(zlib.gzipSync(`compressed echo: ${req.headers.authorization ?? "none"}`));
@@ -252,7 +224,6 @@ export async function startOrigin(input: {
     const path = (req.url ?? "").split("?")[0] ?? "";
     const responder = responders[path];
     if (responder === undefined) {
-      // An explicit length so a HEAD answer carries one (the bodiless re-framing specimen)
       res.setHeader("content-length", "2");
       res.end("ok");
     } else {

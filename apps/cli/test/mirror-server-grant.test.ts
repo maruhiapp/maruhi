@@ -1,10 +1,3 @@
-// Tests for mirrors on the client side (AUTH_SPEC §11-7 — PF2,
-// docs/notes/pf2-design.md): `server grant --key-from`.
-//
-// Properties pinned down:
-//  6. server grant --key-from reads the key from the named deployment and
-//     appends the grant on the server
-
 import { type ChainEntry, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -46,7 +39,6 @@ describe("maruhi server grant --key-from (PF2)", () => {
       onRequest("POST", `/projects/${built.projectId}/chain/entries`, (request) => {
         const body = request.body as { readonly entry: ChainEntry };
         appended.push(body.entry.payload);
-        // The served chain reflects the append (the grant's resync reads it back)
         return acceptAppendedEntry(built.projectId, entries, hashes, body.entry);
       }),
       (request: MockRequest) =>
@@ -91,7 +83,6 @@ describe("maruhi server grant --key-from (PF2)", () => {
       serverEncPubHex: encodeHex(keyPub),
       scopeEnvironmentIds: [ENV_ID],
     });
-    // The key server was asked for its config only; the grant went to the server
     expect(keyServer.requests.map((r) => r.path)).toEqual(["/auth/config"]);
     expect(env.logs.join("\n")).toContain(`(the key of ${keyServer.origin})`);
     expect(env.errors.join("\n")).toContain("reach " + keyServer.origin);

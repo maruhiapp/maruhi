@@ -1,6 +1,3 @@
-// `bun run preview`: serve the built site (dist/) locally under the
-// production serving semantics (see scripts/wrangler-config.ts for why
-// this is wrangler dev with a generated config, not `cf dev`).
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 

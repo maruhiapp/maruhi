@@ -1,7 +1,5 @@
 "use client";
 
-// The S5 overview tab's Environments section (ProjectScreenOverview.tsx):
-// the environments and their variable names (a metadata-only pull).
 import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { pixel, proportional, Table, type TableColumn } from "@astryxdesign/core/Table";
@@ -16,7 +14,6 @@ import { SectionBlock } from "./sections.tsx";
 import type { EnvironmentList, EnvironmentMetadataPull, EnvironmentSummary } from "./types.ts";
 import { useApiResource } from "./use-api-resource.ts";
 
-/** One listed environment (the server lists live environments only; a deleted one is on the chain — AUTH_SPEC §12-7). */
 interface EnvironmentRow extends Record<string, unknown> {
   id: string;
   name: string;
@@ -59,7 +56,6 @@ const VARIABLE_COLUMNS: TableColumn<VariableRow>[] = [
   },
 ];
 
-/** The selected environment's variable names (rows = a Table — a collection is drawn as rows). Values are structurally absent from the response. */
 function VariableNames({ pull }: { pull: EnvironmentMetadataPull }): ReactNode {
   const rows: VariableRow[] = [
     ...pull.variables.map((s) => ({ id: s.variableId, name: s.name, deleted: false })),
@@ -104,12 +100,6 @@ function VariablesSection({
   return <VariableNames pull={state.value} />;
 }
 
-/**
- * The environment table's columns. The Variables column's button is a
- * discloser that opens and closes the variable-names section below the
- * table (aria-expanded + aria-controls pointing at the section's id
- * while open — a closed section is not in the DOM).
- */
 function buildEnvironmentColumns(
   selectedEnvironmentId: string | undefined,
   onToggle: (environmentId: string) => void,

@@ -1,17 +1,3 @@
-# setup-maruhi — a composite action that installs the maruhi CLI onto GitHub
-# Actions.
-#
-# It installs from the release artifacts (binaries + checksums.txt from the
-# tag-driven CI — ADR-0015) by reusing packaging/install.sh: the properties of
-# not writing anything to the install destination until SHA-256 verification
-# passes and leaving no partial files on failure are not reimplemented here
-# (the action's checkout contains the whole repository, so the script is
-# reachable relative to $GITHUB_ACTION_PATH).
-#
-# Marketplace publication coincides with the Phase 2 public release
-# (docs/notes/session-25.md). Usage is in the same directory's README.md
-# (English).
-
 name: "setup-maruhi"
 description: >-
   Install the maruhi CLI from GitHub release assets with mandatory SHA-256

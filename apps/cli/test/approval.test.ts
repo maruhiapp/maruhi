@@ -1,23 +1,3 @@
-// Integration tests for `maruhi approval list / show / approve / withdraw` and
-// `maruhi project policy approvals` (CRYPTO_SPEC §6.2 / §7 — PF1 K6. Design
-// note es-design.md §12).
-//
-// Properties pinned down:
-//  1. list / show read from the verified chain's pending and recount the vote
-//     counts (K5-M / K2 implementation memo). No agent-gate (zero values —
-//     K6-E)
-//  2. approve: pre-flight checks (duplicate-approval / proposal-expired /
-//     self-obligation) → append → learn completion on resync (K6-B). The
-//     approver who completes it fulfills the sweep (remove) / backfill
-//     (add_member) (approval item 22). If another owner completed it first,
-//     do not append. After a head conflict, the approve completing the
-//     proposal is re-signed on the resynced head and still fulfills it
-//  3. withdraw: proposer / owner. A Note is required when an owner closes
-//     someone else's proposal. A head conflict re-signs on the resynced
-//     head; five in a row stop with the exhausted wording
-//  4. policy: activation (pre-announce owner ≥ required, availability
-//     guidance); changes while active go through a proposal
-
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -90,7 +70,6 @@ function wrapFor(projectId: string, user: TestUser): Promise<WireRecipientDek> {
   });
 }
 
-/** 2 owners (+ optional third), 1 member, policy (remove_member, required 2), plus owner's proposal. */
 function prefixSteps(options?: {
   readonly thirdOwner?: boolean;
   readonly ops?: readonly ("remove_member" | "add_member" | "change_role")[];
@@ -164,8 +143,6 @@ describe("maruhi approval list / show", () => {
     expect(logs).toContain("approvals:       1 of 2 required");
     expect(logs).toContain("you:             can approve — your approval completes it");
 
-    // The proposer themself is shown a duplicate-approval preview (self-
-    // approval counts as a duplicate)
     const proposerEnv = await startEnv(state, built.projectId, owner);
     expect(await runCli(["approval", "show", hash.slice(0, 8)], proposerEnv.layer)).toBe(0);
     expect(proposerEnv.logs.join("\n")).toContain("cannot approve — you proposed this as an owner");
@@ -200,8 +177,6 @@ describe("maruhi approval approve", () => {
     const approve = state.appendedEntries[0];
     if (approve?.op !== "approve") throw new Error("approve entry missing");
     expect(approve.payload.proposalHashHex).toBe(hash);
-    // §7: wrap the new epoch to every current member except the removal
-    // target (reason = member-removed)
     expect(state.rotateBodies).toHaveLength(1);
     expect(state.rotateBodies[0]?.entry.payload.reason).toBe("member-removed");
     expect(state.rotateBodies[0]?.deks.map((wrap) => wrap.recipientUserId).toSorted()).toEqual(
@@ -221,9 +196,6 @@ describe("maruhi approval approve", () => {
     ];
     const built = await buildChain(steps);
     const policyHash = built.hashes[built.hashes.length - 1] ?? "";
-    // owner2 completes the proposal to raise to required 3 (owner's single
-    // vote, under the current required-2 policy) → subsequent remove
-    // proposals need 3 votes
     const raised = await buildChain([
       ...steps,
       { actor: owner2, operation: approveOp(policyHash) },
@@ -323,7 +295,6 @@ describe("maruhi approval approve", () => {
 
   it("after an unrelated head conflict, re-signs the approve on the resynced head and, completing the proposal, fulfills it", async () => {
     const { steps, built, hash } = await proposedChain();
-    // An unrelated concurrent append (add_member is not a policy target here)
     const concurrent = await buildChain([
       ...steps,
       { actor: owner, operation: addMemberOp(newbie, "member") },
@@ -434,7 +405,6 @@ describe("maruhi approval withdraw", () => {
 
   it("after a head conflict, re-signs the withdraw on the resynced head", async () => {
     const { steps, built, hash } = await proposedChain();
-    // An unrelated concurrent append (add_member is not a policy target here)
     const concurrent = await buildChain([
       ...steps,
       { actor: owner, operation: addMemberOp(newbie, "member") },
@@ -547,7 +517,6 @@ describe("maruhi project policy approvals", () => {
     expect(activeEnv.logs.join("\n")).toContain("Proposed set_approval_policy off");
     expect(activeEnv.logs.join("\n")).toContain("needs 1 more owner approval");
 
-    // Re-specifying the same setting is a no-op
     activeEnv.logs.length = 0;
     expect(
       await runCli(
@@ -567,8 +536,6 @@ describe("maruhi project policy approvals", () => {
       { actor: owner, operation: setApprovalPolicyOp(["remove_member"], 2) },
     ];
     const built = await buildChain(base);
-    // Concurrently with the submission, the same change (required 2 → ops
-    // change_role) was applied via proposal + approval
     const proposed = await buildChain([
       ...base,
       { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["change_role"], 2))) },

@@ -1,9 +1,3 @@
-// `maruhi mirror mark` (AUTH_SPEC §11-7 — ruling C revision): the owner
-// marks the project read-only on the mirror deployment (--server) as a
-// mirror of --source. A source that is this deployment is refused; then
-// the source's chain and mark are read, and a mark no sync could follow is
-// refused unless --force (ensureMarkable).
-
 import type { MirrorStatus } from "@maruhi/api-schema";
 import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -25,7 +19,6 @@ import { normalizeHttpOrigin } from "../session.ts";
 import { sameDeployment } from "./mirror-deployment.ts";
 import { headOnChain } from "./mirror-heads.ts";
 
-/** `maruhi mirror mark --server <mirror> --source <server>`: the owner marks the project read-only there. */
 export const mirrorMarkOp = Effect.fn("mirror-mark.mirrorMarkOp")(function* (flags: {
   readonly server?: string | undefined;
   readonly project?: string | undefined;
@@ -50,10 +43,6 @@ export const mirrorMarkOp = Effect.fn("mirror-mark.mirrorMarkOp")(function* (fla
     );
   }
   const projectId = yield* resolveProjectId(flags.project, context.config);
-  // A project whose chain is not part of the source's (a former primary
-  // that advanced past the fork) can never be synced: every replica is
-  // refused as not an extension, and there is no way out but another
-  // promotion. Refused here, before the mark (ruling C revision, round 3)
   yield* ensureMarkable(context, sourceOrigin, projectId, flags.force === true);
   yield* context.client.mirror
     .mark({ params: { projectId }, payload: { sourceOrigin } })
@@ -63,18 +52,6 @@ export const mirrorMarkOp = Effect.fn("mirror-mark.mirrorMarkOp")(function* (fla
   );
 });
 
-/**
- * The mark's precondition: the two chains are one chain — the project's
- * head here is an entry of the source's verified chain (equal, or behind
- * it), or the source's head is an entry of this project's (this project
- * is ahead: the planned failover's freeze, whose last sync brings the
- * difference over — ruling C revision, round 8). Only a fork is refused.
- * Both views are plain verified chains (no floor: the floor is per
- * project, and a mirror behind the local floor is the normal state of the
- * copy about to be synced). The source's view needs a session there;
- * without one, or when the source does not answer, the mark proceeds with
- * a warning (the first sync tells).
- */
 const ensureMarkable = Effect.fn("mirror-mark.ensureMarkable")(function* (
   context: SessionContext,
   sourceOrigin: string,
@@ -82,8 +59,6 @@ const ensureMarkable = Effect.fn("mirror-mark.ensureMarkable")(function* (
   forced: boolean,
 ): Effect.fn.Return<void, CliError, CliServices> {
   const here = yield* syncProject(context.client, projectId);
-  // Each read stands alone (round 10): a transient failure of the mark's
-  // read does not discard the chain already read, nor the other way round
   const source = yield* openSessionWith(context.config, sourceOrigin, "server").pipe(
     Effect.flatMap((session) =>
       Effect.all(
@@ -98,7 +73,6 @@ const ensureMarkable = Effect.fn("mirror-mark.ensureMarkable")(function* (
               Effect.catch(sourceUnread("mark", "it is a primary, or frozen for this project")),
             ),
         },
-        // Concurrently: a source that does not answer costs one bound, not two (round 12)
         { concurrency: 2 },
       ),
     ),
@@ -114,22 +88,16 @@ const ensureMarkable = Effect.fn("mirror-mark.ensureMarkable")(function* (
     yield* logNote(verdict.text);
     return;
   }
-  // A source frozen for this deployment under another hostname (C-13):
-  // the star instruction would be refused as a self-mark, so the way out
-  // is the mark under that name (round 11)
   const body =
     verdict.star !== undefined && (yield* sameDeployment(verdict.star, context.origin))
       ? `${sourceOrigin} holds this project as a mirror of ${verdict.star}, which publishes this server's key fingerprint: that is this deployment under the name the freeze used — run the mark with \`--server ${verdict.star}\`; if it is another deployment sharing one SERVER_ENC_KEY_IKM, that is the misconfiguration to fix first (one key per deployment)`
       : verdict.body;
-  // --force marks anyway, but says what it overrides (round 10) — without
-  // the refusal's own escape clause (round 11)
   if (!forced) {
     return yield* Effect.fail(cliError(`${body}${verdict.escape}`));
   }
   yield* logWarning(`marking with --force. ${body}`);
 });
 
-/** The mark proceeds without the check a failed read of the source would feed, with a warning. */
 function sourceUnread(
   what: string,
   check: string,
@@ -143,11 +111,9 @@ function sourceUnread(
     );
 }
 
-/** A refusal's text, with its "pass --force" clause apart: the clause is printed on the refusing path only (round 11). */
 export interface Refusal {
   readonly body: string;
   readonly escape: string;
-  /** What `--force` does instead of the body's remedy, when the remedy is dead after the override (round 12); the body otherwise. */
   readonly forced?: string | undefined;
 }
 
@@ -155,21 +121,16 @@ type MarkVerdict =
   | { readonly kind: "note"; readonly text: string }
   | (Refusal & {
       readonly kind: "refusal";
-      /** The third origin the source is a mirror of (the star refusal). */
       readonly star?: string | undefined;
     })
   | null;
 
-/** What the mark's guard says about the source: a refusal, a note to print, or nothing. */
 function markRefusal(
   context: SessionContext,
   sourceOrigin: string,
   here: VerifiedProject,
   source: { readonly view: VerifiedProject | null; readonly mark: MirrorStatus | null },
 ): MarkVerdict {
-  // The source's own mark decides whether the sync the mark leads to can
-  // run at all (ruling C revision, round 9): a mirror of a third origin
-  // is no source (the star), and a writable source takes no page
   if (source.mark?.mirror === true && source.mark.sourceOrigin !== context.origin) {
     return {
       kind: "refusal",
@@ -179,8 +140,6 @@ function markRefusal(
     };
   }
   if (source.view === null) {
-    // The chain could not be read, but the mark alone tells that the
-    // source is frozen for this deployment: the undo note stands (round 11)
     return source.mark?.mirror === true
       ? {
           kind: "note",
@@ -191,7 +150,6 @@ function markRefusal(
   return markChainVerdict(context, sourceOrigin, here, source.view, source.mark);
 }
 
-/** The chain relation's verdict: one chain in either direction passes (with the note the mark's state earns), a fork is refused. */
 function markChainVerdict(
   context: SessionContext,
   sourceOrigin: string,
@@ -201,8 +159,6 @@ function markChainVerdict(
 ): MarkVerdict {
   const source = { view, mark };
   if (headOnChain(headOfView(here), view)) {
-    // Equal to or behind a source frozen for this project: two frozen
-    // copies and no primary — the undo of a planned failover (round 10)
     return source.mark?.mirror === true
       ? {
           kind: "note",
@@ -225,8 +181,6 @@ function markChainVerdict(
       escape: ". --force marks anyway and abandons them",
     };
   }
-  // The mark unread: the sync below presumes a source frozen for this
-  // project, so the note says what holds otherwise (round 11)
   const unread =
     source.mark === null
       ? ` — if ${sourceOrigin} is frozen for this project; if it holds the project writable, the mark goes the other way round (\`maruhi mirror mark --server ${sourceOrigin} --source ${context.origin}\`)`

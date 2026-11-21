@@ -1,11 +1,8 @@
 ---
-/** Button that opens the search dialog, with its shortcut from `src/lib/shortcuts.ts`. */
 import Icon from "@cloudflare/nimbus-docs/components/Icon.astro";
 import { shortcutLabel } from "@cloudflare/nimbus-docs/client";
 import { shortcuts } from "@/lib/shortcuts";
 
-// Rendered for other platforms; the client swaps in ⌘ on macOS and names the
-// key in `aria-keyshortcuts`.
 const key = shortcuts.search;
 ---
 

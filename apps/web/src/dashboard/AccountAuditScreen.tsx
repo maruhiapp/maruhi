@@ -1,10 +1,5 @@
 "use client";
 
-// The self axis: GET /auth/audit/events (AUDIT_SPEC §3.1 / §6 — self
-// only).
-// On the D1 path seq is never on the response (§7) — with
-// AuditEventList's response adaptation the column naturally never
-// appears.
 import { Text } from "@astryxdesign/core/Text";
 import { type ReactNode, useCallback } from "react";
 

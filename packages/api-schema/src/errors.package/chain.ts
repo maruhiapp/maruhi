@@ -1,15 +1,7 @@
-// Typed errors of the membership log (chain) API (CRYPTO_SPEC §6.4).
-//
-// Errors carry only identifiers and counters (no fragments of plaintext
-// values or key material).
-
 import { ProjectIdSchema } from "@maruhi/core";
 import type { ChainInvalidReason } from "@maruhi/crypto";
 import { Schema } from "effect";
 
-// Reason-code list kept in sync with crypto's ChainInvalidReason
-// (statically checked via satisfies). The values' substance lives here
-// so api-schema does not depend on crypto at runtime.
 const CHAIN_INVALID_REASONS = [
   "empty-chain",
   "bad-suite",
@@ -31,15 +23,12 @@ const CHAIN_INVALID_REASONS = [
   "grant-scope-narrowed",
   "duplicate-server-key",
   "epoch-out-of-sequence",
-  // checkpoint op (CRYPTO_SPEC §6.2)
   "checkpoint-audit-role-insufficient",
   "checkpoint-epoch-mismatch",
   "checkpoint-regression",
-  // Environment scope (CRYPTO_SPEC §6.2 — 2026-09-14 ES)
   "scope-role-mismatch",
   "scope-not-contained",
   "environment-out-of-scope",
-  // Four-eyes (CRYPTO_SPEC §6.2 — 2026-09-14 PF1)
   "approval-required",
   "approval-not-required",
   "approval-quorum-unreachable",
@@ -47,142 +36,79 @@ const CHAIN_INVALID_REASONS = [
   "duplicate-approval",
   "proposal-expired",
   "proposal-void",
-  // Device keys (CRYPTO_SPEC §6.2 — 2026-09-19 DK)
   "unknown-device",
   "last-device-protected",
   "device-cap-exceeded",
-  // Environment deletion on the chain (CRYPTO_SPEC §6.2 — 2026-10-07)
   "environment-deleted",
 ] as const satisfies readonly ChainInvalidReason[];
 
-// Static check in the reverse direction: if a reason code is added on
-// the crypto side, this fails to compile
 type AllReasonsListed = ChainInvalidReason extends (typeof CHAIN_INVALID_REASONS)[number]
   ? true
   : never;
 const allReasonsListed: AllReasonsListed = true;
 void allReasonsListed;
 
-/** Reason codes a server-side chain verification can reject an entry with. */
 export const ChainInvalidReasonSchema = Schema.Literals(CHAIN_INVALID_REASONS);
 
-/** 404: no chain has been initialized under this project id. */
 export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
   "ProjectNotFound",
   { projectId: ProjectIdSchema },
   { httpApiStatus: 404 },
 ) {}
 
-/** 409: a chain already exists under this project id (duplicate genesis submission). */
 export class ProjectAlreadyInitializedError extends Schema.TaggedError<ProjectAlreadyInitializedError>()(
   "ProjectAlreadyInitialized",
   { projectId: ProjectIdSchema },
   { httpApiStatus: 409 },
 ) {}
 
-/**
- * 429: the org already holds the maximum number of active projects
- * (AUTH_SPEC §11-3 — the tenant quota; drafted value 100). Returned only for a **fresh** genesis:
- * the §11-3 repair path (already-initialized + missing `projects` row +
- * genesis actor) is never blocked by this limit. Carries the limit only.
- */
 export class ProjectLimitError extends Schema.TaggedError<ProjectLimitError>()(
   "ProjectLimit",
   { limit: Schema.Number },
   { httpApiStatus: 429 },
 ) {}
 
-/**
- * 409: compare-and-swap failure (CRYPTO_SPEC §6.4) — the append named a parent
- * head that is no longer the current head. The current head is returned so the
- * client can fetch, re-verify, and retry.
- */
 export class ChainHeadConflictError extends Schema.TaggedError<ChainHeadConflictError>()(
   "ChainHeadConflict",
   { currentHeadSeq: Schema.Number, currentHeadHashHex: Schema.String },
   { httpApiStatus: 409 },
 ) {}
 
-/**
- * 422: server-side chain verification (CRYPTO_SPEC §6.4 = re-running
- * verifyChain) rejected the entry at `seq` for `reason`.
- */
 export class ChainEntryInvalidError extends Schema.TaggedError<ChainEntryInvalidError>()(
   "ChainEntryInvalid",
   { seq: Schema.Number, reason: ChainInvalidReasonSchema },
   { httpApiStatus: 422 },
 ) {}
 
-/** 413: the entry's canonical byte length exceeds the §6.4 acceptance policy (1 MiB). */
 export class ChainEntryTooLargeError extends Schema.TaggedError<ChainEntryTooLargeError>()(
   "ChainEntryTooLarge",
   { limitBytes: Schema.Number },
   { httpApiStatus: 413 },
 ) {}
 
-/**
- * 422: accepting the entry would exceed the §6.4 chain-wide acceptance policy
- * (10,000 entries / 12 MiB cumulative canonical bytes).
- */
 export class ChainCapacityExceededError extends Schema.TaggedError<ChainCapacityExceededError>()(
   "ChainCapacityExceeded",
   { maxEntries: Schema.Number, maxTotalBytes: Schema.Number },
   { httpApiStatus: 422 },
 ) {}
 
-/**
- * 422: `create_environment` / `rotate_epoch` / `delete_environment` entries
- * may only be submitted through their composite endpoints (AUTH_SPEC §6 /
- * §12-4) — the generic chain append rejects them so the entry-plus-data
- * atomicity cannot be bypassed (it must not create the intermediate state
- * "the epoch exists but the wraps do not", nor "the chain says deleted but
- * the data is still there").
- *
- * `checkpoint` is not a target of this error: a standalone (periodic)
- * checkpoint is accepted by the generic append with acceptance
- * verification (content matching + atomic snapshot storage), per
- * §16-2.
- */
 export class CompositeRequiredError extends Schema.TaggedError<CompositeRequiredError>()(
   "CompositeRequired",
   { op: Schema.Literals(["create_environment", "rotate_epoch", "delete_environment"]) },
   { httpApiStatus: 422 },
 ) {}
 
-/**
- * 422: an `add_device` entry would exceed the per-member active-device limit
- * (AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — 16 active devices per member per
- * project, 2026-09-19 DK). Counted on the chain-derived state before the entry
- * (revoked devices do not count — `revoke_device` / `remove_member` free
- * slots). An acceptance policy, not a consensus rule. Carries the limit only.
- */
 export class DeviceLimitError extends Schema.TaggedError<DeviceLimitError>()(
   "DeviceLimit",
   { limit: Schema.Number },
   { httpApiStatus: 422 },
 ) {}
 
-/**
- * Why a `propose` entry was refused by the pending-proposal acceptance policy
- * (AUTH_SPEC §12-8 / CRYPTO_SPEC §6.4 — not a consensus rule):
- *
- * - `pending-proposals`: the project already holds the maximum number of live
- *   (unexpired by the server clock) pending proposals; `limit` = that count.
- *   Withdrawing or completing a proposal frees a slot.
- * - `proposal-lifetime`: `expires_at_ms` lies beyond the server clock plus the
- *   maximum lifetime; `limit` = that lifetime in milliseconds.
- */
 export const ProposalLimitReasonSchema = Schema.Literals([
   "pending-proposals",
   "proposal-lifetime",
 ]);
 
-/**
- * 422: a `propose` entry exceeds the pending-proposal acceptance policy
- * (AUTH_SPEC §12-8: 32 live proposals per project, `expires_at_ms` at most 30
- * days past the server clock). An acceptance policy, not a consensus rule —
- * the entry may be valid under CRYPTO_SPEC §6.2 and still be refused here.
- */
 export class ProposalLimitError extends Schema.TaggedError<ProposalLimitError>()(
   "ProposalLimit",
   { reason: ProposalLimitReasonSchema, limit: Schema.Number },

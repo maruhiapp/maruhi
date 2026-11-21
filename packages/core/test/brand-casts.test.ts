@@ -1,12 +1,3 @@
-// Tripwire: the identity brands (identity.ts — UserId, ProviderUserId,
-// KeyFingerprintHex) are minted only by the mints there and by crypto's own
-// fingerprint computation. The lint block in `vite.config.ts` gates who may
-// import the mints; this pins the other way around them — a type assertion
-// to a brand in shipped source. Tests mint their data through crypto's
-// test-support (`testUserId` / `testKeyFingerprintHex`), which the lint rule
-// keeps out of shipped source. The last block keeps the lint rule's mint-site
-// allowlist honest: every listed file must still import a mint.
-
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,45 +6,20 @@ import { describe, expect, it } from "vite-plus/test";
 const REPO_ROOT = join(import.meta.dirname, "../../..");
 const SOURCE_ROOTS = ["apps", "packages"];
 
-/**
- * `as Brand` for each of the seven brands (the angle-bracket form is not used
- * in this codebase's TypeScript; `$type<UserId>()` on a Drizzle column is a
- * branded column, the sanctioned DB mint).
- */
 const BRAND_ASSERTION =
   /\bas\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
 
-/**
- * A hand-written type predicate returning a brand (`x is Brand`) is a mint
- * with no boundary: any caller's string becomes branded by `if` alone. Such
- * predicates live only in packages/core/src, as module-private functions
- * that feed the Schema.refine mints (identity.ts's isUserId and the narrows*).
- */
 const BRAND_PREDICATE =
   /\w+\s+is\s+(?:UserId|ProviderUserId|KeyFingerprintHex|OrgId|ProjectId|EnvironmentId|VariableId)\b/;
 
 const PREDICATE_ROOT = "packages/core/src/";
 
-/**
- * The one sanctioned mint file: the chain verifier's own mints in crypto —
- * the fingerprint computation (`encodeHex` over 16 digest bytes) and
- * sealChainState's map-key mints (keys out of verified entry slots). The
- * count is pinned so a sixth cast here fails loudly.
- */
 const ALLOWED = new Set(["packages/crypto/src/internal.package/chain-verify.ts"]);
 
-/** The expected number of `as Brand` assertions inside each ALLOWED file. */
 const ALLOWED_COUNTS: Readonly<Record<string, number>> = {
   "packages/crypto/src/internal.package/chain-verify.ts": 5,
 };
 
-/**
- * Every file under `dir` (repo-relative), never descending into
- * node_modules, dist or a dot-directory (.astro, .cloudflare, .wrangler, …).
- * Those hold installed or generated files only, and CI's parallel group B
- * builds into them while this test runs (apps/site/.astro/types.d.ts is generated
- * TypeScript), so walking them would race the build.
- */
 function walk(dir: string): string[] {
   return readdirSync(join(REPO_ROOT, dir), { withFileTypes: true }).flatMap((entry) => {
     const path = `${dir}/${entry.name}`;
@@ -125,7 +91,6 @@ interface LintConfig {
   }[];
 }
 
-/** The lint block of the root vite.config.ts (the repository's oxlint configuration). */
 async function readLintConfig(): Promise<LintConfig> {
   const { default: config } = (await import("../../../vite.config.ts")) as {
     readonly default: { readonly lint: LintConfig };
@@ -138,7 +103,6 @@ type RestrictedImportsRule = readonly [
   { readonly paths: readonly { name: string; importNames?: string[] }[] },
 ];
 
-/** The `@maruhi/core` names the shipped-source rule restricts (the mints). */
 function restrictedMintNames(config: LintConfig): readonly string[] {
   const shipped = config.overrides.find((override) => {
     const rule = override.rules?.["no-restricted-imports"] as RestrictedImportsRule | undefined;
@@ -148,7 +112,6 @@ function restrictedMintNames(config: LintConfig): readonly string[] {
   return rule?.[1].paths.find((path) => path.name === "@maruhi/core")?.importNames ?? [];
 }
 
-/** The concrete files of the mint-site override (the one that lifts the mint restriction). */
 function mintSiteFiles(config: LintConfig): readonly string[] {
   const override = config.overrides.find((candidate) =>
     candidate.files.includes("packages/api-schema/src/**"),
@@ -156,7 +119,6 @@ function mintSiteFiles(config: LintConfig): readonly string[] {
   return (override?.files ?? []).filter((file) => !file.includes("*"));
 }
 
-/** The value (non-`type`) names a file imports from `@maruhi/core`. */
 function coreValueImports(text: string): ReadonlySet<string> {
   const names = new Set<string>();
   for (const match of text.matchAll(/import\s+(type\s+)?\{([^}]*)\}\s+from\s+"@maruhi\/core"/g)) {

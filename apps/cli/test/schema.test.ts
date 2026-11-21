@@ -1,12 +1,3 @@
-// Tests for the valueless schema S3 (design doc §1-1 / §1-2 / §1-4,
-// CRYPTO_SPEC §4.2 / §6.3, AUTH_SPEC §12-7): `maruhi schema` (display —
-// including the pinned agent-gate allowance), `maruhi schema set`
-// (partial updates, declaration creation, locked pre-check, entropy
-// fail-closed), verifying a distribution containing declared (digest
-// counting, the value-distribution mandate), run's fail-fast (hard
-// presence / soft type), push's activation, and the v3 layout's honest
-// failure mode (session-46 §8 iteration 5's test requirement).
-
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -41,17 +32,13 @@ let built: BuiltChain;
 let dek1: Uint8Array;
 let wrap1: WireRecipientDek;
 let envStatement: WireDistributedEnvironmentStatement;
-/** declared (required, url type, with a description — §4.2 layout v3). */
 let declaredRequired: WireDistributedVariableStatement;
-/** declared (required = false, no type). */
 let declaredOptional: WireDistributedVariableStatement;
-/** The v3 active statement (number type) and its value. */
 let activeV3: {
   variableId: string;
   statement: WireDistributedVariableStatement;
   value: WireDistributedValue;
 };
-/** The v1 active statement and its value (no schema fields — the legacy shape). */
 let activeV1: {
   variableId: string;
   statement: WireDistributedVariableStatement;
@@ -163,7 +150,6 @@ function deksHandler(): MockHandler {
   }));
 }
 
-/** The distribution set (active entries and declared / deleted statements) → digest input. */
 function digestStatementsOf(input: {
   readonly variables?: readonly { statement: WireDistributedVariableStatement }[];
   readonly declaredVariables?: readonly WireDistributedVariableStatement[];
@@ -176,7 +162,6 @@ function digestStatementsOf(input: {
   ];
 }
 
-/** A pull response with values (declaredVariables bundled — §12-7). */
 function pullHandler(overrides?: {
   readonly variables?: readonly {
     variableId: string;
@@ -184,7 +169,6 @@ function pullHandler(overrides?: {
     value: WireDistributedValue;
   }[];
   readonly declaredVariables?: readonly WireDistributedVariableStatement[];
-  /** Overrides the digest input (for negatives that deliberately misalign the distribution and the digest). */
   readonly digestStatements?: readonly WireDistributedVariableStatement[];
 }): MockHandler {
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
@@ -220,18 +204,12 @@ function pullHandler(overrides?: {
 interface MetadataOverrides {
   readonly variables?: readonly WireDistributedVariableStatement[];
   readonly schemaPolicy?: "enabled" | "locked";
-  /**
-   * Echo of accepted meta operations (material for §12-10 (3)'s effect
-   * check): after acceptance it serves base + the accepted statement +
-   * the accepted manifest (with issuer attribution).
-   */
   readonly echo?: {
     body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
     readonly base: readonly WireDistributedVariableStatement[];
   };
 }
 
-/** Distribution of an accepted meta operation (base + the accepted statement + the accepted manifest). */
 function echoMetadataJson(
   echo: NonNullable<MetadataOverrides["echo"]> & {
     body: NonNullable<NonNullable<MetadataOverrides["echo"]>["body"]>;
@@ -288,7 +266,6 @@ async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unkno
   };
 }
 
-/** A metadata-only pull response (declared is interleaved into variables — §12-7). */
 function metadataHandler(overrides?: MetadataOverrides): MockHandler {
   return onRequest(
     "GET",
@@ -334,20 +311,13 @@ describe("maruhi schema (display — §1-1)", () => {
     expect(await runCli(["schema"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
     expect(output).toContain("NAME\tTYPE\tREQUIRED\tSTATUS\tMAX AGE\tDESCRIPTION");
-    // v3 declared: type, required, description, and status in a row
     expect(output).toContain(`SHOP_URL\turl\ttrue\tdeclared\t-\t${DESCRIPTION_REQUIRED}`);
     expect(output).toContain("OPTIONAL_HINT\t-\tfalse\tdeclared\t-\t-");
-    // v3 active: STATUS = set
     expect(output).toContain("PORT\tnumber\ttrue\tset\t-\tlisten port");
-    // v1: TYPE / REQUIRED / DESCRIPTION are `-`
     expect(output).toContain("LEGACY_KEY\t-\t-\tset\t-");
-    // Types are displayed as declarations (the §14.3 display rule —
-    // never the word 'verified')
     expect(output.toLowerCase()).not.toContain("verified");
-    // Values never appear
     expect(output).not.toContain("8080");
     expect(output).not.toContain("legacy-value");
-    // On a TTY (the default) no header note is attached
     expect(output).not.toContain("untrusted data");
   });
 
@@ -363,9 +333,6 @@ describe("maruhi schema (display — §1-1)", () => {
   });
 
   it("isn't on the agent-gate's deny-list (the allowed side — pinned by §1-1)", async () => {
-    // Even in an environment matching both layers of the 2-layer gate
-    // that refuses value display (pull --show) — known-agent detection
-    // + a non-interactive terminal — schema works
     const env = await startEnv([chainHandler(), metadataHandler()]);
     env.setAgent({ isAgent: true, name: "testbot" });
     env.setTerminal({ stdin: false, stdout: false, stderr: false });
@@ -384,9 +351,6 @@ describe("maruhi schema (display — §1-1)", () => {
   });
 
   it("description is neutralized by escapeText (rulings CK and CW — signed isn't necessarily benign)", async () => {
-    // Server acceptance (§12-8) refuses control characters, but a
-    // malicious server's or malicious signer's distribution isn't
-    // bound — the display side's neutralization is an independent duty
     const malicious = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -404,8 +368,6 @@ describe("maruhi schema (display — §1-1)", () => {
     const env = await startEnv([chainHandler(), metadataHandler({ variables: [malicious] })]);
     expect(await runCli(["schema"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
-    // Raw ESC / raw newline injections never appear (converted to
-    // escaped notation)
     expect(output).not.toContain("\u001b");
     expect(output).toContain("\\u{001b}");
     expect(output).toContain("\\u{000a}");
@@ -414,9 +376,6 @@ describe("maruhi schema (display — §1-1)", () => {
 
 describe("verifying a distribution containing declared (§6.3 / §12-7)", () => {
   it("a valued pull containing declared succeeds on a matching digest and shows the declaration row", async () => {
-    // S2's known gap: unless declared is counted into the digest
-    // recomputation, every pull fails on variables-digest-mismatch —
-    // success itself is pinned
     const env = await startEnv([chainHandler(), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     const output = env.logs.join("\n");
@@ -425,10 +384,6 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
   });
 
   it("an active verified statement appearing in the declared list is refused as a missing value (§6.3)", async () => {
-    // The shape where a server wanting to hide a value moves the active
-    // statement into declaredVariables: the digest still matches (the
-    // statement is intact), so only §6.3's value-distribution mandate
-    // detects it
     const env = await startEnv([
       chainHandler(),
       pullHandler({
@@ -469,20 +424,12 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
   });
 
   it("layoutVersion v4 trips the typed error 'unsupported layout (client update)' (session-46 §8 iteration 5; v3 is supported since PF6 R9)", async () => {
-    // Distribution decode isn't a Literal (an integer with no pinned
-    // ceiling), so v4 passes decode and the support-range check before
-    // signature verification refuses it in the honest failure mode —
-    // it doesn't masquerade as a Schema error or a bad signature
-    // (suspected tampering)
     const v4 = { ...activeV3.statement, layoutVersion: 4 };
     const env = await startEnv([
       chainHandler(),
       pullHandler({
         variables: [{ ...activeV3, statement: v4 }, activeV1],
         declaredVariables: [],
-        // The digest is computed from the v3 canonical form (the
-        // client refuses at the statement stage, so it never reaches
-        // the manifest stage)
         digestStatements: [activeV3.statement, activeV1.statement],
       }),
     ]);
@@ -497,9 +444,6 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
   });
 
   it("the retired layoutVersion 2 trips the same typed 'unsupported layout' error (CRYPTO_SPEC §4.2 — 0.15-draft)", async () => {
-    // The former v2 wire shape: the v3 field set without maxAgeDays. The
-    // support-range check refuses it before signature verification — it is
-    // neither a partial-field-set refusal nor a bad signature
     const { maxAgeDays: _dropped, ...v2Shape } = activeV3.statement;
     const v2 = { ...v2Shape, layoutVersion: 2 };
     const env = await startEnv([
@@ -544,8 +488,6 @@ describe("maruhi run's fail-fast (§1-4 — hard presence / soft type)", () => {
     expect(errors).toContain("Required variables are declared but have no value yet");
     expect(errors).toContain("SHOP_URL");
     expect(errors).toContain("The command was not started");
-    // The error text must not contain the description (an injection
-    // surface via logs — session-46 §8 iteration 3)
     expect(errors).not.toContain(DESCRIPTION_REQUIRED);
   });
 
@@ -594,7 +536,6 @@ describe("maruhi run's fail-fast (§1-4 — hard presence / soft type)", () => {
   });
 });
 
-/** A box that captures create / rename acceptance bodies and feeds them into the echo (the effect-check distribution). */
 interface MutationEcho {
   body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
   readonly base: readonly WireDistributedVariableStatement[];
@@ -651,16 +592,12 @@ describe("maruhi schema set (§1-2)", () => {
       value?: unknown;
       manifest: Record<string, unknown>;
     };
-    // No value is bundled (declared creation — §12-5)
     expect(body.value).toBeUndefined();
     expect(body.statement["status"]).toBe("declared");
     expect(body.statement["metaVersion"]).toBe(1);
-    // A new declaration is the current layout (v3 — PF6 R9), with no max age by default
     expect(body.statement["layoutVersion"]).toBe(3);
     expect(body.statement["maxAgeDays"]).toBeNull();
     expect(body.statement["varType"]).toBe("url");
-    // Creation defaults: required = true (§1-2 — a declaration is the
-    // environment's contract), description = ""
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe("");
     expect(body.statement["name"]).toBe("DATABASE_URL");
@@ -683,13 +620,9 @@ describe("maruhi schema set (§1-2)", () => {
     ).toBe(0);
     expect(renameCalls).toHaveLength(1);
     const body = renameCalls[0]?.body as { statement: Record<string, unknown> };
-    // A run with only --description must not silently drop type and
-    // required (full replacement is forbidden — §1-2)
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe("New words");
-    // Status and name are unchanged (a schema re-issue — stays
-    // declared)
     expect(body.statement["status"]).toBe("declared");
     expect(body.statement["name"]).toBe("SHOP_URL");
     expect(body.statement["metaVersion"]).toBe(2);
@@ -729,7 +662,6 @@ describe("maruhi schema set (§1-2)", () => {
     const body = renameCalls[0]?.body as { statement: Record<string, unknown> };
     expect(body.statement["layoutVersion"]).toBe(3);
     expect(body.statement["maxAgeDays"]).toBe(90);
-    // The other fields are inherited (partial update)
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(env.logs.join("\n")).toContain("max-age=90d");
@@ -749,10 +681,6 @@ describe("maruhi schema set (§1-2)", () => {
   });
 
   it("the first v3 re-issue onto a v1 variable requires an explicit required (a local refusal before signing/sending)", async () => {
-    // A v1 statement has nothing to inherit required from (§1-2's
-    // partial update is a 'previous value' rule). Silently applying the
-    // creation default true would put a presence contract the user
-    // never typed onto the signature — explicit is required
     const env = await startEnv([
       chainHandler(),
       metadataHandler({ variables: [activeV1.statement] }),
@@ -798,7 +726,6 @@ describe("maruhi schema set (§1-2)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("schema policy is locked");
     expect(errors).toContain("--type");
-    // Nothing was signed or sent (not a single POST)
     expect(lastServer().requests.filter((request) => request.method === "POST")).toHaveLength(0);
   });
 
@@ -829,20 +756,14 @@ describe("maruhi schema set (§1-2)", () => {
 });
 
 describe("the entropy warning (ruling CW — fail-closed)", () => {
-  // A dummy that merely looks like a real value (not an actual secret)
   const FAKE_SECRET = "c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA0K11";
 
   it("detector: detects a secret-looking run and lets ordinary English sentences and identifiers through", () => {
     expect(findHighEntropySubstring(FAKE_SECRET)).not.toBeNull();
-    // An API-key-like mixed token (a dummy) is detected even inside a
-    // sentence
     expect(
       findHighEntropySubstring("token is x7Gh2kQ9pLmA3vB8nC4dE5fJ6hK7iL8m here"),
     ).not.toBeNull();
-    // A repeating pattern isn't high-entropy (not detected — the
-    // real-value likeness grounds on disorder)
     expect(findHighEntropySubstring(`token is ${"a1B2".repeat(10)}`)).toBeNull();
-    // A 64-hex (a dummy's random look) is detected too
     expect(
       findHighEntropySubstring("0f8e2d1c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0"),
     ).not.toBeNull();
@@ -862,11 +783,7 @@ describe("the entropy warning (ruling CW — fail-closed)", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("secret-like high-entropy");
     expect(errors).toContain("--allow-high-entropy");
-    // The input itself isn't put into the error (it could be a
-    // secret)
     expect(errors).not.toContain(FAKE_SECRET);
-    // Nothing reached the network (fail-closed at input time — before
-    // the accident)
     expect(lastServer().requests).toHaveLength(0);
   });
 
@@ -927,11 +844,7 @@ describe("maruhi push's activation (the first value push onto a declared — §1
       value: { aad: Record<string, unknown> };
       manifest: Record<string, unknown>;
     };
-    // The value is version 1 (a declared's latest is always 0)
     expect(body.value.aad["version"]).toBe(1);
-    // The activation statement: status active, metaVersion + 1, and
-    // the schema fields and name carry the declared values
-    // byte-exact
     expect(body.statement["status"]).toBe("active");
     expect(body.statement["metaVersion"]).toBe(2);
     expect(body.statement["name"]).toBe("SHOP_URL");
@@ -945,10 +858,6 @@ describe("maruhi push's activation (the first value push onto a declared — §1
   });
 
   it("a create that lost to a concurrent declare switches from 409 duplicate-name to activation", async () => {
-    // The first resolution = nonexistent → create; the server answers
-    // 409 (a concurrent declare landed first); the re-resolution =
-    // declared → the activation compound (§12-5's retry = re-fetch →
-    // re-sign)
     const echo: MutationEcho = { body: null, base: [declaredRequired] };
     let metadataCalls = 0;
     const activateCalls: MockRequest[] = [];
@@ -961,9 +870,6 @@ describe("maruhi push's activation (the first value push onto a declared — §1
       envStatement,
       statements: [],
     });
-    // The re-resolved set (after the declared landed) is
-    // manifestVersion 2, and prev is really chained to the first
-    // manifest (adjacent-version prev verification — M1-A1)
     const declaredManifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,

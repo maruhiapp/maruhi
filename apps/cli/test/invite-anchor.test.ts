@@ -1,18 +1,3 @@
-// Integration tests for the invite-link anchor's machine cross-check
-// (CRYPTO_SPEC §6.3 out-of-band anchor (a) / §6.5 — attachProject /
-// project verify in context.ts).
-//
-// Properties pinned down:
-//  1. On the first sync after add_member, the pinned "head inclusion +
-//     inviter-FP membership" is machine-checked; on success verifiedAtSeq
-//     is persisted (the check keeps running afterwards)
-//  2. Head not included (rollback, fork distribution), inviter FP
-//     mismatch, or inviter sig-key mismatch (forged link / forged chain)
-//     are refused as hard evidence (the anchor always carries both the FP
-//     and the sig key)
-//  3. A corrupt pin file is fail-open (warn and continue without the
-//     check — the same line drawn as the floor)
-
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -57,7 +42,6 @@ function chainHandler(built: BuiltChain): MockHandler {
   }));
 }
 
-/** The accepted chain (genesis → the acceptor's add_member) and the acceptor's session. */
 async function memberEnv(built: BuiltChain): Promise<TestEnv> {
   const server = await MockServer.start([chainHandler(built)]);
   servers.push(server);
@@ -103,8 +87,6 @@ describe("the invite-link anchor's machine cross-check (first sync — §6.3 (a)
     ) as { anchor: { verifiedAtSeq: number | null } };
     expect(pins.anchor.verifiedAtSeq).toBe(2);
 
-    // The second time doesn't repeat the success message (the check
-    // itself runs every time)
     env.logs.length = 0;
     expect(await runCli(["project", "verify"], env.layer)).toBe(0);
     expect(env.logs.join("\n")).not.toContain("Invite-link anchor check passed");
@@ -118,8 +100,6 @@ describe("the invite-link anchor's machine cross-check (first sync — §6.3 (a)
     const env = await memberEnv(built);
     await seedAnchor(env, built.projectId, {
       headSeq: 2,
-      // A hash differing from the real seq 2 = the history the inviter
-      // saw is not part of the distribution
       headHashHex: "9a".repeat(32),
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
@@ -143,8 +123,6 @@ describe("the invite-link anchor's machine cross-check (first sync — §6.3 (a)
       headSeq: 1,
       headHashHex: built.hashes[0],
       inviterUserId: inviter.userId,
-      // The shape where the link's ie= / is= point at a different key
-      // (forged link / forged chain)
       inviterKeyFingerprintHex: "7b".repeat(16),
       inviterSigPubHex: inviter.sigPubHex,
       verifiedAtSeq: null,
@@ -165,8 +143,6 @@ describe("the invite-link anchor's machine cross-check (first sync — §6.3 (a)
       headHashHex: built.hashes[0],
       inviterUserId: inviter.userId,
       inviterKeyFingerprintHex: inviter.fingerprintHex,
-      // The FP matches but the sig key differs (both FP and key are
-      // cross-checked — a disguise of only one never passes)
       inviterSigPubHex: "7b".repeat(32),
       verifiedAtSeq: null,
     });

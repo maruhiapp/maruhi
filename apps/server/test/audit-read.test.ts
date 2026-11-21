@@ -1,22 +1,3 @@
-// Integration tests for the audit-event read API (AUDIT_SPEC §6 / §7).
-//
-// Properties being pinned:
-//  1. Visibility classes (§6): below admin, only class-1 rows + rows
-//     where the user themself is the actor. Class 2 (var.read /
-//     dek.registered / dek.deleted) appears nowhere — not in results,
-//     paging, or cursors ("behaves as though it did not exist"). Admin
-//     visibility is "chain role admin × token scope admin" (the min
-//     discipline — not disclosed even to an admin user holding a
-//     read-scope token)
-//  2. Specifying someone else in the actor_user_id filter is a 403 for
-//     below-admin (§6: "cross-searching rows whose actor is someone else
-//     is class 2"). Specifying oneself is allowed
-//
-// Paging bounds, invite.*, and self reads live in
-// audit-read-paging.test.ts (shared helpers in
-// support/audit-read-scenario.ts; see the top of
-// support/membership-scenario.ts for the split's motivation).
-
 import { auditReadVariablesOf } from "@maruhi/core";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -47,7 +28,6 @@ describe("enforcing the visibility classes (§6)", () => {
     await seedProjectActivity();
     const { status, events } = await fetchEvents(token(READER), { limit: "200" });
     expect(status).toBe(200);
-    // All class-1 rows are visible
     expect(eventNames(events)).toEqual(
       expect.arrayContaining([
         "chain.genesis",
@@ -57,19 +37,13 @@ describe("enforcing the visibility classes (§6)", () => {
         "var.created",
       ]),
     );
-    // One's own var.read is visible (self-read regardless of class)
     expect(
       events.some((event) => event.event === "var.read" && event.actor.userId === READER),
     ).toBe(true);
-    // Other people's var.read / dek.registered (class 2) — not a single row appears
     expect(events.some((event) => event.event === "dek.registered")).toBe(false);
     expect(
       events.some((event) => event.event === "var.read" && event.actor.userId !== READER),
     ).toBe(false);
-    // Check the visibility condition itself (allowlist ∨ self) on every
-    // row. A below-admin response carries no seq (the ordinal of gapless
-    // numbering); row identifiers are only the opaque row id (AUDIT_SPEC
-    // §7 — blocking inference of class-2 counts from ordinals)
     for (const event of events) {
       expect(isClass1Event(event.event) || event.actor.userId === READER).toBe(true);
       expect(event.seq).toBeUndefined();
@@ -81,7 +55,6 @@ describe("enforcing the visibility classes (§6)", () => {
     await seedProjectActivity();
     const { status, events } = await fetchEvents(token(OWNER), { limit: "200" });
     expect(status).toBe(200);
-    // Class 2: dek.registered addressed to every member and both users' var.read are visible
     const dekTargets = events
       .filter((event) => event.event === "dek.registered")
       .map((event) => event.targetUserId)
@@ -92,7 +65,6 @@ describe("enforcing the visibility classes (§6)", () => {
       .map((event) => event.actor.userId)
       .toSorted();
     expect(readActors).toEqual([MEMBER, READER].toSorted());
-    // The admin-visible response carries the stored seq (material for §6's "a gap = a trace of deletion" detection)
     for (const event of events) {
       expect(event.seq).toBeGreaterThan(0);
     }
@@ -100,20 +72,12 @@ describe("enforcing the visibility classes (§6)", () => {
 
   it("with a read-scope token, even an admin user does not see others' class-2 rows (min(scope, role))", async () => {
     await seedProjectActivity();
-    // A read-scope-limited token for OWNER (chain role owner). Given a
-    // distinct name so same-name rotation (AUTH_SPEC §6) does not revoke
-    // the fixture's token
     const readToken = await scopedToken(9001, "read-only-audit", [
       { project: testProjectId(projectId), permission: "read" },
     ]);
     const { status, events } = await fetchEvents(readToken, { limit: "200" });
     expect(status).toBe(200);
-    // Class-2 rows whose actor is someone else (READER's / MEMBER's
-    // var.read) are invisible — the opposite of the admin-scope token
-    // (previous test), which sees them
     expect(events.some((event) => event.event === "var.read")).toBe(false);
-    // Rows where the user themself is the actor (dek.registered — the
-    // signer is OWNER) stay self-readable regardless of class (§6)
     expect(
       events.some((event) => event.event === "dek.registered" && event.actor.userId === OWNER),
     ).toBe(true);
@@ -140,16 +104,12 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
     for (const event of byVariable.events) {
       expect(event.environmentId).toBe(ENV);
       if (event.event === "var.read") {
-        // The aggregated form of var.read (§3.3) has no variable ID
-        // column; rows whose payload enumeration contains that variable
-        // match the filter (§7 / Q4)
         expect(event.variableId).toBeUndefined();
         expect(auditReadVariablesOf(event.payload)?.map((v) => v.variableId)).toContain(VAR);
       } else {
         expect(event.variableId).toBe(VAR);
       }
     }
-    // Both the legacy column match (var.created etc.) and the aggregated payload match are returned
     expect(eventNames(byVariable.events)).toEqual(
       expect.arrayContaining(["var.created", "var.version_pushed", "var.read"]),
     );
@@ -170,7 +130,6 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
     });
     expect(status).toBe(200);
     expect(events.length).toBeGreaterThan(0);
-    // Every row of the namespace is returned; no outside rows (env.* / var.* / dek.*) are mixed in
     for (const event of events) {
       expect(event.event.startsWith("chain.")).toBe(true);
     }
@@ -179,10 +138,6 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
   });
 
   it("a chain.* row absent from the mapping still reaches below-admin readers (§6 makes the whole namespace class 1)", async () => {
-    // verify does not require admin (every member can run it). If the
-    // visibility predicate admitted only mapped names, a forged row would
-    // be dropped server-side and never reach a reader's verify, leaving a
-    // coverage hole on the forgery side for non-admins
     await seedProjectActivity();
     await queryProjectDo(
       projectId,
@@ -198,9 +153,6 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
       expect(status).toBe(200);
       expect(eventNames(events)).toContain("chain.role_granted");
     }
-    // Class 2 (others' var.read / dek.registered) stays invisible to
-    // below-admin — the namespace's prefix allowance must not become a
-    // class-2 hole
     const readerAll = await fetchEvents(token(READER), { limit: "200" });
     expect(readerAll.events.some((event) => event.event === "dek.registered")).toBe(false);
     for (const event of readerAll.events) {
@@ -250,9 +202,6 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
 
   it("an environmentId / variableId filter outside the §12-1 form matches verbatim (an empty page, not a 500)", async () => {
     await seedProjectActivity();
-    // Audit rows replay stored text, so the id filters are plain strings:
-    // an out-of-form value is a filter that matches nothing, never a
-    // decode defect
     for (const filter of [{ environmentId: "not.an.id" }, { variableId: "-leading-dash" }]) {
       const { status, events } = await fetchEvents(token(OWNER), { ...filter, limit: "200" });
       expect(status).toBe(200);
@@ -262,7 +211,6 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
 
   it("eventPrefix has no wildcard semantics (a prefix comparison, not LIKE)", async () => {
     await seedProjectActivity();
-    // If it were a LIKE implementation, "%" would match everything and "_" would act as a one-char wildcard
     for (const eventPrefix of ["%", "_hain.", "chain%"]) {
       const { status, events } = await fetchEvents(token(OWNER), { eventPrefix, limit: "200" });
       expect(status).toBe(200);
@@ -272,7 +220,6 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
 
   it("a below-admin actorUserId filter is limited to oneself (naming someone else is a 403)", async () => {
     await seedProjectActivity();
-    // Specifying oneself is allowed and returns only one's own rows (including the class-2 var.read)
     const self = await fetchEvents(token(MEMBER), { actorUserId: MEMBER, limit: "200" });
     expect(self.status).toBe(200);
     expect(self.events.length).toBeGreaterThan(0);
@@ -280,10 +227,8 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
       expect(event.actor.userId).toBe(MEMBER);
     }
     expect(self.events.some((event) => event.event === "var.read")).toBe(true);
-    // Specifying someone else is a data-independent 403 (§6: cross-searching rows whose actor is someone else is class 2)
     const other = await fetchEvents(token(MEMBER), { actorUserId: READER });
     expect(other.status).toBe(403);
-    // An admin can cross-search by naming someone else
     const admin = await fetchEvents(token(OWNER), { actorUserId: READER, limit: "200" });
     expect(admin.status).toBe(200);
     expect(admin.events.some((event) => event.event === "var.read")).toBe(true);
@@ -294,11 +239,9 @@ describe("filters (the §7 vocabulary) and the permission of the actor filter", 
 
   it("a below-admin class-2 event-kind filter returns only one's own rows (empty is not a 403)", async () => {
     await seedProjectActivity();
-    // READER has no dek.registered (the signer is OWNER) — it returns empty
     const hidden = await fetchEvents(token(READER), { event: "dek.registered" });
     expect(hidden.status).toBe(200);
     expect(hidden.events).toEqual([]);
-    // One's own var.read stays visible through the event-kind filter
     const own = await fetchEvents(token(READER), { event: "var.read" });
     expect(own.status).toBe(200);
     expect(own.events.length).toBeGreaterThan(0);

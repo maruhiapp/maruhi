@@ -1,18 +1,3 @@
-// Tests for the rotation connector frame (connector.package — PF6
-// rulings R2–R4): each connector creates the new credential the way its
-// issuer allows a grace period, finalize invalidates exactly the previous
-// one, failures name the connector and the issuer's answer but never a
-// credential, and the generated password is alphanumeric.
-//
-//  - aws-iam-access-key: the IAM Query API is called signed; an inactive
-//    second key is reclaimed, two active keys refuse; finalize deactivates
-//  - cloudflare-api-token: verify → read → create with the same policies;
-//    finalize deletes the previous token (already invalid = "already"); a
-//    body that is not the JSON envelope is a connector error
-//  - postgres / mysql: the statements run on the admin connection with
-//    quoted identifiers; alternation picks the other role; in-place MySQL
-//    retains the current password and finalize discards it
-
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -58,7 +43,6 @@ interface SeenCall {
   readonly body: string;
 }
 
-/** A fake issuer: records the call and answers as told. */
 function fakeIssuer(answer: (call: SeenCall, index: number) => Response) {
   const calls: SeenCall[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -103,13 +87,6 @@ function recordingSql(
 
 const FIXED_NOW = Date.parse("2026-10-02T00:00:00Z");
 
-/**
- * The services a test's connector call sees: the fake issuer's fetch as the
- * `HttpClient`, the recorder's `SqlRunner`, the fake script runner as the
- * `ProcessRunner`'s `captureScript`, deterministic bytes as the
- * `ConnectorCrypto` source, the test issuer origins, and a `TestClock`
- * ({@link run} sets it — the SigV4 signature carries its instant).
- */
 function deps(
   input: {
     fetch?: typeof fetch;
@@ -135,7 +112,6 @@ function deps(
         input.exec ?? (() => Promise.reject(new Error("no script runner in this test"))),
       runSession: () => Effect.succeed(0),
     }),
-    // Deterministic bytes: every password is "AAAA…" shifted by a counter
     Layer.succeed(ConnectorCrypto, {
       nextBytes: (length) => new Uint8Array(length).fill(((counter += 1) % 26) as number),
     }),
@@ -148,7 +124,6 @@ function deps(
   );
 }
 
-/** Runs a connector program under the test layer at a fixed instant. */
 function run<A>(
   depsLayer: Layer.Layer<ConnectorServices>,
   effect: Effect.Effect<A, ConnectorError, ConnectorServices>,
@@ -183,7 +158,6 @@ describe("generatePassword", () => {
   it("is 32 alphanumerics drawn from the random bytes", () => {
     const password = generatePassword((length) => crypto.getRandomValues(new Uint8Array(length)));
     expect(password).toMatch(/^[A-Za-z0-9]{32}$/);
-    // Bytes at or above the rejection limit (248+) are skipped, never biased in
     let calls = 0;
     const skipping = generatePassword((length) => {
       calls += 1;
@@ -263,7 +237,6 @@ describe("postgres connector", () => {
     expect(sql.executed[0]?.statements[0]).toMatch(
       /^ALTER ROLE "app_a" WITH PASSWORD '[A-Za-z0-9]{32}'$/,
     );
-    // The self-rotation admin connection is the current credential
     expect(sql.executed[0]?.url).toBe("postgres://app_b:new@db.example:5432/shop");
     expect(
       (await run(deps({ sql: sql.sql }), finalizeCredential(inPlace, previous, now, {}))).kind,
@@ -306,7 +279,6 @@ describe("mysql connector", () => {
     );
     expect(finalized.kind).toBe("finalized");
     expect(sql.executed[1]?.statements[0]).toBe("ALTER USER 'app'@'%' DISCARD OLD PASSWORD");
-    // The current (new) credential authenticates the finalize when no admin is named
     expect(sql.executed[1]?.url).toBe(dec.decode(outcome.values.primary));
   });
 
@@ -394,10 +366,6 @@ describe("aws-iam-access-key connector", () => {
   });
 
   it("every header SignedHeaders names reaches the wire with the value that was signed", async () => {
-    // IAM recomputes the signature from the headers it receives: one signed
-    // header missing or changed on the wire (a content-type dropped when the
-    // body is set) is SignatureDoesNotMatch. Re-signing what arrived must
-    // reproduce the Authorization header that was sent
     const issuer = fakeIssuer((call) => {
       switch (actionOf(call)) {
         case "GetAccessKeyLastUsed":
@@ -538,7 +506,6 @@ describe("aws-iam-access-key connector", () => {
             ]),
           );
         case "GetCallerIdentity":
-          // The probe is signed by the candidate pair (the old key id + the previous secret)
           return call.headers["authorization"]?.includes("Credential=AKIAOLD0000000000001/") ===
             true
             ? xml(identityXml)
@@ -560,7 +527,6 @@ describe("aws-iam-access-key connector", () => {
     const update = issuer.calls.find((call) => actionOf(call) === "UpdateAccessKey");
     expect(new URLSearchParams(update?.body).get("AccessKeyId")).toBe("AKIAOLD0000000000001");
     expect(new URLSearchParams(update?.body).get("Status")).toBe("Inactive");
-    // The finalize is signed by the current credential (the new key)
     expect(update?.headers["authorization"]).toContain("Credential=AKIANEW0000000000002/");
     const second = await run(
       deps({ fetch: issuer.fetch }),
@@ -589,7 +555,6 @@ describe("aws-iam-access-key connector", () => {
           return new Response("", { status: 500 });
       }
     });
-    // A key created by hand (no version of the key id variable held it): untouched, no probe
     const stranger = await run(
       deps({ fetch: issuer.fetch }),
       finalizeCredential(
@@ -607,7 +572,6 @@ describe("aws-iam-access-key connector", () => {
       "access key AKIAHAND000000000003 of user app was never a version of AWS_ACCESS_KEY_ID (not created through maruhi) — left untouched",
     );
     expect(calls).toEqual(["ListAccessKeys"]);
-    // A stored key id that does not pair with the previous secret (someone pushed by hand): untouched
     calls.length = 0;
     const mismatch = await run(
       deps({ fetch: issuer.fetch }),
@@ -626,7 +590,6 @@ describe("aws-iam-access-key connector", () => {
       "access key AKIAHAND000000000003 is active but does not authenticate with the previous version's secret (not that version's key) — left untouched",
     );
     expect(calls).toEqual(["ListAccessKeys", "GetCallerIdentity"]);
-    // Only the current key exists: nothing to deactivate (no probe)
     calls.length = 0;
     const alone = await run(
       deps({
@@ -756,7 +719,6 @@ describe("cloudflare-api-token connector", () => {
   });
 
   it("a null or misshapen result is the step's connector error, never a crash", async () => {
-    // verify answering `result: null` reads as a token Cloudflare did not verify
     const unverified = fakeIssuer(() => json(200, { success: true, result: null }));
     const notVerified = await run(
       deps({ fetch: unverified.fetch }),
@@ -766,7 +728,6 @@ describe("cloudflare-api-token connector", () => {
     expect((notVerified as Error).message).toBe(
       "cloudflare-api-token: the current value is not a valid token (Cloudflare refused to verify it), so its policies cannot be copied. Create the replacement at the issuer and push it",
     );
-    // the definition answering `result: null`
     const noDefinition = fakeIssuer((call) =>
       call.url.endsWith("/verify")
         ? json(200, { success: true, result: { id: "tok-old" } })
@@ -781,7 +742,6 @@ describe("cloudflare-api-token connector", () => {
       "cloudflare-api-token: token tok-old came back without a name and policies",
     );
     expect(noDefinition.calls).toHaveLength(2);
-    // the creation answering `result: null`, then a value of another type
     for (const created of [null, { id: "tok-new", value: 42 }]) {
       const noValue = fakeIssuer((call) => {
         if (call.url.endsWith("/verify")) {
@@ -801,7 +761,6 @@ describe("cloudflare-api-token connector", () => {
         "cloudflare-api-token: Cloudflare did not return the new token's value",
       );
     }
-    // finalize: a previous token whose verify carries `result: null` is already done
     const previousGone = fakeIssuer(() => json(200, { success: true, result: null }));
     expect(
       (
@@ -881,7 +840,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
   };
   const current = credential("sk_live_old");
 
-  /** A fake script runner: records what the child would have seen and answers as told. */
   function fakeScript(answer: (call: CaptureInput, index: number) => CaptureOutcome) {
     const calls: CaptureInput[] = [];
     const exec = (call: CaptureInput) => {
@@ -914,16 +872,10 @@ describe("exec connector (a script of the repository — PF8)", () => {
       STRIPE_SECRET_KEY: "sk_live_old",
       STRIPE_ADMIN_KEY: "rk_admin",
     });
-    // One trailing newline is dropped, nothing else is touched
     expect(dec.decode(outcome.values.primary)).toBe("sk_live_new");
     expect(outcome.values.companions).toEqual({});
     expect(outcome.facts).toEqual(["./rotate.sh: new credential produced"]);
-    // The value's shape is for the local report and the acceptance (D-8 —
-    // a script that printed chatter instead of a value is seen before the
-    // value is pushed), never a fact the server stores
     expect(describeValueShapes(outcome)).toBe("11 bytes, 1 line");
-    // … beside the current value's, for the report's line-count comparison
-    // (D-16), carried as numbers (D-19)
     expect(outcome.shape).toEqual({ bytes: 11, lines: 1 });
     expect(outcome.currentShape).toEqual({ bytes: 11, lines: 1 });
     expect(outcome.previous).toContain(
@@ -980,7 +932,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
       STRIPE_SECRET_KEY: "sk_live_new",
       STRIPE_ADMIN_KEY: "rk_admin",
     });
-    // The script's words are kept as facts, scrubbed of every credential it could echo
     expect(outcome.facts).toEqual([
       "./finalize.sh: previous credential retired (deleted key [redacted] at stripe)",
     ]);
@@ -1042,12 +993,9 @@ describe("exec connector (a script of the repository — PF8)", () => {
     expect(dec.decode(outcome.values.companions["STRIPE_KEY_ID"] ?? new Uint8Array())).toBe(
       "key_123",
     );
-    // The new value is scrubbed out of the script's facts
     expect(outcome.facts).toEqual([
       "./rotate.sh: new credential produced (created key [redacted] (value [redacted]))",
     ]);
-    // Every value to push is shaped in the local report (the primary first,
-    // then the companions by name — the acceptance's parity)
     expect(describeValueShapes(outcome)).toBe("11 bytes, 1 line; STRIPE_KEY_ID 7 bytes, 1 line");
     const missing = fakeScript(() => ok(JSON.stringify({ value: "x" })));
     await expect(
@@ -1071,7 +1019,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
     await expect(
       run(deps({ exec: unknownKey.exec }), rotateCredential(jsonRule, current, {}, SITE)),
     ).rejects.toThrow("has 1 unknown key; it takes value, companions, facts");
-    // The script's words (an unknown key, an undeclared companion name) never reach the message
     const leaky = fakeScript(() =>
       ok(JSON.stringify({ value: "x", companions: { STRIPE_KEY_ID: "k", sk_live_leak: "o" } })),
     );
@@ -1080,7 +1027,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
       rotateCredential(jsonRule, current, {}, SITE),
     ).catch((e: unknown) => e);
     expect((leakyError as Error).message).not.toContain("sk_live_leak");
-    // A produced value must be text a process environment can carry
     const nul = fakeScript(() =>
       ok(JSON.stringify({ value: "a\u0000b", companions: { STRIPE_KEY_ID: "k" } })),
     );
@@ -1120,7 +1066,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
     ).rejects.toThrow(
       "the value the rotate script printed on stdout is not UTF-8 text without NUL",
     );
-    // finalize: the exit code and the scrubbed stderr, the previous credential never shown
     const failing = fakeScript(() => ({
       exitCode: 5,
       stdout: new Uint8Array(0),
@@ -1167,16 +1112,12 @@ describe("exec connector (a script of the repository — PF8)", () => {
     await expect(run(absent, rotateCredential(withFinalize, current, {}, SITE))).rejects.toThrow(
       "the rotate script ./rotate.sh did not start: cannot start ./rotate.sh (ENOENT)",
     );
-    // A script maruhi stopped after it started (a flooded stdout) is not a
-    // launch failure (D-11)
     const stopped = deps({
       exec: () => Promise.reject(new ScriptStoppedError("sh wrote more than 1 MiB to stdout")),
     });
     await expect(run(stopped, rotateCredential(withFinalize, current, {}, SITE))).rejects.toThrow(
       "the rotate script ./rotate.sh was stopped: sh wrote more than 1 MiB to stdout. The new credential may exist at the issuer",
     );
-    // A leftover process's output: refused with the recovery when the
-    // script itself exited 0 (D-14)
     const leftover = deps({
       exec: () =>
         Promise.reject(
@@ -1186,7 +1127,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
     await expect(run(leftover, rotateCredential(withFinalize, current, {}, SITE))).rejects.toThrow(
       "exec: sh exited (code 0) while a process it started kept writing. The script exited 0, so the new credential may exist at the issuer",
     );
-    // A credential that is not text cannot ride in an environment variable
     await expect(
       run(
         deps(),
@@ -1198,7 +1138,6 @@ describe("exec connector (a script of the repository — PF8)", () => {
         ),
       ),
     ).rejects.toThrow("the value of STRIPE_SECRET_KEY is not a UTF-8 text without NUL");
-    // The site is required for this connector (an internal inconsistency, not a user error)
     await expect(run(deps(), rotateCredential(withFinalize, current, {}))).rejects.toThrow(
       "the rotation site (variable and environment) was not supplied",
     );

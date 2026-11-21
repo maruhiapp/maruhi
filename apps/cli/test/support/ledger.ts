@@ -1,8 +1,3 @@
-// Mock of the recovery ledger (`GET /auth/recovery` — CRYPTO_SPEC §8). Wraps a
-// key record with a known secret, serves it, and returns the recovery code.
-// Shared by recovery.test.ts and device-key-recovery.test.ts (DK K14 — the ledger-key
-// determination).
-
 import { wrapMasterSecret } from "@maruhi/crypto";
 import { Redacted } from "effect";
 
@@ -12,7 +7,6 @@ import type { TestUser } from "./crypto.ts";
 import { testUserId } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";
 
-/** Shapes a test user's key pair into the keychain / ledger record form. */
 export function storedMasterRecord(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
@@ -23,12 +17,10 @@ export function storedMasterRecord(user: TestUser): StoredMasterKey {
   };
 }
 
-/** A record the CLI generated as a reserve key (carrying the reserve-key mark — CRYPTO_SPEC §8 / DK K16). */
 export function storedReserveRecord(user: TestUser): StoredMasterKey {
   return { ...storedMasterRecord(user), kind: "reserve" };
 }
 
-/** Wraps `record` with a known secret; returns the handler serving it at GET /auth/recovery and the code. */
 export async function ledgerHandlerFor(
   record: StoredMasterKey,
   userId: string,
@@ -37,9 +29,6 @@ export async function ledgerHandlerFor(
   const wrapped = await wrapMasterSecret({
     recoverySecret: secret,
     userId: testUserId(userId),
-    // JSON.stringify(record) cannot be used — the secret side would be
-    // wrapped redacted, producing a blob that "decrypts fine but the key is
-    // unreadable" (the same trap as production recovery.ts)
     masterSecretBlob: new TextEncoder().encode(serializeStoredMasterKey(record)),
   });
   if (!wrapped.ok) {

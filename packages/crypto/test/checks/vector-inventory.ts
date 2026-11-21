@@ -1,20 +1,3 @@
-// Vector inventory check: pins the "case names that must exist" of each
-// vector JSON on the test side. The existing checks enumerate the vectors
-// present in the JSON and iterate over them, so an accidental deletion,
-// rename, or duplication of a vector silently passes (nobody can detect that
-// the set of checked targets shrank). Here the name set is duplicated into
-// test code and pinned, detecting omissions or count changes on the JSON side
-// fail-closed (effectiveness of the tests).
-//
-// Operational convention: when adding or renaming a vector, update this list
-// in the same change (intentional friction). We deliberately do NOT add
-// metadata to the JSON side (e.g. a declared count) — a declaration could be
-// modified along with the data and go undetected, so the pin lives only on
-// the test side (the "a declaration is checked against a hardcoded list"
-// discipline). Name matching is order-independent (exact match after
-// sorting): reordering is harmless, but deletion, renaming, and duplication
-// fail.
-
 import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
 import chainEntries from "../../test-vectors/chain-entries.json" with { type: "json" };
 import checkpointDigest from "../../test-vectors/checkpoint-digest.json" with { type: "json" };
@@ -47,7 +30,6 @@ interface NamedCollection {
   readonly expected: readonly string[];
 }
 
-// The pinned lists of named collections (all vectors).
 const NAMED_COLLECTIONS: readonly NamedCollection[] = [
   {
     label: "chain-entries.valid_appends",
@@ -923,9 +905,6 @@ const NAMED_COLLECTIONS: readonly NamedCollection[] = [
   },
 ];
 
-// Collections that have no names but are meaningful as a checked-object
-// count (pinned by count), and collections enumerated by an object's key set
-// (pinned by the key set)
 const COUNTED_COLLECTIONS: readonly { label: string; actual: number; expected: number }[] = [
   { label: "chain-entries.entries", actual: chainEntries.entries.length, expected: 24 },
   {
@@ -1034,7 +1013,6 @@ const KEYED_COLLECTIONS: readonly {
   },
 ];
 
-/** Exact match after sorting (order-independent). On mismatch the diff is put in detail. */
 function namesMatch(
   c: Checks,
   label: string,
@@ -1085,13 +1063,6 @@ export function vectorInventoryChecks(): CheckResult[] {
   return c.results;
 }
 
-// Mechanically enforces the chain-dependency classification (CRYPTO_SPEC §11
-// / README convention 27) (design record es-design.md §8 K2-11-bis ①): a file
-// embedding even one entry_hash of the canonical chain is chain-dependent
-// (always regenerated when the canonical chain is regenerated); a file
-// embedding none is invariant. The classification is pinned here rather than
-// in prose — §11's error of counting head-attestation.json as "invariant"
-// would have failed at K2's vector-first commit had this check existed
 const CHAIN_DEPENDENT_FILES: readonly { readonly label: string; readonly doc: unknown }[] = [
   { label: "value-signature", doc: valueSignature },
   { label: "metadata-signature", doc: metaVectors },
@@ -1117,7 +1088,6 @@ const CHAIN_INDEPENDENT_FILES: readonly { readonly label: string; readonly doc: 
   { label: "variable-encryption", doc: variableEncryption },
 ];
 
-/** Does it contain an entry_hash of the canonical chain (excluding genesis — genesis hash = project_id is invariant)? */
 function embedsCanonicalChainHash(doc: unknown): boolean {
   const text = JSON.stringify(doc);
   return chainEntries.entries

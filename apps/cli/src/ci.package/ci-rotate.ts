@@ -1,25 +1,3 @@
-// `maruhi ci rotate <NAME>`: minting a sealed value proposal from a CI job
-// (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5 — PF7b; the design record is
-// docs/notes/pf7-pf8-design.md §6).
-//
-// The job holds only a workload lease (ci-lease.ts — no signing key, no
-// keychain, no config file). It runs the rule's connector exactly like
-// `maruhi var rotate` would (the current credential and the admin inputs
-// decrypted in memory from the lease), but instead of pushing a signed
-// version it seals the new values to the devices of the members who may
-// accept them (W(E) — member or above, environment in scope) and stores
-// the proposal under the same OIDC token and ephemeral key it leased
-// with. A member finishes the rotation with `maruhi rotation accept`
-// (rotation-proposals.ts): the push is theirs, signed on their machine.
-//
-// What this path refuses: a rule whose rotation invalidates the current
-// credential at once (no grace period). A proposal can be rejected or
-// expire, so the current credential must keep working until a member
-// accepts — that is the dual-credential discipline of pf6-design.md §2.
-//
-// No plaintext leaves the process except sealed: the report names
-// variables, counts, dates, and the connector's non-secret facts.
-
 import { ProjectNotFoundError, RotationProposalRejectedError } from "@maruhi/api-schema";
 import {
   cryptoEffect,
@@ -71,18 +49,14 @@ import {
   leaseEnvironmentsWithCredential,
 } from "./ci-lease.ts";
 
-/** AUTH_SPEC §14-5: at most 16 facts of 256 characters each. */
 const MAX_FACTS = 16;
 const MAX_FACT_LENGTH = 256;
 
-/** Input of `maruhi ci rotate` (all from explicit flags — the same discipline as ci run). */
 interface CiRotateInput extends CiLeaseInput {
   readonly environmentId: EnvironmentId;
-  /** The variable named on the command line (the rule's variable, or an AWS rule's key id companion). */
   readonly name: string;
   readonly config: RotateConfig;
   readonly configPath: string;
-  /** How many days the proposal waits for a member (1 to 30). */
   readonly expiresInDays: number;
 }
 
@@ -90,24 +64,18 @@ export interface CiRotateResult {
   readonly proposalId: string;
   readonly primary: string;
   readonly connector: RotateRule["connector"];
-  /** Every proposed variable, in push order (companions first), with the version it replaces. */
   readonly variables: readonly {
     readonly name: string;
     readonly variableId: VariableId;
     readonly baseVersion: number;
   }[];
-  /** The devices the values were sealed to, and the members they belong to. */
   readonly recipientDevices: number;
   readonly recipientMembers: number;
   readonly facts: readonly string[];
-  /** The primary's shape, shown locally only (never a proposal fact — D-8). */
   readonly valueShape: string;
-  /** The current primary's shape, beside the new one (D-16). */
   readonly currentShape: string;
   readonly previous: string;
-  /** The expiry the server set (the receipt — the lifetime travels as days). */
   readonly expiresAtMs: number;
-  /** Whether the proposal was sealed a second time after the recipients changed (O-7). */
   readonly resealed: boolean;
 }
 
@@ -117,7 +85,6 @@ function byNameOf(material: VerifiedLeaseMaterial): ByName {
   return new Map(material.variables.map((variable) => [variable.name, variable]));
 }
 
-/** The environments the rule reads admin inputs from (the target's own excluded — leased together with it). */
 function inputEnvironments(
   rule: RotateRule,
   environmentId: EnvironmentId,
@@ -137,7 +104,6 @@ function missingValue(name: string, where: string, primary: string): CliError {
   );
 }
 
-/** The rule's credential as leased: the primary and every companion. */
 const currentCredential = Effect.fn("ci-rotate.currentCredential")(function* (
   primary: string,
   rule: RotateRule,
@@ -155,12 +121,9 @@ const currentCredential = Effect.fn("ci-rotate.currentCredential")(function* (
     }
     companions[companion] = Redacted.value(value.value);
   }
-  // Why it is unwrapped: the connector consumes the credential in memory
-  // to authenticate the rotation at the issuer (the same as var rotate)
   return { primary: Redacted.value(own.value), companions };
 });
 
-/** The admin inputs the rule names, from the leased environments (a missing one stops before anything is sent). */
 const leasedInputs = Effect.fn("ci-rotate.leasedInputs")(function* (
   primary: string,
   rule: RotateRule,
@@ -188,7 +151,6 @@ const leasedInputs = Effect.fn("ci-rotate.leasedInputs")(function* (
   return inputs;
 });
 
-/** The facts the server accepts (AUTH_SPEC §14-5): at most 16, each neutralized and at most 256 characters. */
 function acceptableFacts(facts: readonly string[]): readonly string[] {
   return facts
     .map((fact) => displayText(fact).slice(0, MAX_FACT_LENGTH))
@@ -203,7 +165,6 @@ interface PlannedValue {
   readonly bytes: Uint8Array;
 }
 
-/** The values to propose, companions first (the same order as var rotate's pushes), each with the version it replaces. */
 const plannedValues = Effect.fn("ci-rotate.plannedValues")(function* (
   primary: string,
   rule: RotateRule,
@@ -241,7 +202,6 @@ interface SealedWrap {
   readonly ciphertextHex: string;
 }
 
-/** Seals one value to every recipient device (one HPKE Seal per device — §5.3). */
 function sealToRecipients(input: {
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
@@ -298,8 +258,6 @@ function sealToRecipients(input: {
   );
 }
 
-/** Why the server refused the mint, with the job's next step (the issuer already accepted the rotation). */
-/** The variables the mint will name, with the versions the lease holds (the pre-flight's input — O-4). */
 const preflightVariables = Effect.fn("ci-rotate.preflightVariables")(function* (
   primary: string,
   rule: RotateRule,
@@ -316,7 +274,6 @@ const preflightVariables = Effect.fn("ci-rotate.preflightVariables")(function* (
   return variables;
 });
 
-/** The pre-flight's refusal (before the issuer is touched — nothing exists to recover). */
 function preflightRefusal(error: unknown, primary: string): CliError {
   const refuse = (why: string, step: string) =>
     cliError(
@@ -391,11 +348,6 @@ function mintRefusal(error: unknown, outcome: RotationOutcome): CliError {
   return next(toCliError(error).message, "Re-run the job");
 }
 
-/**
- * Leases the environment (and the environments the rule's admin inputs
- * live in), runs the connector, seals the new values to W(E), and stores
- * the proposal under the lease's credential. Values are never displayed.
- */
 export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
   input: CiRotateInput,
 ): Effect.fn.Return<
@@ -412,7 +364,6 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
     );
   }
   if (!isProposalId(encodeHex(new Uint8Array(16)))) {
-    // Unreachable (a fixed-size hex); keeps the id form pinned to the crypto package's definition
     return yield* Effect.fail(cliError("internal: the proposal id form is inconsistent"));
   }
   const { rule, primary } = target;
@@ -437,10 +388,6 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
       ),
     );
   }
-  // W(E) (CRYPTO_SPEC §5.3): the devices whose effective permission has
-  // role member or above and E in scope. The server checks the sealed set
-  // against the same definition and refuses a different one as
-  // recipients-mismatch
   const recipients = proposalRecipientsOf(material.verified.state, input.environmentId);
   if (recipients.length === 0) {
     return yield* Effect.fail(
@@ -449,10 +396,6 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
       ),
     );
   }
-  // The pre-flight (O-4): the mint's checks that the issuer cannot undo
-  // once a credential exists (a stale base, a pending proposal for the
-  // same variable, the pending cap) are asked first, under the lease's
-  // credential; a refusal here strands nothing
   const params = { projectId: input.projectId, environmentId: input.environmentId };
   yield* leased.client.lease
     .preflight({
@@ -461,9 +404,6 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
         oidcToken: Redacted.value(leased.credential.token),
         ephemeralPubHex: leased.credential.ephemeralPubHex,
         variables: yield* preflightVariables(primary, rule, local),
-        // The set the job will seal to, checked against W(E) here too
-        // (ruling O revision, round 4): a disagreement that is not a race
-        // is answered before the issuer is touched
         recipients: recipients.map(({ member, device }) => ({
           userId: member.userId,
           encPubHex: device.encPubHex,
@@ -488,19 +428,9 @@ export const ciRotateOp = Effect.fn("ci-rotate.ciRotateOp")(function* (
       (error) =>
         error.reason === "recipients-mismatch"
           ? Effect.gen(function* () {
-              // The one post-issuer refusal that is purely a race (O-7):
-              // the members or devices changed between the lease and the
-              // mint. The plaintext is still in memory, so lease again,
-              // compute W(E) from the current chain, seal again and mint
-              // once more (a new proposal id); a second mismatch stops
               yield* io.logError(
                 "The project's members or devices changed after this job leased it: leasing again and sealing the proposal to the current recipients (once)",
               );
-              // Under the lease's key and the newest token the job holds
-              // for it — the mint's, minted seconds ago, else the lease's —
-              // while it lasts (a runner whose issuance endpoint stopped
-              // answering can still recover — O-13 / O-15); a fresh pair
-              // otherwise
               const again = yield* leaseEnvironmentsWithCredential({
                 ...input,
                 environmentIds: [input.environmentId],
@@ -557,7 +487,6 @@ interface SealAndMintInput {
   readonly params: { readonly projectId: ProjectId; readonly environmentId: EnvironmentId };
   readonly lease: LeasedEnvironments;
   readonly recipients: readonly ProposalRecipient[];
-  /** The token the mint presents (minted after the connector for the lease's key — K-5; `mintTokenFor`). */
   readonly token: Redacted.Redacted<string>;
 }
 
@@ -568,12 +497,6 @@ interface Minted {
   readonly resealed: boolean;
 }
 
-/**
- * Seals the planned values to the recipients under a fresh proposal id
- * and stores the proposal under the lease's ephemeral key. The server's
- * refusals come back as they are (the caller decides which one is a
- * race); everything else is the mint refusal with the recovery step.
- */
 const sealAndMint = Effect.fn("ci-rotate.sealAndMint")(function* (
   mint: SealAndMintInput,
 ): Effect.fn.Return<Minted, CliError | RotationProposalRejectedError, CliIo> {
@@ -597,18 +520,12 @@ const sealAndMint = Effect.fn("ci-rotate.sealAndMint")(function* (
     .propose({
       params: mint.params,
       payload: {
-        // Why it is unwrapped: the wire boundary of the mint request (the
-        // lease's ephemeral key under a token of the same workload —
-        // AUTH_SPEC §14-5)
         oidcToken: Redacted.value(mint.token),
         ephemeralPubHex: lease.credential.ephemeralPubHex,
         proposal: {
           proposalId,
           connector: mint.rule.connector,
           facts: acceptableFacts(outcome.facts),
-          // The lifetime travels as days; the server sets the instant
-          // (a CI clock ahead of the server can never make the proposal
-          // unacceptable after the issuer was touched — O-9)
           expiresInDays: input.expiresInDays,
           variables,
         },
@@ -622,21 +539,11 @@ const sealAndMint = Effect.fn("ci-rotate.sealAndMint")(function* (
   return { proposalId, expiresAtMs: receipt.expiresAtMs, recipients, resealed: false };
 });
 
-/**
- * The mint's token: one minted now, for the lease's ephemeral key (K-5 —
- * a connector can outlive the lease's token, and the key binding, not the
- * token, is the credential's continuity under §14-1). The lease's token
- * is the fallback when the runner's issuance endpoint does not answer
- * again, unless it has expired meanwhile (K-6): then nothing can store the
- * proposal and the recovery for the credential at the issuer is said.
- */
 const mintTokenFor = Effect.fn("ci-rotate.mintTokenFor")(function* (
   input: CiRotateInput,
   lease: LeasedEnvironments,
   outcome: RotationOutcome,
 ): Effect.fn.Return<Redacted.Redacted<string>, CliError, CliIo> {
-  // The fetch's bound follows the lease token's life (O-18): a hung
-  // endpoint must not eat the fallback to a token that still lives
   const boundNowMs = yield* Clock.currentTimeMillis;
   return yield* fetchGitHubOidcToken(
     input.audience,
@@ -663,7 +570,6 @@ const mintTokenFor = Effect.fn("ci-rotate.mintTokenFor")(function* (
   );
 });
 
-/** The report lines of a mint (the command prints them; values never appear). */
 export function describeProposal(result: CiRotateResult, environmentId: EnvironmentId): string[] {
   const names = result.variables.map(
     (variable) => `${displayText(variable.name)} (replacing version ${variable.baseVersion})`,

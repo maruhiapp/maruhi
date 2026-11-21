@@ -1,7 +1,3 @@
-// `maruhi device revoke <ref...>`: the confirmation -> revoke_device per project ->
-// the kind-5 sweep -> the local record -> registry row deletion -> the
-// token-revocation proposal (the group's overview lives in device.ts).
-
 import {
   decodeUserId,
   type EnvironmentId,
@@ -41,11 +37,6 @@ import { compareCodePoints } from "./scope.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 import { sweepRotateFor } from "./sweep-rotate.ts";
 
-// ---------------------------------------------------------------------------
-// device revoke
-// ---------------------------------------------------------------------------
-
-/** Interpreting the references (K4-7: an FP prefix of 8+ chars, or the registry's display name — your own only). */
 const resolveRevokeRefs = Effect.fn("device-revoke.resolveRevokeRefs")(function* (input: {
   readonly refs: readonly string[];
   readonly registry: readonly RegistryRow[] | null;
@@ -80,7 +71,6 @@ const resolveRevokeRefs = Effect.fn("device-revoke.resolveRevokeRefs")(function*
   return resolved;
 });
 
-/** One project's revocation plan (one stage of the confirmation table). */
 interface ProjectRevokePlan {
   readonly context: ProjectContext;
   readonly target: ChainMember;
@@ -89,29 +79,22 @@ interface ProjectRevokePlan {
   readonly warnings: readonly string[];
 }
 
-/** The revocation result on one project (reported by commands/device.ts). */
 export interface ProjectRevokeOutcome {
   readonly projectId: ProjectId;
   readonly revoked: readonly KeyFingerprintHex[];
   readonly sweep: DeviceSweepOutcome | null;
   readonly skipped: string | null;
-  /** The `revoke_device` append failed (nothing was revoked). */
   readonly failed: string | null;
-  /** The append was accepted, but the post-acceptance resync or sweep failed (the revocation is on the chain). */
   readonly sweepFailed: string | null;
 }
 
-/** The overall result of `device revoke`. */
 export interface DeviceRevokeSummary {
   readonly projects: readonly ProjectRevokeOutcome[];
-  /** Tokens proposed but not revoked (name, expiry — K4-13). */
   readonly tokenProposal: readonly string[];
 }
 
-/** The reference-resolution result (whether it came via a display name goes on the confirmation table). */
 type RevokeRef = { readonly ref: string; readonly prefix: string; readonly viaLabel: boolean };
 
-/** The confirmation table (K4-7): per-project revoked FPs (full) and remaining devices, and the derived warnings. */
 const printRevokePlans = Effect.fn("device-revoke.printRevokePlans")(function* (input: {
   readonly targetUserId: UserId;
   readonly plans: readonly ProjectRevokePlan[];
@@ -134,14 +117,12 @@ const printRevokePlans = Effect.fn("device-revoke.printRevokePlans")(function* (
   }
 });
 
-/** The cleanup after revoking your own device: revoked in the local record, delete the registry row (advisory). */
 const finishOwnRevocation = Effect.fn("device-revoke.finishOwnRevocation")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly revoked: readonly KeyFingerprintHex[];
 }): Effect.fn.Return<void, CliError, OwnDeviceStore> {
   const store = yield* OwnDeviceStore;
-  // revoked in the local record (prevents re-registering — K4-3 counterexample 1)
   yield* store.markRevoked(
     input.session.origin,
     input.session.userId,
@@ -153,7 +134,6 @@ const finishOwnRevocation = Effect.fn("device-revoke.finishOwnRevocation")(funct
   }
 });
 
-/** `maruhi device revoke <ref…> [--user] [--project] [--yes] [--revoke-token]`. */
 export const deviceRevokeOp = Effect.fn("device-revoke.deviceRevokeOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -217,7 +197,6 @@ export const deviceRevokeOp = Effect.fn("device-revoke.deviceRevokeOp")(function
   return { projects: outcomes, tokenProposal };
 });
 
-/** The material needed to resolve a reference (for your own device the registry and reserve-key records; for others' just the FP). */
 const prepareRevokeRefs = Effect.fn("device-revoke.prepareRevokeRefs")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -240,7 +219,6 @@ const prepareRevokeRefs = Effect.fn("device-revoke.prepareRevokeRefs")(function*
   return { registry, refs, reserveFps };
 });
 
-/** Executes the revocation on each project and accumulates the results. Return value = the union of revoked FPs. */
 const executeRevokeAll = Effect.fn("device-revoke.executeRevokeAll")(function* (input: {
   readonly session: CliSession;
   readonly plans: readonly ProjectRevokePlan[];
@@ -264,7 +242,6 @@ const executeRevokeAll = Effect.fn("device-revoke.executeRevokeAll")(function* (
   return [...revokedAll];
 });
 
-/** Each project's revocation plan (a skipped project is accumulated into the result as skipped first). */
 const planRevokeAll = Effect.fn("device-revoke.planRevokeAll")(function* (input: {
   readonly session: CliSession;
   readonly projectIds: readonly ProjectId[];
@@ -297,7 +274,6 @@ const planRevokeAll = Effect.fn("device-revoke.planRevokeAll")(function* (input:
   return { plans, outcomes };
 });
 
-/** The yes confirmation (skipped by `--yes` — a revocation is not a ceremony. K4-7). */
 function confirmRevoke(yes: boolean): Effect.Effect<void, CliError, CliIo> {
   if (yes) {
     return Effect.void;
@@ -311,7 +287,6 @@ function confirmRevoke(yes: boolean): Effect.Effect<void, CliError, CliIo> {
   });
 }
 
-/** The FP set of the local records' reserve keys (the non-revoked ones) (warning material for the confirmation table — K4-7). */
 const recordedReserveFingerprints = Effect.fn("device-revoke.recordedReserveFingerprints")(
   function* (session: CliSession): Effect.fn.Return<ReadonlySet<string>, CliError, OwnDeviceStore> {
     const store = yield* OwnDeviceStore;
@@ -324,7 +299,6 @@ const recordedReserveFingerprints = Effect.fn("device-revoke.recordedReserveFing
   },
 );
 
-/** The current devices matching a reference (a non-unique prefix is a usage error). */
 const matchRevokeTargets = Effect.fn("device-revoke.matchRevokeTargets")(function* (input: {
   readonly projectId: ProjectId;
   readonly devices: readonly ChainDevice[];
@@ -348,7 +322,6 @@ const matchRevokeTargets = Effect.fn("device-revoke.matchRevokeTargets")(functio
   return revoking;
 });
 
-/** Warnings derived from the remaining devices' caps (K4-7 / K4-8 / §2-bis). */
 function revokeWarnings(input: {
   readonly verified: VerifiedProject;
   readonly target: ChainMember;
@@ -392,7 +365,6 @@ function revokeWarnings(input: {
   return warnings;
 }
 
-/** Assembles one project's worth of confirmation-table material (string = the skip reason). */
 const planRevoke = Effect.fn("device-revoke.planRevoke")(function* (input: {
   readonly session: CliSession;
   readonly projectId: ProjectId;
@@ -439,7 +411,6 @@ const planRevoke = Effect.fn("device-revoke.planRevoke")(function* (input: {
   return { context, target, revoking, remaining, warnings };
 });
 
-/** Within the target scope, the environments no remaining device's effective scope includes (K4-7's warning material). */
 function uncoveredEnvironments(
   verified: VerifiedProject,
   target: ChainMember,
@@ -455,7 +426,6 @@ function uncoveredEnvironments(
     .toSorted(compareCodePoints);
 }
 
-/** `revoke_device` → sweep on one project (a failure folds into the result). */
 function executeRevoke(input: {
   readonly session: CliSession;
   readonly plan: ProjectRevokePlan;
@@ -481,10 +451,6 @@ function executeRevoke(input: {
       fingerprintsHex: input.plan.revoking.map((device) => device.keyFingerprintHex),
     });
     const { revoked } = appended;
-    // After the append is accepted the revocation is on the chain: a
-    // resync / sweep failure is not folded into "revocation failed" — the
-    // revocation stays and it is reported as a sweep failure (never skip
-    // the local-record / registry aftermath)
     return yield* sweepAfterRevoke({ ...input, appended }).pipe(
       Effect.map((sweep) => ({ ...base, revoked, sweep })),
       Effect.catch((error) =>
@@ -498,7 +464,6 @@ function executeRevoke(input: {
   }).pipe(Effect.catch((error) => Effect.succeed({ ...base, failed: error.message })));
 }
 
-/** The post-acceptance resync and sweep (failures are returned as-is — the caller folds them into sweepFailed). */
 function sweepAfterRevoke(input: {
   readonly session: CliSession;
   readonly plan: ProjectRevokePlan;
@@ -511,10 +476,6 @@ function sweepAfterRevoke(input: {
 }): Effect.Effect<DeviceSweepOutcome | null, CliError, CliServices> {
   const { context } = input.plan;
   return Effect.gen(function* () {
-    // The post-acceptance resync (the pre-append view has no revocation
-    // duty — the sweep is derived on the view that confirmed the listing.
-    // Same discipline as member remove: the server's claim is never the
-    // source of truth)
     const verified =
       input.appended.revoked.length === 0
         ? input.appended.verified
@@ -524,7 +485,6 @@ function sweepAfterRevoke(input: {
       self === undefined
         ? undefined
         : findOwnDevice(self, { keyFingerprintHex: input.masterKeys.fingerprintHex });
-    // When this device revoked itself, the sweep cannot be fulfilled from this device (K4-7 counterexample 5)
     return actorDevice === undefined
       ? null
       : yield* sweepAfterDeviceRevoke({
@@ -538,13 +498,6 @@ function sweepAfterRevoke(input: {
   });
 }
 
-/**
- * Proposing token revocation (K4-13): the candidate is the registry's
- * `tokenId`, else the name `cli:<label>`. With `--revoke-token` it revokes;
- * interactively it asks for yes; non-interactively (`--yes`) it only
- * returns the proposal. A 403 on the list (a non-admin token) reports only
- * the fact.
- */
 const proposeTokenRevocation = Effect.fn("device-revoke.proposeTokenRevocation")(function* (input: {
   readonly client: MaruhiClient;
   readonly registry: readonly RegistryRow[] | null;
@@ -613,7 +566,6 @@ const proposeTokenRevocation = Effect.fn("device-revoke.proposeTokenRevocation")
   return [];
 });
 
-/** One token-candidate row (id, name, expiry — K4-13's proposal display). */
 function describeToken(token: {
   readonly id: string;
   readonly name: string;
@@ -622,7 +574,6 @@ function describeToken(token: {
   return `${displayText(token.id)} (${displayText(token.name)}, expires ${formatUtcMinutes(token.expiresAtMs)})`;
 }
 
-/** Assembling the cap (`--cap <role>` + the scope flags). */
 export function parseCapRole(raw: string | undefined): Effect.Effect<Role, CliError> {
   if (raw === undefined) {
     return Effect.succeed("owner");

@@ -1,7 +1,3 @@
-// Checks for CRYPTO_SPEC §6 (positive): canonical byte strings, deterministic
-// signatures, hash chaining, chain verification, and state derivation
-// (expected_head_states).
-
 import {
   canonicalChainEntryBytes,
   canonicalChainPayloadBytes,
@@ -29,10 +25,6 @@ import {
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
 async function canonicalizationChecks(c: Checks): Promise<void> {
-  // In addition to the canonical 24 entries, the appended entries of
-  // valid_appends / extended_chains pin canonicalization to the same level
-  // (the checkpoint op never appears in the canonical chain, so byte-equality
-  // of an appended entry is the only direct pin of checkpoint canonicalization)
   const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
     ...vectorEntries.map((vector) => [`chain seq ${vector.seq}`, vector] as const),
     ...vectorValidAppends.map(
@@ -63,11 +55,6 @@ async function canonicalizationChecks(c: Checks): Promise<void> {
 }
 
 async function deterministicSigningChecks(c: Checks): Promise<void> {
-  // WebCrypto Ed25519 is the RFC 8032 deterministic signature, so re-signing
-  // with the vector's seed must match signature_hex exactly (pins
-  // canonicalization + signing together). The device key entries of the derived
-  // chains (device-ops — the signer is chosen by (user_id, FP)) are pinned to
-  // the same level
   const labeled: readonly (readonly [string, (typeof vectorEntries)[number]])[] = [
     ...vectorEntries.map((vector) => [`chain seq ${vector.seq}`, vector] as const),
     ...Object.entries(vectorExtendedChains).flatMap(([name, extended]) =>
@@ -121,7 +108,6 @@ function environmentMatches(
   return (
     actual.currentEpoch === Number(expected.current_epoch) &&
     actual.createdAtSeq === expected.created_at_seq &&
-    // The canonical chain deletes no environment (§6.2 — 2026-10-07)
     actual.deletedAtSeq === null &&
     seqsMatch &&
     commitmentsMatch
@@ -133,19 +119,13 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
   if (expected === undefined) {
     return false;
   }
-  // The member set is role + scope (§6.2 — 2026-09-14 ES)
   const membersMatch = membersMatchVector(state.members, expected.members);
-  // lease_policy (§6.2) is also part of the derived state (matches including order — as-signed order)
   const grantsMatch = serverGrantsMatchVector(state.serverGrants, expected.server_grants);
-  // The environment set is chain-derived (§6.2): no environment absent from
-  // the expectation may be derived (there is no default of "initial value 1 if
-  // unobserved")
   const environmentsMatch =
     state.environments.size === Object.keys(expected.environments).length &&
     Object.entries(expected.environments).every(([environmentId, environment]) =>
       environmentMatches(state, environmentId, environment),
     );
-  // Four-eyes (§6.2 — PF1): the policy (null = off) and pending proposals are also part of the derived state
   const approvalMatch =
     policyMatchesVector(state.approvalPolicy, expected.approval_policy) &&
     pendingMatchesVector(state.pendingProposals, expected.pending_proposals);
@@ -153,7 +133,6 @@ function stateMatches(state: ChainState, expectedIndex: number): boolean {
 }
 
 async function verificationChecks(c: Checks): Promise<void> {
-  // Verification of all entries (24) of the canonical chain + head info
   const full = await verifyChain(typedEntries);
   const lastVector = vectorEntries[vectorEntries.length - 1];
   c.push(
@@ -163,7 +142,6 @@ async function verificationChecks(c: Checks): Promise<void> {
       full.value.headHashHex === lastVector?.entry_hash_hex,
   );
 
-  // Each point of expected_head_states (prefix verification = the basis of incremental sync)
   for (const [index, expected] of vectorHeadStates.entries()) {
     const prefix = typedEntries.slice(0, expected.after_seq);
     const result = await verifyChain(prefix);

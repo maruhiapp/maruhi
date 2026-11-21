@@ -37,9 +37,6 @@ import {
   type WrappedCryptoError,
 } from "../src/index.ts";
 
-// Correspondence between every CryptoError kind and its mapped class
-// (the discriminator is the crypto-side kind → the Effect-side tagged
-// error)
 const KIND_TO_CLASS: readonly [
   CryptoError,
   abstract new (...args: never[]) => WrappedCryptoError,
@@ -61,7 +58,6 @@ const KIND_TO_CLASS: readonly [
   [{ kind: "ChainInvalid", seq: 3, reason: "bad-signature" }, ChainInvalidError],
 ];
 
-// Static check of exhaustiveness: if a kind is added on the crypto side, this fails to compile
 type CoveredKind = (typeof KIND_TO_CLASS)[number][0]["kind"];
 type AllKindsCovered = CryptoError["kind"] extends CoveredKind ? true : never;
 const allKindsCovered: AllKindsCovered = true;
@@ -117,7 +113,6 @@ describe("fromCryptoResult", () => {
 
 describe("cryptoEffect", () => {
   it("lifts a real @maruhi/crypto operation into Effect", async () => {
-    // verifyChain([]) returns empty-chain as a value — it becomes a typed error through the wrapper
     const error = await Effect.runPromise(Effect.flip(cryptoEffect(() => verifyChain([]))));
     expect(error).toBeInstanceOf(ChainInvalidError);
     if (error instanceof ChainInvalidError) {
@@ -127,11 +122,6 @@ describe("cryptoEffect", () => {
   });
 });
 
-// Every @maruhi/crypto export that returns a bare Promise (no
-// CryptoResult) — CryptoPromiseOperation is derived from the package's
-// public surface, and this list is pinned to it both ways: `satisfies`
-// keeps the list inside the union, `AllOperationsCovered` fails to
-// compile if the union grows a member the list lacks
 type CryptoExports = typeof import("@maruhi/crypto");
 const BARE_PROMISE_OPERATIONS = [
   "computeChainEntryHash",
@@ -147,8 +137,6 @@ const allOperationsCovered: AllOperationsCovered = true;
 void allOperationsCovered;
 
 describe("cryptoPromise", () => {
-  // Correctly-typed success values per operation — real key material
-  // shapes without any cast (the two generators actually run)
   let thunks: { [K in CryptoPromiseOperation]: () => ReturnType<CryptoExports[K]> };
   beforeAll(async () => {
     const encPair = await generateEncryptionKeyPair();
@@ -179,8 +167,6 @@ describe("cryptoPromise", () => {
       if (error instanceof CryptoRejectedError) {
         expect(error.operation).toBe(operation);
       }
-      // The rejection cause is dropped on purpose: the sentinel must
-      // surface through no serialization of the error or the exit
       expect(JSON.stringify(error)).not.toContain("SENTINEL");
       expect(String(error)).not.toContain("SENTINEL");
       expect(error.stack ?? "").not.toContain("SENTINEL");
@@ -226,11 +212,6 @@ describe("isProjectId", () => {
   });
 });
 
-// isEnvironmentId / isVariableId share the same §12-1 acceptance form
-// (AUTH_SPEC). Because they also validate storage record keys, the
-// boundary — rejecting `__proto__` (out of form via the leading `_`)
-// and accepting `constructor` / `prototype` (legitimate IDs) — is
-// pinned directly
 for (const [name, guard] of [
   ["isEnvironmentId", isEnvironmentId],
   ["isVariableId", isVariableId],
@@ -241,7 +222,6 @@ for (const [name, guard] of [
       expect(guard("a")).toBe(true);
       expect(guard(`a${"b".repeat(63)}`)).toBe(true);
       expect(guard("A1_-x")).toBe(true);
-      // An inherited-property name is a legitimate ID if it fits the form (the reading side defends via own-property)
       expect(guard("constructor")).toBe(true);
       expect(guard("prototype")).toBe(true);
     });

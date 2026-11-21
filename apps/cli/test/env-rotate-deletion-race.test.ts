@@ -1,8 +1,3 @@
-// A rotate that races a delete_environment: the server answers the stale
-// head with 409, and the re-synced chain carries the deletion. Both an
-// all-scope owner and a listed member must get the chain-derived deletion
-// refusal, not a scope refusal (the deletion pruned the id from the listed
-// scope — §6.2).
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";

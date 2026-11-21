@@ -1,13 +1,3 @@
-// Vocabulary and color discipline for stderr notices (notice.ts) — DP5
-// rulings A / B.
-//
-// - Only three prefixes: `Note:` / `Warning:` / `maruhi:`, and the
-//   destination is always stderr
-// - Color goes on the prefix alone (no ANSI inside the body — it can
-//   contain values, identifiers, URLs)
-// - Color enablement: FORCE_COLOR > NO_COLOR (non-empty disables) >
-//   TERM=dumb > whether stderr is a terminal
-
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -16,7 +6,6 @@ import { makeTestEnv } from "./support/env.ts";
 
 const ESC = "\u001B";
 
-/** Fakes the environment-variable lookup (table → envVar). */
 const envOf = (vars: Readonly<Record<string, string>>) => (name: string) => vars[name];
 
 describe("shouldUseColor (color enablement)", () => {

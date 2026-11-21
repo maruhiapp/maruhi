@@ -1,10 +1,3 @@
-// Unit tests for `maruhi sync`'s parts: repository-config validation
-// (sync-config.ts), the declarative presets and invocation assembly
-// (sync-exec.ts — no values on argv, the stdin format, splitting every
-// 100 entries, how deletions are expressed), the value constraints,
-// scrubbing vendor output, the plan diff (sync-plan.ts), and the receipt
-// codec (sync-receipt.ts).
-
 import { Effect, Exit, Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -62,7 +55,6 @@ function githubTarget(overrides: Record<string, unknown> = {}): Record<string, u
   };
 }
 
-/** A config carrying `project` (onPush requires it). */
 function withProject(target: Record<string, unknown>): string {
   return JSON.stringify({
     version: 1,
@@ -80,7 +72,6 @@ function parsed(target: Record<string, unknown>): SyncTarget {
   return config.targets.get("t") as SyncTarget;
 }
 
-/** The exec driver's side (cwd / command). An http one would violate the test's premise. */
 function execOf(target: SyncTarget): Extract<TargetDriver, { kind: "exec" }> {
   if (target.driver.kind !== "exec") {
     throw new Error("expected the exec driver");
@@ -117,8 +108,6 @@ describe("parseSyncConfig", () => {
     expect(execOf(named).cwd).toBe("/repo/apps/worker");
     expect(execOf(named).command).toBe("node_modules/.bin/wrangler");
     expect(execOf(named).namedCommand).toBe(true);
-    // Even spelled identically to the default, writing it in config
-    // counts as 'naming it specifically'
     const spelled = parsed({
       preset: "vercel",
       environment: "prod",
@@ -234,17 +223,13 @@ describe("parseSyncConfig", () => {
     expect(repository.production).toBe(true);
     expect(repository.options).toEqual({});
     expect(parsed(githubTarget({ options: { environment: "production" } })).production).toBe(true);
-    // GitHub Environment names are case-insensitive
     expect(parsed(githubTarget({ options: { environment: "Production" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "PRODUCTION" } })).production).toBe(true);
     expect(parsed(githubTarget({ options: { environment: "staging" } })).production).toBe(false);
-    // Dependabot secrets are repository-wide = production
-    // (overridable explicitly)
     expect(parsed(githubTarget({ options: { app: "dependabot" } })).production).toBe(true);
     expect(
       parsed(githubTarget({ options: { app: "dependabot" }, production: false })).production,
     ).toBe(false);
-    // Environment secrets omit app or say actions
     const full = parsed(
       githubTarget({
         options: { repo: "acme/app", environment: "staging", app: "actions" },
@@ -280,8 +265,6 @@ describe("parseSyncConfig", () => {
       "/repo",
     );
     if (typeof workflow === "string") throw new Error(workflow);
-    // Even on production (Vercel's production environment), a CI
-    // trigger is allowed
     expect(workflow.targets.get("t")?.production).toBe(true);
     expect(workflow.targets.get("t")?.onPush).toEqual({
       kind: "workflow",
@@ -301,7 +284,6 @@ describe("parseSyncConfig", () => {
       command: "gh",
       namedCommand: false,
     });
-    // Omitted = manual only
     expect(parsed(vercelTarget()).onPush).toBeNull();
   });
 
@@ -373,9 +355,6 @@ describe("parseSyncConfig", () => {
     expect(bad).toContain("target names must start with an alphanumeric character");
   });
 
-  // A value of a type no member of an optional / nullable key accepts
-  // (number, boolean, array, object, null) reports the key's own wording —
-  // never the union's default "Expected X | undefined"
   it.each([
     ["options", [1, true, [], null, "yes"], "targets.t.options must be an object"],
     ["cwd", [1, false, [], {}, null], "targets.t.cwd must be a non-empty relative path"],
@@ -586,8 +565,6 @@ describe("buildInvocations (the declarative presets)", () => {
       expect(invocation.command).not.toContain("--body");
       expect(invocation.command).not.toContain("--env-file");
     }
-    // No options = repository secrets (gh resolves the repo from cwd's
-    // git remote)
     const bare = buildInvocations({
       preset: execOf(parsed(githubTarget())).spec,
       command: "gh",
@@ -656,8 +633,6 @@ describe("checkValueConstraints", () => {
     expect(newline?.message).toContain("single line ending with a newline");
     expect(newline?.message).not.toContain(secret);
     expect(checkValueConstraints(vercel, "A", encoder.encode(`${secret}\r\n`))).not.toBeNull();
-    // Multi-line values keep their trailing newline (the Vercel CLI
-    // doesn't drop it), so they pass
     expect(checkValueConstraints(vercel, "A", encoder.encode("a\nb\n"))).toBeNull();
     expect(checkValueConstraints(vercel, "A", encoder.encode(secret))).toBeNull();
   });
@@ -691,12 +666,8 @@ describe("checkValueConstraints", () => {
     }
     expect(checkValueConstraints(gh, "A", encoder.encode("a\nb"))).toBeNull();
     expect(checkValueConstraints(gh, "A", encoder.encode(secret))).toBeNull();
-    // Empty stdin is sent by gh as an empty body (not rejected); the
-    // ceiling is the API's business (no trimming)
     expect(checkValueConstraints(gh, "A", encoder.encode(""))).toBeNull();
     expect(checkValueConstraints(gh, "A", new Uint8Array(70_000))).toBeNull();
-    // Names: GitHub stores them uppercase = two names differing by case
-    // would fold into one secret, so uppercase only
     for (const name of [
       "api_key",
       "ApiKey",
@@ -732,9 +703,6 @@ describe("scrubVendorOutput", () => {
   });
 
   it("scrubs before truncating output over the cap (doesn't leave the second half of a value that straddled the cut)", () => {
-    // If you truncated to the last 64K chars before scrubbing, the second
-    // half of a straddling value wouldn't match any fragment and would be
-    // displayed as-is. Size it so the cut lands at the value's 20th char
     const value = "S".repeat(40);
     const values = [write("A", value)];
     const tail = "\nError: request failed";
@@ -868,8 +836,6 @@ describe("computePlan", () => {
         { name: "PUBLIC", version: 1 },
         { name: "__proto__", version: 2 },
       ],
-      // An object literal's `__proto__:` becomes the prototype
-      // designation, so build it from JSON
       receipt: JSON.parse('{"REMOVED":1,"__proto__":1}') as Record<string, number>,
     });
     expect(result.entries).toEqual([
@@ -886,8 +852,6 @@ describe("computePlan", () => {
         { name: "API_KEY", version: 2 },
         { name: "apiKey", version: 1 },
       ],
-      // A leftover receipt name violating today's rules still passes,
-      // since a delete carries no value
       receipt: { API_KEY: 2, oldName: 1 },
     });
     expect(result.entries).toEqual([

@@ -1,6 +1,3 @@
-// Repository of the recovery-code wrap (AUTH_SPEC §13 — at most one
-// blob per user).
-
 import type { UserId } from "@maruhi/core";
 import { and, eq } from "drizzle-orm";
 import type { drizzle } from "drizzle-orm/d1";
@@ -14,33 +11,9 @@ import { keyWrapWindows, recoveryWraps } from "./schema.ts";
 
 type Db = ReturnType<typeof drizzle>;
 
-// D1 access goes through the shared tryD1 adapter (errors.ts —
-// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
-// public repository types keep an empty error channel because the
-// handlers turning D1FailureError into typed errors belong to other
-// lanes. An unexpected D1 failure stays a defect = a 500, as before
-
-// ---------------------------------------------------------------------------
-// RecoveryRepo (AUTH_SPEC §13. At most one blob per user)
-// ---------------------------------------------------------------------------
-
-/**
- * The blob-fetch rate limit (AUTH_SPEC §13-3: 5 per hour per user).
- * Since KL3 (§13-8) it is counted in one window **summed by kind** with
- * passkey / guardian-group wrap fetches (`key_wrap_windows` kind =
- * blob-fetch — KeyWrapRepo.consumeWindow). The limit value is
- * unchanged.
- */
 export const RECOVERY_FETCH_LIMIT = KEY_BLOB_FETCH_LIMIT;
 
 interface RecoveryRepoShape {
-  /**
-   * Registration / re-issuance = a replacing upsert (§13-1; the old
-   * wrap disappears the moment the new one is accepted). Records
-   * auth.recovery_code_reissued in the same batch (AUDIT_SPEC §3.1 /
-   * AUTH_SPEC §13-5; the first registration is the same replacing
-   * acceptance, hence the same event).
-   */
   readonly upsert: (
     userId: UserId,
     wrap: { readonly suite: string; readonly nonceHex: string; readonly ciphertextHex: string },
@@ -48,16 +21,6 @@ interface RecoveryRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
   readonly find: (userId: UserId) => Effect.Effect<RecoveryWrapRecord | null>;
-  /**
-   * Advances the fixed-window count and returns whether the fetch is
-   * allowed (§13-3). When no row exists it is allowed (a 404 is not
-   * counted — the caller judges via find). A read → conditional-update
-   * pair of statements, best-effort in that concurrent requests may
-   * slightly exceed the count. When allowed, records
-   * auth.recovery_blob_fetched (a watch-listed event — AUDIT_SPEC §3.1)
-   * in the same batch as the count update (a denial = no distribution
-   * is not recorded).
-   */
   readonly recordFetch: (
     userId: UserId,
     nowMs: number,
@@ -74,9 +37,6 @@ export function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRe
     upsert: (userId, wrap, nowMs, actor) =>
       tryD1(async () => {
         await db.batch([
-          // A re-issuance is a new blob, so the fetch window (the
-          // summed window — §13-8) is reset too (the trial history
-          // against the old blob is not carried over to the new one)
           db
             .delete(keyWrapWindows)
             .where(and(eq(keyWrapWindows.userId, userId), eq(keyWrapWindows.kind, "blob-fetch"))),
@@ -123,12 +83,6 @@ export function makeRecoveryRepo(db: Db, keyWraps: KeyWrapRepoShape): RecoveryRe
               updatedAtMs: row.updatedAt,
             };
       }).pipe(Effect.orDie),
-    // Since KL3 (§13-8) the fetch count is kept in the fixed window
-    // summed with passkey / guardian-group wrap fetches
-    // (KeyWrapRepo.consumeWindow — a single conditional UPSERT + a
-    // changes() = 1 guarded audit bundled in). The caller judges the
-    // 404 via find first, so an unregistered user does not consume the
-    // window (the §13-3 line is unchanged)
     recordFetch: (userId, nowMs, actor) =>
       keyWraps.consumeWindow({
         userId,

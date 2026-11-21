@@ -1,36 +1,3 @@
-// Drift check for the Workers deploy configuration
-// (docs/notes/hosted-ops.md §2-F).
-//
-// The repo now carries the deploy config twice:
-//   - cloudflare.config.ts — what `cf deploy` / `cf dev` evaluate (the real
-//     deploy source; `wrangler.config.ts` supplies the bundler-side
-//     assetsDirectory)
-//   - wrangler.jsonc — the mirror the test harness still reads
-//     (@cloudflare/vitest-plugin only understands wrangler.* config files, and
-//     vitest.config.ts / spa-topology.test.ts call unstable_readConfig on it)
-// Any drift between the two means tests validate a different worker than the
-// one that deploys, so this script normalizes both into one shape and diffs
-// them field by field.
-//
-// It also keeps the original invariant: wrangler/cf "hosted" mode does not
-// inherit durable_objects / d1_databases / ratelimits / r2_buckets (they are
-// re-declared per mode). If a re-declared copy drifts from the self-host
-// default, inconsistencies like stale rate-limit values only in hosted happen
-// silently, so CI (8c) checks that "hosted's declarations include the top-level
-// declarations, and same-named declarations are equal" — on both config files.
-//
-// PR4 adds a third carrier of the hosted shape: alchemy.run.ts at the repo
-// root declares the hosted worker (and the apex site) for Alchemy. The
-// program cannot be evaluated here — it needs the stack runtime and account
-// state — so its load-bearing literals are read from the source text and
-// compared against the cf hosted worker above (itself parity-checked
-// against the wrangler mirror). Extraction fails closed: a pattern that no
-// longer matches is a failure, so a reformat cannot hide a drift.
-//
-// Run: `bun scripts/check-hosted-config.ts` (in apps/server. Node side — reads
-// the effective config of both environments via wrangler's unstable_readConfig
-// and evaluates cloudflare.config.ts / wrangler.config.ts directly).
-
 import { readFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 
@@ -46,27 +13,16 @@ const configDir = dirname(configPath);
 const base = unstable_readConfig({ config: configPath });
 const hosted = unstable_readConfig({ config: configPath, env: "hosted" });
 
-// The ops-only restore worker exists only in cf form (`cf deploy --mode
-// restore`): no test spins it up, so it has no wrangler mirror to check
-
 const cfCtx = { isPreview: false };
 const cfSelf = cfConfig({ ...cfCtx, mode: undefined }).worker;
 const cfHosted = cfConfig({ ...cfCtx, mode: "hosted" }).worker;
 const cfRestore = cfConfig({ ...cfCtx, mode: "restore" }).worker;
-// defineWranglerConfig's export type also admits a plain or promised config;
-// this one is a function of the mode, and the checks below need that shape
 if (typeof bundlerConfig !== "function") {
   throw new Error("wrangler.config.ts must export a function of the cf mode");
 }
 const bundlerSelf = await bundlerConfig({ ...cfCtx, mode: undefined });
 const bundlerHosted = await bundlerConfig({ ...cfCtx, mode: "hosted" });
 const bundlerRestore = await bundlerConfig({ ...cfCtx, mode: "restore" });
-
-// ---------------------------------------------------------------------------
-// Normalization. Both config formats are folded into one shape so every
-// invariant can be asserted identically (wrangler snake_case / named arrays
-// vs. cf camelCase / per-binding objects keyed by binding name).
-// ---------------------------------------------------------------------------
 
 interface NormBinding {
   readonly binding: string;
@@ -82,14 +38,10 @@ interface Norm {
   readonly workersDev?: boolean | undefined;
   readonly previewUrls?: boolean | undefined;
   readonly cpuMs?: number | undefined;
-  /** binding -> { className, scriptName (absent for same-worker bindings) } */
   readonly doBindings: Record<string, { className: string; scriptName?: string | undefined }>;
-  /** binding -> { namespace, limit, period } */
   readonly rateLimits: Record<string, { namespace: string; limit: number; period: number }>;
-  /** binding -> { storeId, secretName } (Secrets Store bindings — hosted cf mode only) */
   readonly storeSecrets: Record<string, { storeId: string; secretName: string }>;
   readonly d1?: NormBinding | undefined;
-  /** binding -> bucket name */
   readonly r2: Record<string, string>;
   readonly crons: readonly string[];
   readonly routes: readonly string[];
@@ -109,13 +61,9 @@ interface Norm {
         runWorkerFirst?: readonly string[] | undefined;
       }
     | undefined;
-  /** DO class names exported with sqlite storage */
   readonly doExports: readonly string[];
 }
 
-// `unstable_readConfig` returns wrangler's loosely-typed config; this file only
-// touches the fields mirrored into the cf config. Structural reads go through
-// these small typed views instead of blanket `any`.
 interface WranglerLike {
   name?: string;
   main?: string;
@@ -164,13 +112,6 @@ interface WranglerLike {
   migrations?: ReadonlyArray<{ new_sqlite_classes?: readonly string[] }>;
 }
 
-// The cf side uses cf/config's own type (the worker of any mode), so the
-// view cannot drift from what cloudflare.config.ts actually declares. Each
-// mode's worker is a defineWorker() constant, so that type is a union of
-// literal workers, and a field only some modes declare (limits, domains,
-// observability, assets) cannot be read on a union. The view therefore
-// takes every mode's keys, each optional, with the union of the declared
-// value types (undefined for a mode that leaves the field out)
 type CfWorker = UnwrapConfig<typeof cfConfig>["worker"];
 type KeysOfAny<U> = U extends unknown ? keyof U : never;
 type ValueIn<U, K extends PropertyKey> = U extends Readonly<Record<K, infer V>> ? V : undefined;
@@ -206,8 +147,6 @@ function normWrangler(config: WranglerLike): Norm {
     storeSecrets[secret.binding] = { storeId: secret.store_id, secretName: secret.secret_name };
   }
   const db = config.d1_databases?.[0];
-  // Legacy `migrations` (restore) and new-style `exports` both declare sqlite
-  // DO classes; normalize to the class-name list either way
   const doExports = [
     ...Object.entries(config.exports ?? {})
       .filter(([, v]) => v.type === "durable-object" && v.storage === "sqlite")
@@ -216,7 +155,6 @@ function normWrangler(config: WranglerLike): Norm {
   ].toSorted();
   return {
     name: config.name ?? "",
-    // unstable_readConfig absolutizes `main`; the cf side is config-relative
     entrypoint: config.main === undefined ? undefined : relative(configDir, config.main),
     compatibilityDate: config.compatibility_date,
     compatibilityFlags: [...(config.compatibility_flags ?? [])].toSorted(),
@@ -261,8 +199,6 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
       case "durable-object":
         doBindings[binding] = {
           className: value.exportName,
-          // a cf binding always names its worker; a same-worker reference is
-          // wrangler's "no script_name" case
           ...(value.worker === worker.name ? {} : { scriptName: value.worker }),
         };
         break;
@@ -312,8 +248,6 @@ function normCf(worker: CfWorkerLike, bundler: BundlerLike): Norm {
       headSamplingRate: worker.observability.logs?.headSamplingRate,
     },
     assets: worker.assets && {
-      // cloudflare.config.ts has no assets.directory — it lives in the
-      // bundler shim (wrangler.config.ts)
       directory: bundler.assetsDirectory,
       htmlHandling: worker.assets.htmlHandling,
       notFoundHandling: worker.assets.notFoundHandling,
@@ -331,22 +265,12 @@ function expectSame(label: string, a: unknown, b: unknown): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// cf <-> wrangler parity, per environment.
-// ---------------------------------------------------------------------------
-
 const wBase = normWrangler(base);
 const wHosted = normWrangler(hosted);
 const cSelf = normCf(cfSelf, bundlerSelf);
 const cHosted = normCf(cfHosted, bundlerHosted);
 const cRestore = normCf(cfRestore, bundlerRestore);
 
-// The Secrets Store bindings are excluded from the two parity
-// comparisons: the wrangler mirror deliberately declares none (the
-// test harness injects the secret values as .dev.vars strings, and
-// src/worker-env.ts resolves both shapes), so they are asserted
-// separately below instead of by mirror equality. (expectSame
-// compares through JSON.stringify, which drops undefined values.)
 expectSame(
   "self-host worker (wrangler.jsonc vs cloudflare.config.ts)",
   { ...wBase, storeSecrets: undefined },
@@ -358,16 +282,6 @@ expectSame(
   { ...cHosted, storeSecrets: undefined },
 );
 
-// The hosted worker's four secret values are bound from the account's
-// Secrets Store (ADR-0012 revision 3): exactly the four names, each
-// bound under its own env name as the secret name, all in the one
-// store the SECRETS_STORE_ID constant in cloudflare.config.ts names.
-// The id itself cannot be pinned here (it is recorded nowhere else in
-// the repository — the constant's comment carries the operator duty),
-// but its shape can: one non-empty id shared by all four bindings.
-// No other mode and no wrangler mirror entry may declare a store
-// binding: on self-host the four are plain Workers Secrets, and the
-// restore worker carries no secrets at all.
 const HOSTED_SECRET_NAMES = [
   "GITHUB_CLIENT_ID",
   "GITHUB_CLIENT_SECRET",
@@ -401,15 +315,10 @@ for (const [label, norm] of [
   expectSame(`${label}: no secrets store bindings`, norm.storeSecrets, {});
 }
 
-// The invariants below are checked on the wrangler mirror as before; the
-// parity assertions above carry them to the cf config transitively.
-
 // fallow-ignore-next-line complexity -- sequential invariant assertions; splitting them would obscure the checklist
 function checkHostedInvariants(prefix: string, self: Norm, env: Norm): void {
-  // DO bindings (name and class) are identical
   expectSame(`${prefix}: durable_objects.bindings`, self.doBindings, env.doBindings);
 
-  // ratelimits: each top-level binding exists in hosted with the same value
   for (const [name, limit] of Object.entries(self.rateLimits)) {
     const counterpart = env.rateLimits[name];
     if (counterpart === undefined) {
@@ -419,8 +328,6 @@ function checkHostedInvariants(prefix: string, self: Norm, env: Norm): void {
     expectSame(`${prefix}: ratelimits.${name}`, limit, counterpart);
   }
 
-  // D1: binding name and database_name are identical (operations substitutes
-  // database_id)
   if (self.d1 === undefined || env.d1 === undefined) {
     failures.push(
       `${prefix}: d1_databases: both the self-host default and hosted must declare the DB binding`,
@@ -430,43 +337,26 @@ function checkHostedInvariants(prefix: string, self: Norm, env: Norm): void {
     expectSame(`${prefix}: d1_databases.database_name`, self.d1.name, env.d1.name);
   }
 
-  // hosted-only: the evacuation bucket's binding name matches Env in
-  // src/do/chain-do.ts
   if (!("OPS_BACKUP_BUCKET" in env.r2)) {
     failures.push(`${prefix}: r2_buckets: hosted must bind OPS_BACKUP_BUCKET`);
   }
-  // The self-host default must not require R2 (so deploy does not break on
-  // accounts without an R2 subscription)
   if (Object.keys(self.r2).length !== 0) {
     failures.push(`${prefix}: r2_buckets: the self-host config must not declare R2 buckets`);
   }
 
-  // crons are identical. The hourly cron string is the branch condition in
-  // index.ts itself (OPS_HOURLY_CRON): if it drifts, the hourly job falls to
-  // the daily side and evacuation and evaluation silently stop, so cross-check
-  // it against the real config
   expectSame(`${prefix}: triggers.crons`, self.crons, env.crons);
 
-  // Workers Logs invocation logs contain the request URL (path + query =
-  // capability / OAuth code) in their body, so they must be disabled in the
-  // hosted environment (hosted-design.md §5-1 — aggregated metrics only)
   if (env.observability?.invocationLogs !== false) {
     failures.push(
       `${prefix}: observability: hosted must set logs.invocation_logs to false (request URLs carry capabilities)`,
     );
   }
-  // Defense in depth: always drop the query string (OAuth code etc.) from the
-  // URL in logs and traces
   if (env.observability?.redactQueryString !== true) {
     failures.push(
       `${prefix}: observability: hosted must set redact_query_string to true (query strings carry OAuth codes)`,
     );
   }
 
-  // Single-origin invariant (owner ruling — hosted-ops.md §7): the origin of
-  // the auth endpoints (OAuth callback, __Host- cookie, CLI server URL) is
-  // pinned to one custom domain; workers.dev must not survive as a second
-  // origin
   if (env.workersDev !== false) {
     failures.push(
       `${prefix}: workers_dev: hosted must set workers_dev to false (auth endpoints must have a single origin)`,
@@ -489,10 +379,6 @@ for (const [label, norm] of [
   }
 }
 
-// The restore worker binds to the production (hosted) DO namespace across
-// workers (cf: the binding's `worker` field). The bind target must equal the
-// hosted worker's effective name (a mismatch is the worst place — it only
-// surfaces during an incident)
 const cProductionBinding = cRestore.doBindings["PRODUCTION_PROJECT_CHAIN"];
 if (cProductionBinding?.scriptName !== cHosted.name) {
   failures.push(
@@ -500,11 +386,6 @@ if (cProductionBinding?.scriptName !== cHosted.name) {
   );
 }
 
-// The runtime contract: every mode runs the same compatibility date with
-// both Node compat layers off (COMPATIBILITY_FLAGS in cloudflare.config.ts
-// — past 2026-08-04 the date alone would turn nodejs_compat on and copy
-// the secrets into process.env). The test runner forces Node compat on,
-// so this is the only place the setting is checked
 for (const [label, worker] of [
   ["cf self-host", cSelf],
   ["cf hosted", cHosted],
@@ -517,8 +398,6 @@ for (const [label, worker] of [
   ]);
 }
 
-// The restore worker's own shape: no HTTP handler surface, the per-minute
-// drill cron, and the drill DO export
 if (cRestore.workersDev !== false || cRestore.routes.length > 0) {
   failures.push("cf restore: must not expose a serving origin (workers.dev/route)");
 }
@@ -526,20 +405,7 @@ expectSame("cf restore: doExports", cRestore.doExports, ["RestoreDrillDO"]);
 if (cRestore.doBindings["DRILL_PROJECT_CHAIN"] === undefined) {
   failures.push("cf restore: must bind DRILL_PROJECT_CHAIN");
 }
-// The restore worker is also the import path (PF3 — pf3-design.md ruling H):
-// after the DO restore it provisions the imported project's rows in D1, so
-// it must bind the production database — the hosted worker's, under the same
-// binding name (`DB` in src/restore-worker.ts) and the same id. Any other
-// database would provision the import somewhere the product never reads
 expectSame("cf restore: d1 (must equal the hosted worker's)", cRestore.d1, cHosted.d1);
-
-// ---------------------------------------------------------------------------
-// alchemy.run.ts (repo root) — the hosted worker and the apex site as
-// Alchemy declarations. Compared against the cf hosted worker; the site
-// worker's literals are pinned here by value (its serving fields mirror
-// apps/site/cloudflare.config.ts; its assets directory is the build
-// output the removed cf deploy script passed positionally).
-// ---------------------------------------------------------------------------
 
 const alchemySource = readFileSync(new URL("../../../alchemy.run.ts", import.meta.url), "utf8");
 
@@ -552,8 +418,6 @@ function alchemyLiteral(label: string, pattern: RegExp): string {
   return match[1];
 }
 
-/** String-only path normalization ("." / ".." segments) for comparing
- * directories recorded relative to different bases */
 function normalizeRepoPath(path: string): string {
   const segments = path.split("/").filter((segment) => segment !== "" && segment !== ".");
   const out: string[] = [];
@@ -586,16 +450,11 @@ expectSame(
   alchemyLiteral("site worker name", /Cloudflare\.Worker\("Site", \{\s*name: "([^"]+)"/),
   "maruhi-site",
 );
-// Both workers pin their custom domain (the hosted one is the single auth
-// origin; the site's is the apex)
 expectSame(
   "alchemy: worker domains",
   [...alchemySource.matchAll(/domain: "([^"]+)"/g)].map((m) => m[1]),
   [cHosted.routes[0], "maruhi.app"],
 );
-// The stack name feeds the provider's physical naming and metadata
-// bindings; the hosted entry must be the cf hosted worker's entrypoint,
-// rooted at the repository
 expectSame(
   "alchemy: stack name",
   alchemyLiteral("stack name", /Alchemy\.Stack\(\s*"([^"]+)"/),
@@ -606,16 +465,11 @@ expectSame(
   alchemyLiteral("hosted main", /main: "([^"]+)"/),
   `apps/server/${cHosted.entrypoint ?? ""}`,
 );
-// Assets directories, normalized to repo-root-relative paths: the cf
-// hosted worker's is recorded relative to apps/server (via the bundler
-// shim); the site's is pinned by value (the build output directory)
 expectSame(
   "alchemy: assets directories (hosted, then site)",
   [...alchemySource.matchAll(/directory: "([^"]+)"/g)].map((m) => m[1]),
   [normalizeRepoPath(`apps/server/${cHosted.assets?.directory ?? ""}`), "apps/site/dist"],
 );
-// D1 / R2 are managed in Alchemy (ADR-0012 revision 2); the declarations
-// must name the same database and bucket the cf hosted config binds
 expectSame(
   "alchemy: D1 database name",
   alchemyLiteral("D1 database name", /D1\.Database\("Database", \{\s*name: "([^"]+)"/),
@@ -631,25 +485,11 @@ if (/D1\.Database\.lookup|R2\.Bucket\.lookup/.test(alchemySource)) {
     "alchemy.run.ts: D1 / R2 must be managed declarations, not lookups (ADR-0012 revision 2)",
   );
 }
-// The migrations prop is what makes the deploy own the hosted migration
-// ledger; the directory is the drizzle-kit layout apps/server itself
-// applies, relative to the repository root like the program's other paths
 expectSame(
   "alchemy: D1 migrations directory",
   alchemyLiteral("D1 migrations", /migrations: "([^"]+)"/),
   "apps/server/drizzle",
 );
-// The bucket's declared lifecycle rule set, pinned by value (the cf side
-// carries no lifecycle representation to compare against): the seconds
-// are the load-bearing retention numbers — the bucket's default
-// multipart abort rule is 7 days, and retain-35d expires objects at
-// 35 days and aborts multipart uploads at 1 day (ops task O2), declared
-// in the bucket's creation order (the provider's comparison is
-// order-sensitive). A rule must also carry no prefix and no storage
-// class transition: the provider syncs both verbatim, and either would
-// change what the retention rule actually covers. The provider's
-// reconcile syncs the live rules to this declaration, so a wrong value
-// here would rewrite the live retention on the adopting deploy
 const alchemyLifecycleText = alchemyLiteral(
   "lifecycle rules",
   /lifecycleRules: \[([\s\S]*?)\],\s*cors:/,
@@ -692,22 +532,11 @@ expectSame("alchemy: R2 lifecycle rules", alchemyLifecycleRules, [
     abortMaxAge: 86_400,
   },
 ]);
-// CORS / domains / public access are declared explicitly empty / off:
-// the provider reads an omitted prop as "clear" as well, but the explicit
-// declaration is what this check can pin, and it records the
-// configuration the O2 record supports (no public access, no custom
-// domain; the live bucket is verified against it at the adopting plan —
-// ADR-0012 revision 2's operator preconditions)
 if (!/cors: \[\],\s*domains: \[\],\s*publicAccess: false,/.test(alchemySource)) {
   failures.push(
     "alchemy.run.ts: R2 bucket must declare cors: [], domains: [], publicAccess: false explicitly",
   );
 }
-// Both managed resources are protected: a plan that would delete or
-// replace either must fail (RemovalPolicy.protect), closing the delete
-// path a lookup never had. Each declaration is sliced out first (from
-// its constructor to the next declaration), so a protect() on the other
-// resource cannot satisfy the check
 function alchemySection(label: string, start: string, end: string): string {
   const startIdx = alchemySource.indexOf(start);
   const endIdx = startIdx === -1 ? -1 : alchemySource.indexOf(end, startIdx + start.length);
@@ -737,13 +566,6 @@ if (!alchemyD1Section.includes(".pipe(Alchemy.RemovalPolicy.protect())")) {
 if (!alchemyR2Section.includes(".pipe(Alchemy.RemovalPolicy.protect())")) {
   failures.push("alchemy.run.ts: R2 bucket must be piped through Alchemy.RemovalPolicy.protect()");
 }
-// The props the design deliberately omits must stay omitted. Some are
-// replace triggers (backstopped by protect() at plan time), but others —
-// the bucket's storageClass, the database's readReplication, a locks
-// declaration — take the provider's in-place update path and would be
-// applied, not refused. Each declaration is sliced tightly (constructor
-// to its own protect pipe) so prose elsewhere cannot satisfy or trip
-// the check
 function alchemyDeclaration(label: string, start: string): string {
   const startIdx = alchemySource.indexOf(start);
   const pipe = ".pipe(Alchemy.RemovalPolicy.protect())";
@@ -775,8 +597,6 @@ for (const prop of [
     failures.push(`alchemy.run.ts: R2 bucket must not declare ${prop} (ADR-0012 revision 2)`);
   }
 }
-// The same-worker DO: the DurableObjectLike literal must name the class the
-// cf hosted worker binds as PROJECT_CHAIN, a sqlite export of that worker
 if (!alchemySource.includes('kind: "Cloudflare.DurableObject"')) {
   failures.push('alchemy.run.ts: PROJECT_CHAIN: kind "Cloudflare.DurableObject" not found');
 }
@@ -796,10 +616,6 @@ if (!cHosted.doExports.includes(alchemyDoClass)) {
     `alchemy.run.ts: PROJECT_CHAIN class (${alchemyDoClass}) must be a sqlite export of the cf hosted worker`,
   );
 }
-// Rate limits: compared as a record keyed by env binding name, like the
-// cf <-> wrangler comparison — a set of (namespace, limit, period) triples
-// would not see two bindings' values swapped, nor two namespaces with
-// identical triples exchanged
 const alchemyRateLimitDecls = new Map<
   string,
   { namespace: string; limit: number; period: number }
@@ -827,8 +643,6 @@ if (Object.keys(alchemyRateLimits).length !== alchemyRateLimitDecls.size) {
 }
 expectSame("alchemy: rate limits", alchemyRateLimits, cHosted.rateLimits);
 expectSame("alchemy: crons", alchemyStrings("crons", /crons: \[([^\]]+)\]/), [...cHosted.crons]);
-// The runtime contract, again: one compatibility date (the COMPATIBILITY
-// const and the site block both pin it) with both Node compat layers off
 expectSame(
   "alchemy: compatibility dates",
   [...alchemySource.matchAll(/date: "([^"]+)"/g)].map((m) => m[1]),
@@ -859,9 +673,6 @@ expectSame(
   [...alchemySource.matchAll(/notFoundHandling: "([^"]+)"/g)].map((m) => m[1]),
   [cHosted.assets?.notFoundHandling, "404-page"],
 );
-// The hosted observability values, compared field by field (field:value
-// extractions; the enabled and logs.enabled patterns are additionally
-// anchored to the observability block's shape)
 expectSame(
   "alchemy: observability.enabled",
   alchemyLiteral("observability enabled", /observability: \{\s*enabled: (true|false)/),
@@ -882,27 +693,14 @@ expectSame(
   Number(alchemyLiteral("headSamplingRate", /headSamplingRate: ([\d.]+)/)),
   cHosted.observability?.headSamplingRate,
 );
-// Norm carries no logs.enabled (the wrangler view has no such field); the
-// cf hosted config sets it true, and the Alchemy declaration must match
 if (!/logs: \{ enabled: true,/.test(alchemySource)) {
   failures.push("alchemy.run.ts: observability.logs.enabled must be true (cf hosted parity)");
 }
-// workersDev is asserted positively on both workers: an omitted prop is
-// read by the provider as enabled (workers.dev would return as a second
-// auth origin), so absence must fail, not pass
 expectSame(
   "alchemy: workersDev (hosted, then site)",
   [...alchemySource.matchAll(/workersDev: (true|false)/g)].map((m) => m[1]),
   ["false", "false"],
 );
-// The hosted worker's four secret values are bound from the account's
-// default Secrets Store by lookup (ADR-0012 revision 3): an Alchemy
-// upload rebuilds the binding list from the program, so a secret left
-// unbound here would be dropped on deploy, and a managed (declared)
-// secret would put a value back in the deploy path. The store is
-// found by name; each secret is looked up in it and bound under its
-// own env name; the set must agree with the cf hosted config's store
-// bindings asserted above (HOSTED_SECRET_NAMES / cHosted.storeSecrets).
 expectSame(
   "alchemy: secrets store lookup (store name)",
   alchemyLiteral("secrets store lookup", /SecretsStore\.Store\.lookup\(\{\s*name: "([^"]+)"/),
@@ -934,11 +732,6 @@ expectSame(
   [...alchemySecretLookups.keys()].toSorted(),
   Object.keys(cHosted.storeSecrets).toSorted(),
 );
-// Scoped to the HostedServer declaration's env block (the declaration
-// is sliced out the same way as the D1 / R2 declarations above, then
-// its env block within it): the binding must sit in that worker's
-// env — the same text in a comment or in the Site worker's env would
-// leave the hosted worker without the secret on deploy
 const alchemyHostedSection = alchemySection(
   "hosted worker declaration",
   'Cloudflare.Worker("HostedServer"',
@@ -949,9 +742,6 @@ if (alchemyHostedEnv === "") {
   failures.push("alchemy.run.ts: hosted worker env block not found (extraction fails closed)");
 }
 for (const [secretName, variable] of alchemySecretLookups) {
-  // Anchored to the env entry itself: the looked-up secret must be
-  // bound under its own env name, not merely named somewhere in the
-  // file
   if (!new RegExp(`${secretName}: ${variable},`).test(alchemyHostedEnv)) {
     failures.push(
       `alchemy.run.ts: hosted secret ${secretName} must be bound in the hosted worker env as ${secretName}: ${variable}`,

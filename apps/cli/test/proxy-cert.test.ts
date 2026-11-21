@@ -1,9 +1,3 @@
-// Tests for the ephemeral CA (proxy-cert.ts — PF4 ruling P3): the
-// hand-encoded X.509 structures are accepted by an independent parser
-// (node:crypto's X509Certificate), the chain verifies, the leaf matches
-// its host, and a real TLS handshake (node:tls server + client trusting
-// only the CA) succeeds.
-
 import { X509Certificate } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import tls from "node:tls";
@@ -29,13 +23,10 @@ describe("makeEphemeralCa", () => {
     expect(leafCert.checkHost("github.com")).toBeUndefined();
     expect(leafCert.subjectAltName).toBe("DNS:api.github.com");
     expect(leafCert.keyUsage).toEqual(["1.3.6.1.5.5.7.3.1"]);
-    // Validity brackets now
     expect(new Date(leafCert.validFrom).getTime()).toBeLessThan(Date.now());
     expect(new Date(leafCert.validTo).getTime()).toBeGreaterThan(Date.now());
 
-    // The leaf key is a usable PKCS#8 EC key
     expect(leaf.keyPem.startsWith("-----BEGIN PRIVATE KEY-----")).toBe(true);
-    // Issuance is cached per host
     expect(await ca.issue("api.github.com")).toBe(leaf);
     expect((await ca.issue("other.example")).certPem).not.toBe(leaf.certPem);
   });
@@ -65,7 +56,6 @@ describe("makeEphemeralCa", () => {
       await expect(ca.issue("flaky.example")).rejects.toThrow("transient export failure");
       const leaf = await ca.issue("flaky.example");
       expect(new X509Certificate(leaf.certPem).checkHost("flaky.example")).toBe("flaky.example");
-      // And the second, successful issuance is the one cached
       expect(await ca.issue("flaky.example")).toBe(leaf);
     } finally {
       spy.mockRestore();
@@ -96,7 +86,6 @@ describe("makeEphemeralCa", () => {
         client.on("error", reject);
       });
       expect(received).toBe("hello");
-      // A client trusting only the CA refuses a different CA's leaf
       const other = await makeEphemeralCa(Date.now);
       await expect(
         new Promise<void>((resolve, reject) => {

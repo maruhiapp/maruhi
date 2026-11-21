@@ -1,13 +1,3 @@
-// Handlers for the DEK-wrap store / distribute / repair API
-// (AUTH_SPEC §12-6).
-//
-// Recipient validation (non-member recipients, key mismatch, missing,
-// duplicate, overwrite) is performed DO-side (programs-dek.ts +
-// dek-wraps.ts) against the current member set derived from ChainState.
-// The shared path is callProjectData in data-http.ts. The set of
-// returnable errors is derived from each endpoint's contract
-// declaration (api-schema) — no hand-written enumeration.
-
 import { maruhiApi } from "@maruhi/api-schema";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -34,9 +24,6 @@ export const deksLive = HttpApiBuilder.group(maruhiApi, "deks", (handlers) =>
       }).pipe(Effect.map((deks) => ({ deks }))),
     )
     .handle("remove", ({ params, payload, endpoint }) =>
-      // Wrap deletion (the §12-6 repair path) is the same level as
-      // environment deletion: admin scope + chain role admin or above
-      // (§12-3)
       callProjectData<void>()({
         endpoint,
         projectId: params.projectId,

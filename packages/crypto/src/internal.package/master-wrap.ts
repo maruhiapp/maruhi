@@ -1,36 +1,3 @@
-// CRYPTO_SPEC §8 (0.9-draft / KL3; revised into the reserve-key wrap ledger in
-// 0.12-draft / DK): the set of wraps packing the reserve-key blob B (the
-// master-key blob before 2026-09-19 DK) per recipient.
-// The recovery-code path (recovery.ts) is unchanged; this file only handles the
-// new recipient classes:
-//
-//   Class S (symmetric KEK): passkey-prf
-//     KEK = HKDF-SHA256(prf_out, salt = empty, info = "maruhi/v1/passkey-prf")
-//   Class G (guardian groups): guardian
-//     Group KEK = random 256-bit. mode any = every share is the KEK / mode all =
-//     a random XOR split. Shares are HPKE Base-mode single-shot Seals
-//     (info = LP("maruhi/v1/guardian-wrap", user_id,
-//     group_id, mode, share_index, guardian_user_id), aad empty)
-//   Class H (handoff = a temporary recipient; approvers are guardians only —
-//     the old device's approval [co-sending a B wrap of kind = "device"] was
-//     removed at 2026-09-19 DK): Seals a 32-byte value to the requester's
-//     ephemeral X25519 key E
-//     (info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index,
-//     approver_user_id), aad empty). request_id = SHA-256(LP("maruhi/v1/handoff-id",
-//     E_pub_hex)). Handoff code = Base32(E_pub ‖ SHA-256(E_pub)[:4])
-//
-//   Wrapping B (common to S / G): AES-256-GCM, 96-bit random nonce,
-//     AAD = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)
-//     kind ∈ {passkey-prf, guardian} (`device` was removed at 2026-09-19 DK —
-//     the AAD structure is unchanged)
-//
-// No new primitives: HKDF / AES-GCM / SHA-256 are WebCrypto; Seal / Open use
-// the same HPKE suite as §5; XOR splitting is the standard form of
-// information-theoretic n-of-n secret sharing (random values and XOR only).
-// No k-of-n (Shamir etc.), passphrase-derived KEK, or SAS shortening is
-// introduced (§8.5).
-// Test vectors: test-vectors/master-key-wrap.json (recovery-wrap.json is unchanged).
-
 import { encodeHex } from "./bytes.ts";
 import type { UserId } from "./chain-types.ts";
 import type { WrappedDek } from "./dek-wrap.ts";
@@ -54,31 +21,15 @@ const NONCE_BYTES = 12;
 const X25519_PUBLIC_KEY_BYTES = 32;
 const HANDOFF_CODE_CHECKSUM_BYTES = 4;
 const HANDOFF_CODE_PAYLOAD_BYTES = X25519_PUBLIC_KEY_BYTES + HANDOFF_CODE_CHECKSUM_BYTES;
-/** 36 bytes = 288 bits → 58 Base32 symbols (the last symbol carries 2 zero padding bits). */
 const HANDOFF_CODE_SYMBOLS = Math.ceil((HANDOFF_CODE_PAYLOAD_BYTES * 8) / 5);
 const HANDOFF_CODE_GROUP = 4;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-/** Receipt policy ceiling for shares per group (AUTH_SPEC §13-8); enforced here as an input bound. */
 const MAX_SHARES = 5;
 
-/**
- * Recipient kinds that use the shared master-wrap AAD (CRYPTO_SPEC §8.1). `device`
- * (the old-device handoff approval) was removed by the 2026-09-19 DK revision:
- * everyday devices never hold the reserve-key blob B, so no device can approve a
- * handoff (§8.4 — approvers are guardians only). The AAD layout is unchanged.
- */
 export type MasterWrapKind = "passkey-prf" | "guardian";
 
-/** Guardian group threshold mode (CRYPTO_SPEC §8.3): `any` = 1-of-n, `all` = n-of-n. */
 export type GuardianMode = "any" | "all";
 
-/**
- * Context a master-blob wrap is bound to (CRYPTO_SPEC §8.1):
- * `LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)`.
- * `wrapRef` is the wrap_id (passkey-prf) or group_id (guardian). `mode` is
- * required for `guardian` and must be absent otherwise (it is encoded as the
- * empty string).
- */
 export interface MasterWrapContext {
   readonly userId: UserId;
   readonly kind: MasterWrapKind;
@@ -86,7 +37,6 @@ export interface MasterWrapContext {
   readonly mode?: GuardianMode | undefined;
 }
 
-/** Context a guardian share is bound to (CRYPTO_SPEC §8.3). */
 export interface GuardianWrapContext {
   readonly userId: UserId;
   readonly groupId: string;
@@ -95,11 +45,6 @@ export interface GuardianWrapContext {
   readonly guardianUserId: UserId;
 }
 
-/**
- * Context a handoff approval is bound to (CRYPTO_SPEC §8.4). `source` is the
- * guardian group_id of the share being re-sealed (the old-device source
- * `"device"` was removed by DK — approvers are guardians only).
- */
 export interface HandoffWrapContext {
   readonly userId: UserId;
   readonly requestId: string;
@@ -127,11 +72,6 @@ function masterWrapContextInvalidField(context: MasterWrapContext): string | nul
   return null;
 }
 
-/**
- * Builds the AES-GCM AAD for a master-blob wrap (CRYPTO_SPEC §8.1). Binding
- * `mode` here (and again in the share info) makes a server-side `any` ↔ `all`
- * relabel fail closed at decryption.
- */
 export function buildMasterWrapAad(context: MasterWrapContext): Uint8Array {
   return encodeLengthPrefixed([
     MASTER_WRAP_DOMAIN,
@@ -142,13 +82,6 @@ export function buildMasterWrapAad(context: MasterWrapContext): Uint8Array {
   ]);
 }
 
-/**
- * Derives the passkey-PRF KEK (CRYPTO_SPEC §8.2): `HKDF-SHA256(prf_out, salt =
- * empty, info = "maruhi/v1/passkey-prf")`. `prfOutput` is the 32-byte WebAuthn
- * PRF extension output evaluated with the registration's random `prf_salt`.
- * The salt is empty because the PRF output is already uniformly random
- * (RFC 5869 §3.1); domain separation is carried by `info`.
- */
 export async function derivePasskeyKek(prfOutput: Uint8Array): Promise<CryptoResult<Uint8Array>> {
   if (prfOutput.length !== PRF_OUTPUT_BYTES) {
     return invalidInput("prf output length");
@@ -173,7 +106,6 @@ export async function derivePasskeyKek(prfOutput: Uint8Array): Promise<CryptoRes
   }
 }
 
-/** Generates a fresh 256-bit KEK (guardian group KEK — CRYPTO_SPEC §8.3). */
 export function generateMasterWrapKek(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(KEK_BYTES));
 }
@@ -182,10 +114,6 @@ async function importKek(kek: Uint8Array, usage: "encrypt" | "decrypt"): Promise
   return crypto.subtle.importKey("raw", kek as BufferSource, "AES-GCM", false, [usage]);
 }
 
-/**
- * Wraps the opaque master-secret blob under a raw 32-byte KEK with the
- * master-wrap AAD (CRYPTO_SPEC §8.1). The nonce is freshly random per call.
- */
 export async function wrapMasterBlob(input: {
   readonly kek: Uint8Array;
   readonly masterSecretBlob: Uint8Array;
@@ -218,11 +146,6 @@ export async function wrapMasterBlob(input: {
   }
 }
 
-/**
- * Unwraps a master-secret blob. Any mismatch (wrong KEK, another user's
- * ledger, relabelled kind / wrap_ref / mode, tampered ciphertext) yields
- * `DecryptFailed`.
- */
 export async function unwrapMasterBlob(input: {
   readonly kek: Uint8Array;
   readonly wrapped: WrappedMasterSecret;
@@ -263,13 +186,6 @@ function xorInto(target: Uint8Array, source: Uint8Array): void {
   }
 }
 
-/**
- * Splits a group KEK into `count` shares (CRYPTO_SPEC §8.3). `any`: every
- * share is the KEK itself. `all` (count ≥ 2): shares 1..n−1 are independent
- * random 32-byte values and share n = KEK ⊕ s_1 ⊕ … ⊕ s_{n−1}, so any n−1
- * shares are independent of the KEK. Shares are returned in share_index
- * order (index 1 first).
- */
 export function splitGuardianKek(input: {
   readonly kek: Uint8Array;
   readonly mode: GuardianMode;
@@ -304,12 +220,6 @@ export function splitGuardianKek(input: {
   return { ok: true, value: shares };
 }
 
-/**
- * Reassembles a group KEK from shares (CRYPTO_SPEC §8.3 / §8.4). `any` takes
- * exactly one share; `all` takes every share of the group (`expectedCount`,
- * so a missing share is rejected here instead of surfacing as an opaque
- * decrypt failure).
- */
 export function joinGuardianShares(input: {
   readonly mode: GuardianMode;
   readonly shares: readonly Uint8Array[];
@@ -355,10 +265,6 @@ function guardianContextInvalidField(context: GuardianWrapContext): string | nul
   return null;
 }
 
-/**
- * Builds the HPKE info for a guardian share (CRYPTO_SPEC §8.3):
- * `LP("maruhi/v1/guardian-wrap", user_id, group_id, mode, share_index, guardian_user_id)`.
- */
 export function buildGuardianWrapInfo(context: GuardianWrapContext): Uint8Array {
   return encodeLengthPrefixed([
     GUARDIAN_WRAP_DOMAIN,
@@ -370,7 +276,6 @@ export function buildGuardianWrapInfo(context: GuardianWrapContext): Uint8Array 
   ]);
 }
 
-/** Seals one KEK share to a guardian's master encryption public key (single-shot HPKE Seal). */
 export async function sealGuardianShare(input: {
   readonly guardianPublicKey: EncryptionKey;
   readonly share: Uint8Array;
@@ -395,11 +300,6 @@ export async function sealGuardianShare(input: {
   }
 }
 
-/**
- * Opens a guardian share with the guardian's own key pair. The caller must
- * re-seal it to the requester's ephemeral key at once and never persist it
- * (CRYPTO_SPEC §8.4).
- */
 export async function openGuardianShare(input: {
   readonly guardianKeyPair: EncryptionKeyPair;
   readonly wrapped: WrappedDek;
@@ -435,10 +335,6 @@ function handoffContextInvalidField(context: HandoffWrapContext): string | null 
   return null;
 }
 
-/**
- * Builds the HPKE info for a handoff approval (CRYPTO_SPEC §8.4):
- * `LP("maruhi/v1/handoff-wrap", user_id, request_id, source, share_index, approver_user_id)`.
- */
 export function buildHandoffWrapInfo(context: HandoffWrapContext): Uint8Array {
   return encodeLengthPrefixed([
     HANDOFF_WRAP_DOMAIN,
@@ -450,10 +346,6 @@ export function buildHandoffWrapInfo(context: HandoffWrapContext): Uint8Array {
   ]);
 }
 
-/**
- * Seals a 32-byte value (a guardian share) to the
- * requester's ephemeral public key (single-shot HPKE Seal).
- */
 export async function sealHandoffValue(input: {
   readonly ephemeralPublicKey: EncryptionKey;
   readonly value: Uint8Array;
@@ -478,7 +370,6 @@ export async function sealHandoffValue(input: {
   }
 }
 
-/** Opens a handoff approval with the requester's ephemeral key pair. */
 export async function openHandoffValue(input: {
   readonly ephemeralKeyPair: EncryptionKeyPair;
   readonly wrapped: WrappedDek;
@@ -504,11 +395,6 @@ export async function openHandoffValue(input: {
   }
 }
 
-/**
- * Computes the handoff request id (CRYPTO_SPEC §8.4):
- * `lower_hex(SHA-256(LP("maruhi/v1/handoff-id", E_pub_hex)))`. Requester and
- * approver derive it independently from the hand-carried code.
- */
 export async function computeHandoffRequestId(
   ephemeralPublicKey: Uint8Array,
 ): Promise<CryptoResult<string>> {
@@ -538,12 +424,6 @@ function base32Encode(bytes: Uint8Array): string {
   return out;
 }
 
-/**
- * Encodes the requester's ephemeral public key as a hand-carried handoff code
- * (CRYPTO_SPEC §8.4): Base32 (RFC 4648 alphabet, no padding) of
- * `E_pub || SHA-256(E_pub)[0..4]`, displayed in hyphen-separated groups of 4.
- * The code is public information (a public key), not key material.
- */
 export async function encodeHandoffCode(
   ephemeralPublicKey: Uint8Array,
 ): Promise<CryptoResult<string>> {
@@ -564,13 +444,6 @@ export async function encodeHandoffCode(
   return { ok: true, value: groups.join("-") };
 }
 
-/**
- * Decodes a handoff code back into the 32-byte ephemeral public key.
- * Case-insensitive; hyphens and whitespace are ignored. Anything else (wrong
- * length, a symbol outside the alphabet, non-zero padding bits, checksum
- * mismatch) is `InvalidInput` — a one-symbol transcription error is never
- * silently read as a different key.
- */
 export async function decodeHandoffCode(text: string): Promise<CryptoResult<Uint8Array>> {
   const symbols = text.replace(/[\s-]/g, "").toUpperCase();
   if (symbols.length !== HANDOFF_CODE_SYMBOLS) {

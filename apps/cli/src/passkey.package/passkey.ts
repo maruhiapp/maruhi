@@ -1,35 +1,3 @@
-// The passkey PRF path (CRYPTO_SPEC §8.2 / AUTH_SPEC §13-7 — KL3 K5).
-//
-// Registration `maruhi key seal passkey`: the **reserve key** record
-// B the caller obtained by opening the ledger (2026-09-19 DK —
-// ledger-open.ts) is wrapped with a KEK derived from the PRF output
-// of a passkey made on the CLI-served localhost page
-// (passkey-page.ts / passkey-listener.ts), then registered into the
-// ledger. The ledger write happens **only once, at the end**, when
-// every material is in place (no half-written rows on a mid-failure
-// — supplement 20 ruling I).
-//
-// Opening `maruhi key recover --passkey` / a ledger change's
-// `--passkey`: takes the ledger's wrap, re-derives the KEK from the
-// same passkey's PRF, decrypts B, and returns the record (does not
-// store it — the reserve key is used only for issuing a device key.
-// The restore's downstream is key-recover.ts).
-//
-// Ceremonies (register, restore, delete) run only on a human's
-// interactive terminal and are refused in AI agent environments
-// (ADR-0016 decision 7's existing gate). The listener stands only
-// behind the gate. Plaintext PRF outputs, KEK, and B exist only in
-// function locals — never on logs, errors, or the DOM.
-//
-// Restore order (supplement 20 rulings F / I, 20-6 ②′): the ledger's
-// state (`GET /auth/key-wraps`) carries each passkey row's prf_salt
-// (a public parameter — AUTH_SPEC §13-7), so every credential goes
-// to allowCredentials for the authenticator to pick; the response's
-// credential decides the row, and only then is that row's wrap
-// (`GET /auth/key-wraps/passkey/:wrapId` — a combined window of 5
-// per hour + an audit event requiring monitoring) fetched — one row
-// only. A cancelled ceremony does not consume the window.
-
 import { MAX_PASSKEY_WRAPS_PER_USER } from "@maruhi/api-schema";
 import { cryptoEffect } from "@maruhi/core";
 import { decodeHex, derivePasskeyKek, encodeHex, unwrapMasterBlob } from "@maruhi/crypto";
@@ -51,18 +19,11 @@ import type { CliSession } from "../session.ts";
 import { type PrfListener, type PrfListenerOutcome, startPrfListener } from "./passkey-listener.ts";
 import type { PrfPageConfig, PrfPageErrorCode } from "./passkey-page.ts";
 
-/** Cap on the ceremony wait (enough for browser launch + biometric auth. An abandoned terminal is not listened to forever). */
 const CEREMONY_TIMEOUT = Duration.minutes(5);
 const PRF_SALT_BYTES = 32;
 const USER_HANDLE_BYTES = 16;
 const CONFIRM_CODE_DIGITS = 6;
 
-/**
- * The confirmation code shown on the terminal, which the user types
- * into the page (ruling A revision 1). A uniform-random 6 digits
- * (modulo bias is eliminated by rejection). Not key material (a
- * value demonstrating co-presence with the page).
- */
 function newConfirmCode(): string {
   const modulus = 10 ** CONFIRM_CODE_DIGITS;
   const limit = Math.floor(0x1_0000_0000 / modulus) * modulus;
@@ -105,7 +66,6 @@ function ensurePasskeyCeremonyAllowed(
   });
 }
 
-/** The page's reason code → guidance for the user (no free-form text is taken from the page). */
 function ceremonyFailure(
   code: PrfPageErrorCode | "too-many-code-attempts",
   action: "register" | "recover",
@@ -136,7 +96,6 @@ function ceremonyFailure(
   }
 }
 
-/** Displays the URL and confirmation code, and auto-launches the browser (the same single fallback path as login). */
 const announceListener = Effect.fn("passkey.announceListener")(function* (
   io: CliIoShape,
   listener: PrfListener,
@@ -162,7 +121,6 @@ const announceListener = Effect.fn("passkey.announceListener")(function* (
   );
 });
 
-/** Waits for the page's accepted POST (cut off at 5 minutes. The listener's own failure is also a ceremony failure). */
 function awaitOutcome(listener: PrfListener): Effect.Effect<PrfListenerOutcome, CliError> {
   return Effect.tryPromise({
     try: () => listener.outcome,
@@ -182,17 +140,11 @@ function awaitOutcome(listener: PrfListener): Effect.Effect<PrfListenerOutcome, 
   );
 }
 
-/** The ceremony's result (the page's one POST). */
 interface PrfOutcome {
   readonly credentialIdHex: string;
   readonly prf: Uint8Array;
 }
 
-/**
- * Stands up the listener, waits for the page's one POST, and
- * always closes. The token shares the listener's lifetime. The PRF
- * output exists only as the value returned from here.
- */
 const runPrfCeremony = Effect.fn("passkey.runPrfCeremony")(function* (
   config: PrfPageConfig,
   action: "register" | "recover",
@@ -234,12 +186,10 @@ function deriveKek(prf: Uint8Array): Effect.Effect<Uint8Array, CliError> {
   );
 }
 
-/** The ledger's passkey row (a copy of status). */
 interface PasskeyRow {
   readonly wrapId: string;
   readonly label: string | null;
   readonly credentialIdHex: string;
-  /** This registration's prf_salt (a public parameter — needed before the ceremony, so status carries it). */
   readonly prfSaltHex: string;
   readonly updatedAtMs: number;
 }
@@ -258,12 +208,6 @@ function describeRow(row: PasskeyRow): string {
   return `${row.wrapId}  ${label}  credential ${row.credentialIdHex.slice(0, 16)}…  ${formatUtcMinutes(row.updatedAtMs)}`;
 }
 
-/**
- * `maruhi key seal passkey [--label]`: seal the reserve key to a new passkey.
- * `reserve` is the reserve key the caller obtained by opening the
- * ledger (ledger-open.ts — opening is the qualification for
- * changing the ledger. K4-2).
- */
 export const sealPasskeyOp = Effect.fn("passkey.sealPasskeyOp")(function* (input: {
   readonly session: CliSession;
   readonly client: MaruhiClient;
@@ -284,9 +228,6 @@ export const sealPasskeyOp = Effect.fn("passkey.sealPasskeyOp")(function* (input
       ),
     );
   }
-  // wrap_id is bound by AAD, so it is issued before encryption.
-  // prf_salt is a per-registration random (a public parameter).
-  // The user handle is a per-registration random too (ruling G)
   const wrapId = yield* newLedgerId();
   const prfSaltHex = encodeHex(crypto.getRandomValues(new Uint8Array(PRF_SALT_BYTES)));
   const outcome = yield* runPrfCeremony(
@@ -345,7 +286,6 @@ export const sealPasskeyOp = Effect.fn("passkey.sealPasskeyOp")(function* (input
 const NO_PASSKEY_REGISTERED =
   "No passkey is registered for your account. Seal the reserve key to one with `maruhi key seal passkey` (on a registered device), or open it with the recovery code instead (`maruhi key recover` / omit --passkey)";
 
-/** Fetches the wrap of the row the ceremony selected (consumes the combined window once — an audit event requiring monitoring). */
 const fetchWrap = Effect.fn("passkey.fetchWrap")(function* (
   client: MaruhiClient,
   wrapId: string,
@@ -380,7 +320,6 @@ const fetchWrap = Effect.fn("passkey.fetchWrap")(function* (
   };
 });
 
-/** The fetched wrap (salt + credential + ciphertext). */
 interface FetchedWrap {
   readonly prfSaltHex: string;
   readonly credentialIdHex: string;
@@ -388,18 +327,12 @@ interface FetchedWrap {
   readonly ciphertext: Uint8Array;
 }
 
-/** The ceremony's and fetch's result. */
 interface RecoveryMaterial {
   readonly wrapId: string;
   readonly wrap: FetchedWrap;
   readonly outcome: PrfOutcome;
 }
 
-/**
- * Ceremony with every credential → the row of the response's
- * credential → fetch that row's wrap (rulings F / I). Since the
- * blob fetch is after the ceremony, a cancel consumes no window.
- */
 const recoverCeremonyFirst = Effect.fn("passkey.recoverCeremonyFirst")(function* (
   client: MaruhiClient,
   rows: readonly PasskeyRow[],
@@ -427,7 +360,6 @@ const recoverCeremonyFirst = Effect.fn("passkey.recoverCeremonyFirst")(function*
   return { wrapId: row.wrapId, wrap, outcome };
 });
 
-/** Decrypt → interpret the record (the PRF output and KEK exist only in this function's locals). */
 const unwrapReserveRecord = Effect.fn("passkey.unwrapReserveRecord")(function* (input: {
   readonly session: CliSession;
   readonly material: RecoveryMaterial;
@@ -465,12 +397,6 @@ const unwrapReserveRecord = Effect.fn("passkey.unwrapReserveRecord")(function* (
   return record;
 });
 
-/**
- * Opens the reserve key with a registered passkey and returns its record
- * (memory only — nothing is stored). Shared by `maruhi key
- * recover --passkey`'s pre-stage and a ledger change's `--passkey`
- * opening (ledger-open.ts).
- */
 export const openReserveWithPasskey = Effect.fn("passkey.openReserveWithPasskey")(
   function* (input: {
     readonly session: CliSession;
@@ -487,7 +413,6 @@ export const openReserveWithPasskey = Effect.fn("passkey.openReserveWithPasskey"
   },
 );
 
-/** `maruhi key seal list`: list the passkey wraps in the ledger (public parameters only). */
 export const listPasskeysOp = Effect.fn("passkey.listPasskeysOp")(function* (input: {
   readonly client: MaruhiClient;
 }): Effect.fn.Return<void, CliError, CliIo | HttpClient.HttpClient> {
@@ -502,7 +427,6 @@ export const listPasskeysOp = Effect.fn("passkey.listPasskeysOp")(function* (inp
   }
 });
 
-/** `maruhi key seal remove <wrap-id>`: delete one passkey wrap from the ledger. */
 export const removePasskeyOp = Effect.fn("passkey.removePasskeyOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly wrapId: string;

@@ -1,7 +1,3 @@
-// The wrap- and lease-side queries of the data store (dek_wraps reads,
-// lease fixed windows, lease bindings, the mirror-state check) —
-// assembled into DataStoreShape by dataStoreLayer in data-store.ts.
-
 import type { EnvironmentId, KeyFingerprintHex, UserId } from "@maruhi/core";
 import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -69,10 +65,6 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
             recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
           };
     }),
-  // Distribution is to the recipient only (§12-6). A server-class row
-  // cannot be looked up by user_id because the identifier shapes do
-  // not intersect, but the class condition is stated explicitly to pin
-  // the boundary
   listWrapsForRecipient: (
     environmentId: EnvironmentId,
     recipientUserId: UserId | KeyFingerprintHex,
@@ -94,11 +86,6 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
         ),
       })),
     ),
-  // Narrowing by FP as well keeps an environment that went through
-  // revocation → re-grant under a different key from grabbing a row
-  // addressed to the old server key that the current key cannot unwrap
-  // (an unwrap failure is indistinguishable from a poisoned wrap and
-  // would muddy the 503's reason)
   listServerWraps: (environmentId: EnvironmentId, serverKeyFingerprintHex: KeyFingerprintHex) =>
     Effect.sync(() =>
       selectWrapRows(sql, {
@@ -110,8 +97,6 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
   checkLeaseWindow: (kind: LeaseWindowKind, limit: number, nowMs: number) =>
     Effect.sync(() => {
       const current = leaseWindowRow(sql, kind, nowMs);
-      // An expired window, a first request, and a clock rewind all mean
-      // "count from 0" = always allowed
       if (current === null || current.count < limit) {
         return { allowed: true, retryAfterSeconds: 0 };
       }
@@ -150,9 +135,6 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
     expiresAtMs: number,
     nowMs: number,
   ) => {
-    // Placing the GC first keeps an expired leftover of the same key
-    // from blocking a new binding's record via a primary-key conflict
-    // (the query side already ignores it via the expires_at condition)
     sql.exec("DELETE FROM lease_bindings WHERE expires_at <= ?", nowMs);
     sql.exec(
       `INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at)
@@ -164,11 +146,6 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
   },
 });
 
-/**
- * The row of the currently-live fixed window (expired, first request,
- * or a clock rewind → null = count from 0). The single place where
- * judgment and consumption share the same "live window" definition.
- */
 function leaseWindowRow(
   sql: SqlStorage,
   kind: LeaseWindowKind,
@@ -187,10 +164,6 @@ function leaseWindowRow(
   return { count: numberColumn(row, "count"), elapsed };
 }
 
-/**
- * The common SELECT of wrap rows (only the columns differ between
- * distribution and lease material). Ordered by ascending epoch.
- */
 function selectWrapRows(
   sql: SqlStorage,
   query: {
@@ -214,12 +187,6 @@ function selectWrapRows(
     .toArray();
 }
 
-/**
- * The common part of a wrap row. `storedSuite` makes an unknown suite a
- * defect (a value the v1 write path cannot produce; it is never
- * silently distributed or re-wrapped as v1 — the same discipline as
- * the §13-5 recovery blob).
- */
 function wrapBodyOf(row: Record<string, SqlStorageValue>): {
   readonly suite: WireSuite;
   readonly epoch: number;

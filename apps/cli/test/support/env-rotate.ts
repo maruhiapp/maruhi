@@ -46,7 +46,6 @@ import { type MockHandler, type MockResponse, MockServer, onRequest } from "./se
 
 export const ENV_ID = "dev";
 
-/** One variable of a pull response (verified statement + distribution-form value). */
 export interface PulledVariable {
   readonly variableId: string;
   readonly statement: WireDistributedVariableStatement;
@@ -58,11 +57,8 @@ export let reader: TestUser;
 export let dek1: Uint8Array;
 export let dek2: Uint8Array;
 export let dek3: Uint8Array;
-/** genesis + create_environment (epoch 1). */
 export let chainBase: BuiltChain;
-/** The shape with rotate_epoch (epoch 2, DEK = dek2) stacked onto the same genesis. */
 export let chainRotated: BuiltChain;
-/** The shape with a further rotate_epoch (epoch 3, DEK = dek3) stacked on top. */
 export let chainRotatedTwice: BuiltChain;
 export let envStatement: WireDistributedEnvironmentStatement;
 export let servers: MockServer[] = [];
@@ -102,7 +98,6 @@ afterEach(async () => {
   servers = [];
 });
 
-/** A pull response for one variable (the value signature's declared head is where that epoch was the current epoch). */
 export async function variableAt(input: {
   readonly built: BuiltChain;
   readonly variableId: string;
@@ -112,7 +107,6 @@ export async function variableAt(input: {
   readonly version: number;
   readonly plaintext: string;
   readonly headSeq: number;
-  /** The prev of a version > 1 (default is the fixture's dummy — for the negative of the chain check). */
   readonly prevValueSigHashHex?: string;
 }): Promise<PulledVariable> {
   return {
@@ -145,56 +139,21 @@ export async function variableAt(input: {
 export interface ServerOptions {
   readonly built: BuiltChain;
   readonly variables: PulledVariable[];
-  /** A deleted variable's tombstone (§12-5 — kept stored and distributed). */
   readonly deletedVariables?: WireDistributedVariableStatement[];
   readonly deks: WireRecipientDek[];
   readonly currentEpoch: number;
-  /** A per-rotate-call injected response (undefined = normal acceptance). */
   readonly onRotate?: (call: number) => MockResponse | undefined;
-  /**
-   * A hook called **right after accepting** the rotate composite (models an
-   * attack / concurrent operation where the server swaps the distribution
-   * state post-acceptance). The argument is the chain's current form post-acceptance.
-   */
   readonly onRotateAccepted?: (chain: {
     readonly entries: readonly ChainEntry[];
     readonly hashes: readonly string[];
   }) => Promise<void> | void;
-  /**
-   * A response injected **after acceptance** (models a lost response / 502).
-   * The chain append and the wrap distribution do happen, but the client only sees the error.
-   */
   readonly onRotateAfterAccept?: (call: number) => MockResponse | undefined;
-  /** A per-push-call injected response (undefined = normal acceptance). */
   readonly onPush?: (call: number, variableId: string) => MockResponse | undefined;
-  /** A per-pull-call injected response (undefined = normal response). Used to break the pass-end rescan. */
   readonly onPull?: (call: number) => MockResponse | undefined;
-  /** A per-chain-fetch injected response (undefined = normal response). Used to break the acceptance check. */
   readonly onChain?: (call: number) => MockResponse | undefined;
-  /**
-   * The chain to serve **after** a rotate is attempted (models another
-   * member's concurrent rotation). Timestamps are deterministic, so it
-   * verifies as an extension of the original chain.
-   */
   readonly chainAfterRotateAttempt?: BuiltChain | undefined;
-  /**
-   * After accepting, additionally append one more member's rotation (models
-   * the shape where the current epoch overtakes the target epoch).
-   */
   readonly appendRotateAfterAccept?: { readonly epoch: number; readonly dek: Uint8Array };
-  /**
-   * Never append the accepted boundary checkpoint to the distribution chain
-   * (models a "checkpoint-hiding" server that distributes only the rotate
-   * entry — PR-F4 cross-layer. Checkpoints are optional under the chain's
-   * consensus rule, so the chain itself stays valid while only the §4.3 (2) bound tuple disappears).
-   */
   readonly dropCheckpointFromChain?: boolean;
-  /**
-   * Enable acceptance of a standalone checkpoint (generic append) + /auth/me
-   * + /audit-head (models trigger (i) — the periodic checkpoint issued after
-   * rotate + re-encryption complete — PR-M2). When omitted, stays unimplemented
-   * as before (issuance fails and becomes a warning — never changes existing tests' premise).
-   */
   readonly standaloneCheckpoint?: { readonly auditHeadHashHex: string };
 }
 
@@ -204,19 +163,11 @@ export interface ServerState {
   readonly pushes: {
     readonly variableId: string;
     readonly value: WireDistributedValue;
-    /** The request's value-lineage declaration (AUTH_SPEC §12-5 — omitted is recorded as undefined). */
     readonly sameValueAs: number | undefined;
   }[];
-  /** The distribution chain's current form (for checking the standalone-checkpoint append). */
   readonly chainEntries: readonly ChainEntry[];
 }
 
-/**
- * Handlers mimicking the real server's state transitions: append the accepted
- * rotate_epoch entry to the chain, put the composite's bundled wraps into the
- * distribution set, and reflect an accepted push into the latest value. This
- * lets "crash → re-run" run on the same state.
- */
 export function makeServer(options: ServerOptions): ServerState {
   const projectId = chainBase.projectId;
   const entries: ChainEntry[] = [...options.built.entries];
@@ -235,20 +186,12 @@ export function makeServer(options: ServerOptions): ServerState {
   let pushCalls = 0;
   let pullCalls = 0;
   let chainCalls = 0;
-  // The stored latest manifest (§12-5 — only one is kept). Re-issued at the
-  // next manifestVersion whenever the distribution state (epoch · meta set)
-  // changes (the test swapping the variable set = models another member's
-  // meta operation). An accepted rotate's bundled manifest replaces it as the latest
   let manifestState: {
     key: string;
     manifest: WireDistributedManifest;
     version: number;
   } | null = null;
-  // The stored checkpoint snapshot (§16-2 — the enumeration of the
-  // distribution set at checkpoint-acceptance time + the corresponding
-  // checkpoint position). Bundled into later value-carrying pulls (§12-7)
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
-  /** Upsert only when a checkpoint entry is accepted (§16-2 — other ops pass through). */
   const storeCheckpointSnapshot = async (entry: ChainEntry): Promise<void> => {
     if (entry.op !== "checkpoint") {
       return;
@@ -272,9 +215,6 @@ export function makeServer(options: ServerOptions): ServerState {
       return manifestState.manifest;
     }
     const version = (manifestState?.version ?? 0) + 1;
-    // Re-issuance chains prev into the previous manifest (models an honest
-    // meta operation satisfying the adjacent-version prev check — M1-A1. Same
-    // as the real server's §12-5 (5))
     const previous = manifestState?.manifest;
     const manifest = await manifestFor({
       projectId,
@@ -293,12 +233,8 @@ export function makeServer(options: ServerOptions): ServerState {
     return manifest;
   };
 
-  /** Acceptance: append the 2 entries — rotate + boundary checkpoint — and put the bundled wraps into the distribution set (§12-4). */
   const acceptRotate = async (body: WireRotateBody): Promise<void> => {
     if (options.dropCheckpointFromChain === true) {
-      // A checkpoint-hiding server stores no snapshot either (models
-      // consistent hiding — distributing an enumeration with no checkpoint on
-      // the chain would fail rule 2 right there)
       entries.push(body.entry);
       hashes.push(await computeChainEntryHash(body.entry));
     } else {
@@ -307,16 +243,9 @@ export function makeServer(options: ServerOptions): ServerState {
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // Store the snapshot in the same transaction as the boundary
-      // checkpoint's acceptance (§16-2 — acceptance time = the pre-re-encryption distribution set)
       await storeCheckpointSnapshot(body.checkpoint);
     }
     currentEpoch = body.entry.payload.newEpoch;
-    // Distribution form = the accepted issuance form + the caller's issuer
-    // info (§12-2). Only when the bundled digest covers the current set is it
-    // pinned as "latest" — if the test swapped the variable set before
-    // acceptance (= another member's meta operation), the key is left empty
-    // and the next pull re-issues the next version
     const digestNow = await variablesDigestOf(projectId, [
       ...variables.map((variable) => variable.statement),
       ...deletedVariables,
@@ -348,7 +277,6 @@ export function makeServer(options: ServerOptions): ServerState {
     await options.onRotateAccepted?.({ entries, hashes });
   };
 
-  /** Appends one rotation by another member to the current chain's tail. */
   const appendOtherRotate = async (target: {
     readonly epoch: number;
     readonly dek: Uint8Array;
@@ -374,7 +302,6 @@ export function makeServer(options: ServerOptions): ServerState {
     currentEpoch = target.epoch;
   };
 
-  // Extra endpoints for the trigger (i) periodic checkpoint issuance (PR-M2) (optional)
   const standaloneHandlers: MockHandler[] =
     options.standaloneCheckpoint === undefined
       ? []
@@ -401,8 +328,6 @@ export function makeServer(options: ServerOptions): ServerState {
             const body = request.body as { readonly entry: ChainEntry };
             entries.push(body.entry);
             hashes.push(await computeChainEntryHash(body.entry));
-            // Accepting a standalone checkpoint also upserts the snapshot
-            // (§16-2 — the storage discipline is the same regardless of path)
             await storeCheckpointSnapshot(body.entry);
             return {
               status: 200,
@@ -446,7 +371,6 @@ export function makeServer(options: ServerOptions): ServerState {
             deletedVariables,
             deks,
             manifest: await serveManifest(),
-            // Whenever a stored row for the base checkpoint exists, it is always bundled (§12-7 — the material of rule 2)
             ...(checkpointSnapshot === null ? {} : { checkpointSnapshot }),
             schemaPolicy: "enabled" as const,
           },
@@ -463,7 +387,6 @@ export function makeServer(options: ServerOptions): ServerState {
       const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       if (options.chainAfterRotateAttempt !== undefined) {
-        // Swap to the shape where another member appended first (or concurrently)
         entries.splice(0, entries.length, ...options.chainAfterRotateAttempt.entries);
         hashes.splice(0, hashes.length, ...options.chainAfterRotateAttempt.hashes);
       }
@@ -508,7 +431,6 @@ export function makeServer(options: ServerOptions): ServerState {
       if (injected !== undefined) {
         return injected;
       }
-      // The distribution form is "the accepted payload + the caller's writer info" (§12-2)
       const stored: WireDistributedValue = {
         ...body.value,
         writerUserId: owner.userId,
@@ -533,7 +455,6 @@ export function makeServer(options: ServerOptions): ServerState {
   return { handlers, rotateBodies, pushes, chainEntries: entries };
 }
 
-/** Reads the floor (the fold of the observation log) — for pinning M1-A4's floor advance / non-advance. */
 export async function loadFloor(env: TestEnv): Promise<ProjectFloor | null> {
   const loaded = await Effect.runPromise(
     makeFileFloorStore(env.floorDir).load(testProjectId(chainBase.projectId)),
@@ -550,7 +471,6 @@ export async function startEnv(handlers: readonly MockHandler[], user: TestUser)
   return env;
 }
 
-/** §5.1 signature verification of one wrap + the recipient's opening (same shape as env-create.test.ts). */
 export async function verifyAndUnwrap(input: {
   readonly wrap: WrappedDek;
   readonly recipient: TestUser;
@@ -600,7 +520,6 @@ export async function verifyAndUnwrap(input: {
   return dek.value;
 }
 
-/** Extracts the new-epoch DEK the runner generated, from the composite's bundled wraps. */
 export async function newEpochDekOf(body: WireRotateBody): Promise<Uint8Array> {
   const wrap = body.deks.find((candidate) => candidate.recipientUserId === owner.userId);
   if (wrap === undefined) {

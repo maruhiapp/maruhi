@@ -1,15 +1,6 @@
-// The audit store's stored-row decoders, shared by the head derivation
-// (audit-store.ts) and both read surfaces (audit-store-query.ts and
-// audit-store-rotation-read.ts).
-
 import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import type { AuditHeadRow } from "@maruhi/crypto";
 
-/**
- * The fixed 17 columns of an audit row, in the column order of AUDIT_SPEC
- * §5.1: what the head derivation reads (the input of row_digest) and what
- * the generic read selects (same order as StoredAuditEventRow).
- */
 export const AUDIT_ROW_COLUMNS = `seq, row_id, server_ts, client_ts, event, actor_type, actor_user_id,
   actor_key_fingerprint, actor_api_token_id, target_user_id, target_key_fingerprint,
   environment_id, variable_id, epoch, version, chain_seq, payload`;
@@ -32,23 +23,12 @@ export function toAuditHeadRow(row: Record<string, unknown>): AuditHeadRow {
     epoch: numberOrNull(row["epoch"]),
     version: numberOrNull(row["version"]),
     chainSeq: numberOrNull(row["chain_seq"]),
-    // payload is the stored TEXT bytes verbatim (no JSON normalization — §5.1)
     payloadText: textOrNull(row["payload"]),
   };
 }
 
 const textOrNull = (value: unknown): string | null => (value === null ? null : String(value));
 
-/**
- * A NULL-or-brand column read (the mint is the stored-row decode boundary).
- * A malformed value reads as null (a broken row is treated as null, as in
- * parsePayload — a read is never made a defect). That null is a read-surface
- * degradation only, not a legitimate NULL for derivation: a staged or
- * restored table carrying such a value is refused by
- * auditRowShapeViolations (audit-store.ts) before any head is derived over
- * it or it is installed, and the live log's rows are written only from
- * already-minted values, so deriveChunk never derives over one.
- */
 export const brandOrNull = <B>(value: unknown, decode: (s: string) => B): B | null => {
   if (value === null) {
     return null;
@@ -62,7 +42,6 @@ export const brandOrNull = <B>(value: unknown, decode: (s: string) => B): B | nu
 export const numberOrNull = (value: unknown): number | null =>
   value === null ? null : Number(value);
 
-/** Defensive parse of the payload column (JSON) (a broken row is treated as null — detection is never made a defect). */
 export function parsePayload(value: unknown): Readonly<Record<string, unknown>> | null {
   if (typeof value !== "string") {
     return null;

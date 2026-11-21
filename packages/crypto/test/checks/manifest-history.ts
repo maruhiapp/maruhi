@@ -1,17 +1,8 @@
-// Builds the verified history index of the derived chain from
-// env-manifest.json's tenure_extension (the canonical 12 entries + the seq 13
-// new-key re-add). Identical in content to the tenure_extension of
-// value-signature.json / metadata-signature.json, but built from this file's
-// own entries for the self-containedness of the manifest vectors (so the
-// checked target does not drift even if the files diverge later — the same
-// judgment as meta-history.ts).
-
 import type { ChainHistoryIndex } from "../../src/index.ts";
 import { verifyChainWithHistory } from "../../src/index.ts";
 import manifestVectors from "../../test-vectors/env-manifest.json" with { type: "json" };
 import { toTypedEntry, typedEntries } from "./chain-vector.ts";
 
-/** History index of the derived chain: the canonical 12 entries + the manifest vector's seq 13 re-add. */
 export async function manifestExtendedHistory(): Promise<ChainHistoryIndex> {
   const raw = manifestVectors.tenure_extension.entry;
   const entry = toTypedEntry({

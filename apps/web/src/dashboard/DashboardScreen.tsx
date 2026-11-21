@@ -1,14 +1,5 @@
 "use client";
 
-// S4 project list (design document §3). S3 (sign-in) and the session
-// state moved into DashboardShell (DP3 ruling A) — this screen is only
-// the ok-state body.
-//
-// - GET /projects (AUTH_SPEC §11-5 — the response carries only the
-//   server-reported projectId + chain-derived role). A nextAfter-cursor
-//   Load more. The auxiliary path of typing a project ID (the genesis
-//   hash = the capability) directly is formally in place (the promotion
-//   of design document §3 S4's provisional reduction)
 import { Button } from "@astryxdesign/core/Button";
 import { Grid } from "@astryxdesign/core/Grid";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
@@ -29,8 +20,6 @@ import { spaPaths } from "./routes.ts";
 import { SectionBlock, SectionHeader, SECTION_GAP } from "./sections.tsx";
 import type { ProjectList } from "./types.ts";
 
-// A format error (client-side judgment — the server is not asked).
-// Carried on the TextInput's status
 const FORMAT_ERROR = {
   type: "error",
   message: "A project ID is 64 lowercase hex characters.",
@@ -46,11 +35,6 @@ interface ProjectsState {
   nextAfter: string | undefined;
 }
 
-/**
- * Direct project-ID input (the `settings` template's two columns =
- * heading + description | input). On narrow widths the Grid folds to
- * one column.
- */
 function OpenByIdSection(): ReactNode {
   const [projectId, setProjectId] = useState("");
   const [showFormatNote, setShowFormatNote] = useState(false);
@@ -68,7 +52,7 @@ function OpenByIdSection(): ReactNode {
         title="Open a project by ID"
         description="A project ID works like a bookmark: paste one to open its overview directly."
       />
-      {/* The format error rides TextInput's own status (detached — appears below the input). Enter also Opens */}
+      {}
       <HStack gap={2} align="start" wrap="wrap">
         <TextInput
           label="Project ID"
@@ -88,10 +72,6 @@ function OpenByIdSection(): ReactNode {
     </Grid>
   );
 }
-
-// ---------------------------------------------------------------------------
-// S4: the project list
-// ---------------------------------------------------------------------------
 
 const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
   {
@@ -113,9 +93,6 @@ const PROJECT_COLUMNS: TableColumn<ProjectRow>[] = [
 ];
 
 function appendProjects(current: ProjectsState | undefined, page: ProjectList): ProjectsState {
-  // Dedupe additions against already-rendered rows so a hostile or
-  // broken server repeating the same projectId cannot grow rows and
-  // React keys
   const rows = current === undefined ? [] : [...current.rows];
   const seen = new Set(rows.map((row) => row.id));
   for (const project of page.projects) {
@@ -126,22 +103,8 @@ function appendProjects(current: ProjectsState | undefined, page: ProjectList): 
   return { rows, nextAfter: page.nextAfter };
 }
 
-/** The cap on auto-following empty pages — a resource bound against a server that returns a fresh cursor every time. Past it, control defers to "load more" */
 const MAX_EMPTY_PAGE_HOPS = 10;
 
-/**
- * An empty page is not the end of the list (AUTH_SPEC §11-5): a
- * candidate page can become `{ projects: [], nextAfter }` via ghost
- * exclusion or confirmation-failure omission. Advance the cursor until
- * a row appears or nextAfter runs out (depth is bounded by the number
- * of candidate pages). A cursor already seen reappearing (a broken or
- * hostile server — including alternating cursors) is treated as the end
- * and the following stops. The follow count is bounded by the smaller
- * of the distinct-cursor count "and" the fixed cap
- * (MAX_EMPTY_PAGE_HOPS) — even a server that mints a new cursor every
- * time has a ceiling on GETs and the Set's growth (past it: manual
- * load more)
- */
 function shouldFollowCursor(
   page: ProjectList,
   next: ProjectsState,
@@ -154,7 +117,6 @@ function shouldFollowCursor(
   );
 }
 
-/** If the cursor may be followed, records it and returns true (false when already seen or over the cap). */
 function consumeCursor(visitedCursors: Set<string>, cursor: string): boolean {
   if (visitedCursors.has(cursor) || visitedCursors.size >= MAX_EMPTY_PAGE_HOPS) return false;
   visitedCursors.add(cursor);
@@ -182,10 +144,6 @@ function ProjectsFooter({
   nextAfter: string | undefined;
   onLoadMore: () => void;
 }): ReactNode {
-  // Never swap the button out while loading (preserves focus — same
-  // shape as AuditEventList's LoadMoreRow).
-  // isInterruptible = no native disabled. Double-loading is blocked on
-  // the handler side
   if (nextAfter === undefined && !isLoading) return null;
   return (
     <Button
@@ -222,7 +180,7 @@ function ProjectsTableView({
         hasHover
         dividers="rows"
       />
-      {/* Appended form (ruling B-b): the Load more failure is added below the already-rendered list */}
+      {}
       {failure !== undefined ? <FailureNotice failure={failure} onRetry={onLoadMore} /> : null}
       <ProjectsFooter
         isLoading={isLoading}
@@ -259,7 +217,6 @@ function ProjectListSection(): ReactNode {
   }, [loadPage]);
 
   if (projects === undefined) {
-    // Replacement form (ruling B-a): rendered in place of the body until the first page arrives
     return failure !== undefined ? (
       <FailureNotice failure={failure} onRetry={() => void loadPage(undefined)} />
     ) : (
@@ -271,7 +228,6 @@ function ProjectListSection(): ReactNode {
       <EmptyNotice
         title="No projects"
         description="Projects you are a member of appear here, as reported by the server. Create one with the maruhi CLI."
-        // The list's box has no heading (the page h1 doubles as it), so h2
         headingLevel={2}
         testId="project-empty"
       />
@@ -287,10 +243,6 @@ function ProjectListSection(): ReactNode {
   );
 }
 
-// ---------------------------------------------------------------------------
-// The screen body
-// ---------------------------------------------------------------------------
-
 export function DashboardScreen(): ReactNode {
   return (
     <DashboardShell
@@ -303,8 +255,7 @@ export function DashboardScreen(): ReactNode {
         </Text>
       }
     >
-      {/* The page heading doubles as the list's heading (one main heading per region — Astryx layout docs).
-          Only the second section (Open a project by ID) carries a section heading */}
+      {}
       <VStack gap={SECTION_GAP}>
         <SectionBlock>
           <ProjectListSection />

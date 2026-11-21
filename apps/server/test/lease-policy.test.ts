@@ -1,14 +1,3 @@
-// Integration tests for workload-lease 503s and auditing (AUTH_SPEC
-// §14-3 / AUDIT_SPEC §3.5), deployments with an unset server key, and
-// the acceptance policy.
-// For how the suite is split see the top of lease.test.ts; shared
-// helpers are in support/lease-scenario.ts.
-//
-// What this suite pins:
-// - auditing (AUDIT_SPEC §3.5): the granularity of
-//   server.dek_unwrapped / server.lease_issued / server.lease_denied,
-//   and that NO var.read is recorded
-
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -46,7 +35,6 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** One variable + advance to epoch 2, with the grant and every epoch's backfill done. */
 async function twoEpochProject(): Promise<{ readonly fpHex: string }> {
   const dek1 = await createEnvironmentOk(fixture, ENV, "App");
   await createVariableOk(dek1, VAR, "DATABASE_URL", "postgres://alpha");
@@ -59,9 +47,6 @@ async function twoEpochProject(): Promise<{ readonly fpHex: string }> {
 
 describe("workload leases: 503s and auditing (§14-3 / AUDIT_SPEC §3.5)", () => {
   it("returns 503 server-wraps-missing when the grant is valid but the re-wrap is pending", async () => {
-    // Grant exists but never backfilled = the CRYPTO_SPEC §7 re-wrap
-    // is unfinished. Do not make this an opaque failure (the A1
-    // ruling: the lease is the last line of defense)
     await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV] });
     const workload = await workloadKeyPair();
@@ -74,16 +59,9 @@ describe("workload leases: 503s and auditing (§14-3 / AUDIT_SPEC §3.5)", () =>
   });
 
   it("returns 503 when the grant backfill covered only some of the existing epochs", async () => {
-    // A rotation composite on an environment with a valid grant
-    // requires the complete wrap set including the server key (§12-4),
-    // so a gap cannot be produced via rotate. The realistic source is
-    // "granted an environment that already had epochs, then the
-    // backfill partially missed" (A1 ruling 4: the only reconciliation
-    // means is the 409 — the lease is the last line of defense)
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     await grantServer({ scope: [ENV] });
-    // Backfill only epoch 1, dropping the current epoch 2
     await backfillServerWrap(1, dek1);
     const workload = await workloadKeyPair();
     const response = await requestLease({
@@ -128,15 +106,10 @@ describe("workload leases: 503s and auditing (§14-3 / AUDIT_SPEC §3.5)", () =>
       projectId,
       "SELECT variable_id, actor_key_fingerprint, payload FROM audit_events WHERE event = 'server.lease_issued'",
     );
-    // One row per environment (no per-variable granularity option — §3.5)
     expect(issued.length).toBe(1);
     expect(issued[0]?.["variable_id"]).toBeNull();
     expect(issued[0]?.["actor_key_fingerprint"]).toBe(fpHex);
     const payload = JSON.parse(String(issued[0]?.["payload"])) as Record<string, unknown>;
-    // grant_chain_seq is the chain-derived grant_seq (not
-    // re-implemented on the server side). **Pin by value**: watching
-    // only the type would let a wrong seq (e.g. a stale pre-re-grant
-    // seq) slide through
     const granted = await queryProjectDo(
       projectId,
       "SELECT chain_seq FROM audit_events WHERE event = 'chain.server_granted'",
@@ -158,9 +131,6 @@ describe("workload leases: 503s and auditing (§14-3 / AUDIT_SPEC §3.5)", () =>
       oidcToken: await makeOidcToken(),
       ephemeralPubHex: workload.publicKeyHex,
     });
-    // var.read is the evidence of a human actor's read; disclosure to
-    // a workload is carried by the server.* events (AUDIT_SPEC §3.3 /
-    // §14-4)
     const after = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read'",
@@ -170,12 +140,6 @@ describe("workload leases: 503s and auditing (§14-3 / AUDIT_SPEC §3.5)", () =>
 });
 
 describe("workload leases: deployment with an unset server key (§14-3)", () => {
-  // The DO derives its keypair from its own env (chain-do.ts), so
-  // handing the worker a different env changes nothing on the DO side.
-  // What is checked here at the program level is "with no key, fail
-  // BEFORE reading the chain" — if the order breaks, a "unknown = 404
-  // / exists = 503" gap appears, and the unauthenticated lease surface
-  // becomes usable for project-existence probing (§11-2)
   it("fails before touching the chain store (the order decides existence hiding)", async () => {
     let chainLoads = 0;
     const chainStore = ChainStore.of({
@@ -206,14 +170,10 @@ describe("workload leases: deployment with an unset server key (§14-3)", () => 
           onSuccess: () => ({ ok: true as const }),
           onFailure: (rejection) => ({ ok: false as const, rejection }),
         }),
-        // makeServerKey(undefined) = an unset-key deployment.
-        // DataStore / AuditStore are unreachable, so this path also
-        // pins that they are never referenced
         Effect.provideService(ServerKey, makeServerKey(undefined)),
         Effect.provideService(ChainStore, chainStore),
         Effect.provideService(DataStore, undefined as never),
         Effect.provideService(AuditStore, undefined as never),
-        // The storage guard's observation point (§12-8) is just before issuance = unreachable on this path
         Effect.provideService(StorageMeter, undefined as never),
       ),
     );
@@ -248,9 +208,6 @@ describe("workload leases: acceptance policy (§14-3)", () => {
     const { dek } = await readyProject();
     expect(dek.length).toBe(32);
     const workload = await workloadKeyPair();
-    // Fill the window directly (300 real requests do not justify the
-    // runtime). The counter is the lease_windows row in DO SQLite; go
-    // through the same read-modify-write as the implementation
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', ?, ?) ON CONFLICT(kind) DO UPDATE SET window_start = excluded.window_start, count = excluded.count",
@@ -263,21 +220,13 @@ describe("workload leases: acceptance policy (§14-3)", () => {
     });
     expect(response.status).toBe(429);
     const body = (await response.json()) as { retryAfterSeconds: number };
-    // Since the window was seeded just now with window_start = now,
-    // the remainder is fixed to near the window length (1 hour).
-    // Checking only > 0 would not catch an order-of-magnitude
-    // regression
     expect(body.retryAfterSeconds).toBeGreaterThan(3500);
     expect(body.retryAfterSeconds).toBeLessThanOrEqual(3600);
   });
 
   it("does not consume the window when the lease cannot be issued (503 stays diagnosable)", async () => {
-    // If the 503 path consumed the window, a backfill-missed project's
-    // CI would eat slots on every retry, and past the 300th the
-    // "fixable diagnosis" 503 would mutate into an unrelated 429.
-    // Consumption happens only when a lease is actually issued
     await createEnvironmentOk(fixture, ENV, "App");
-    await grantServer({ scope: [ENV] }); // never backfilled = server-wraps-missing
+    await grantServer({ scope: [ENV] });
     const workload = await workloadKeyPair();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const response = await requestLease({
@@ -311,9 +260,6 @@ describe("workload leases: acceptance policy (§14-3)", () => {
   });
 
   it("does not let an unauthorized caller consume the project's lease window", async () => {
-    // A policy mismatch (404) does not consume the issuance window —
-    // if it did, a third party could starve a legitimate workload's
-    // leases
     await createEnvironmentOk(fixture, ENV, "App");
     await grantServer({ scope: [ENV], leasePolicy: [] });
     const workload = await workloadKeyPair();

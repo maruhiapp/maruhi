@@ -1,11 +1,3 @@
-// Integration tests for `maruhi device add / approve / list / revoke` and the
-// first-sync device registration (CRYPTO_SPEC §3 / §6.2 / §7, AUTH_SPEC §13-11
-// — 2026-09-19 DK K4. Design doc dk-design.md §9).
-// Device ops are signed / verified with real crypto; the server is a wire-level mock.
-//
-// Pinned properties:
-//  4. `device revoke` settles by FP, and the last device cannot be revoked (last-device-protected)
-
 import { verifyChainWithHistory } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -73,7 +65,6 @@ describe("the sweep's fifth kind: the device-revoked obligation (rotation-sweep 
     ]);
   });
   it("a partially converged obligation (env-a rotated · env-b not) still warns only env-b as unconverged on later syncs (carryover)", async () => {
-    // Revoke dev2 (owner / all) → only env-a has rotated. env-b's obligation remains
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
@@ -96,9 +87,6 @@ describe("the sweep's fifth kind: the device-revoked obligation (rotation-sweep 
     expect(errors).not.toMatch(/device-revoked[^\n]*environments env-a/);
   });
   it("when the revoked device's effective scope is outside the signing device's scope, that environment is not rotated and is noted as outOfScope", async () => {
-    // Signing device dev2 = (owner, listed {}). Revocation target reserve =
-    // (owner, all) → obligations env-a / env-b are both outside dev2's scope =
-    // cannot rotate (note it and defer to the standing warning)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-a", dek) },
@@ -126,7 +114,6 @@ describe("maruhi device revoke", () => {
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: addDeviceOp(dev2) },
     ]);
-    // The environment's rotation answers 404 while the chain shows it live → the post-acceptance sweep fails
     const { server, state } = await makeServer({
       built,
       withEnvironment: false,
@@ -148,7 +135,6 @@ describe("maruhi device revoke", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain(`rotation of environment ${ENV_ID} failed`);
     expect(errors).not.toContain(": revocation failed —");
-    // The follow-up runs: the local record is revoked, the registry row is deleted
     const recorded = await readOwnDevices(env, server.origin);
     expect(
       recorded.find((row) => row.keyFingerprintHex === dev2.fingerprintHex)?.revokedAtMs,
@@ -195,7 +181,6 @@ describe("maruhi device revoke", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain(`revoke  ${dev2.fingerprintHex} (cap owner/all)`);
     expect(logs).toContain(`${built.projectId}: revoked ${dev2.fingerprintHex}`);
-    // If the token inventory cannot be read, just convey the fact (K4-13)
     expect(env.errors).toEqual(
       expect.arrayContaining([
         "Note: revoking a device does not revoke its API token (AUTH_SPEC §6). This token cannot list tokens; revoke the lost device's token from the web dashboard or with an admin token (`maruhi token revoke <id>`)",
@@ -210,7 +195,6 @@ describe("maruhi device revoke", () => {
       { actor: owner, operation: addDeviceOp(dev2) },
     ];
     const built = await buildChain(steps);
-    // An unrelated concurrent append (another device of the same person)
     const concurrent = await buildChain([
       ...steps,
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -326,7 +310,6 @@ describe("maruhi device revoke", () => {
   });
 });
 
-/** One row of the token inventory (the `GET /auth/tokens` response — K4-13's match target). */
 function tokenRow(id: string, name: string): Record<string, unknown> {
   return {
     id,
@@ -335,13 +318,11 @@ function tokenRow(id: string, name: string): Record<string, unknown> {
     scopes: [{ project: "*", permission: "admin" }],
     createdAtMs: 1,
     lastUsedAtMs: null,
-    // 2026-01-01 00:00 UTC
     expiresAtMs: 1_767_225_600_000,
   };
 }
 
 describe("maruhi device revoke — the token-revocation proposal (K4-13)", () => {
-  /** Prepare a chain · registry · local record holding dev2 as a registered device. */
   async function setup(input: {
     readonly registryTokenId?: string;
     readonly tokens: readonly Record<string, unknown>[];
@@ -377,7 +358,6 @@ describe("maruhi device revoke — the token-revocation proposal (K4-13)", () =>
   it("matches by the registry's tokenId; with only --yes it issues the proposal and sends no revocation", async () => {
     const { state, env } = await setup({
       registryTokenId: "tok_lost",
-      // Even when the name is cli:<label>, a row with a tokenId is matched by tokenId alone
       tokens: [tokenRow("tok_lost", "ci"), tokenRow("tok_other", "cli:old-laptop")],
     });
     expect(
@@ -482,7 +462,6 @@ describe("maruhi device revoke — the token-revocation proposal (K4-13)", () =>
 });
 
 describe("everyday commands on a revoked key, and device list (DK K13-5 / K13-6)", () => {
-  /** Revoked on P1, valid on P2 (revocation on only some projects). The key at hand is dev2. */
   async function partlyRevoked(): Promise<{
     readonly env: TestEnv;
     readonly p1: BuiltChain;

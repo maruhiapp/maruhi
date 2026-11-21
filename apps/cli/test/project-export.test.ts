@@ -1,21 +1,3 @@
-// Tests for `maruhi project export` (AUTH_SPEC §11-6 — PF3), driven through
-// runCli against a MockServer that pages an export.
-//
-// Properties pinned down:
-//  1. the pages are concatenated and gzipped to the file exactly (one line
-//     per NDJSON line, a trailing newline), the identities companion is
-//     written next to it, and the report names the heads and counts only
-//  2. a 409 ExportChanged restarts the export from the first page (the
-//     partial file is removed first)
-//  3. the trailer's chain head is cross-checked against the verified view
-//  4. an existing file is never overwritten; --out is required (usage),
-//     and a foreign file racing past the check is never removed (a wx
-//     refusal is not ownership)
-//  5. an export interrupted mid-write — or dying with a defect —
-//     removes the partial file (the output is a scoped resource —
-//     acquireUseRelease), and an interrupt racing the companion write
-//     leaves no written-but-unowned identities file
-
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +23,6 @@ import {
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
-/** The output paths whose createWriteStream open must fail as EEXIST (a foreign file won the race). */
 const refusedOpens = vi.hoisted(() => new Set<string>());
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -56,9 +37,6 @@ vi.mock("node:fs", async (importOriginal) => {
       if (!refusedOpens.has(String(path))) {
         return mod.createWriteStream(path, options as never);
       }
-      // The wx open of a file that landed after ensureAbsent: a real
-      // foreign file sits at the path, the open refuses EEXIST, and no
-      // `open` event ever fires
       const stream = new Writable({
         write: (_chunk, _encoding, done) => done(),
       });
@@ -90,7 +68,6 @@ afterEach(async () => {
   servers = [];
 });
 
-/** The evacuation lines the mock serves (two pages). */
 function snapshotLines(): string[] {
   const head = built.hashes[built.hashes.length - 1] ?? "";
   return [
@@ -123,7 +100,6 @@ function snapshotLines(): string[] {
   ];
 }
 
-/** The companion as the server answers it (read at the chain head the file's trailer names). */
 const identitiesAt = (chainHeadHashHex: string) => ({
   exportedBy: "user-owner-1111",
   chainHeadSeq: built.entries.length,
@@ -143,19 +119,14 @@ interface Fixture {
   readonly env: TestEnv;
   readonly server: MockServer;
   readonly dir: string;
-  /** How many times the continuation page answers 409 before succeeding. */
   changedPages: number;
 }
 
 interface StartOptions {
   readonly changedPages?: number;
-  /** An injected answer for the first page (undefined = the normal page). */
   readonly firstPage?: { readonly status: number; readonly json: unknown };
-  /** An injected answer for the identities companion (undefined = normal). */
   readonly identities?: { readonly status: number; readonly json: unknown };
-  /** How many times the companion answers with another chain head before the file's (a mismatched pair). */
   readonly staleCompanions?: number;
-  /** The source the project is marked as a mirror of (the page head's `mirrorOf`; undefined = writable). */
   readonly mirrorOf?: string;
 }
 
@@ -248,9 +219,7 @@ describe("maruhi project export (PF3)", () => {
       `Identities companion: ${out}.identities.json (1 member identity, exported by user-owner-1111)`,
     );
     expect(logs).toContain("submit a restore job with `identitiesKey`");
-    // The page head carries no mark: the project is still writable here
     expect(logs).toContain("Warning: this project is still writable here");
-    // No row content in the report
     expect(logs).not.toContain("chain.genesis");
     expect(pageRequests(fixture.server)).toBe(2);
   });
@@ -277,9 +246,7 @@ describe("maruhi project export (PF3)", () => {
     expect(gunzipSync(await readFile(out)).toString("utf8")).toBe(
       `${snapshotLines().join("\n")}\n`,
     );
-    // first attempt: page 1 + the 409; second attempt: page 1 + page 2
     expect(pageRequests(fixture.server)).toBe(4);
-    // A project that never settles gives up with the server rejection's wording
     const restless = await startEnv({ changedPages: 10 });
     const never = join(restless.dir, "never.ndjson.gz");
     expect(await runCli(["project", "export", "--out", never], restless.env.layer)).toBe(1);
@@ -298,7 +265,6 @@ describe("maruhi project export (PF3)", () => {
       chainHeadHashHex: string;
     };
     expect(companion.chainHeadHashHex).toBe(built.hashes[built.hashes.length - 1]);
-    // two attempts: 2 pages each
     expect(pageRequests(once.server)).toBe(4);
     const always = await startEnv({ staleCompanions: 10 });
     const never = join(always.dir, "stale-always.ndjson.gz");
@@ -324,11 +290,9 @@ describe("maruhi project export (PF3)", () => {
     );
     await expect(stat(out)).rejects.toThrow();
     await expect(stat(`${out}.identities.json`)).rejects.toThrow();
-    // The next run is not refused as an overwrite
     const again = await startEnv();
     const second = join(again.dir, "second.ndjson.gz");
     expect(await runCli(["project", "export", "--out", second], again.env.layer)).toBe(0);
-    // The companion failing removes the data file too (a migration needs both)
     const half = await startEnv({
       identities: { status: 500, json: { message: "injected identities failure" } },
     });
@@ -339,9 +303,6 @@ describe("maruhi project export (PF3)", () => {
   });
 
   it("removes the partial file when the export is interrupted mid-write", async () => {
-    // No MockServer: a stub client answers the first page, then holds the
-    // continuation forever — the export sits mid-write with a partial
-    // file on disk when the interrupt arrives
     const lines = snapshotLines();
     const head = {
       chainHeadSeq: built.entries.length,
@@ -382,16 +343,10 @@ describe("maruhi project export (PF3)", () => {
         outPath: out,
       }),
     );
-    // The first page is already written once the second is requested
     await secondPage;
-    // The write stream's wx open is asynchronous — the partial file must
-    // provably exist before the interrupt, or the stat rejections below
-    // would pass without the release doing anything
     await vi.waitFor(async () => {
       await stat(out);
     });
-    // Fiber.interrupt waits for the fiber's exit — the uninterruptible
-    // release (stream teardown + file removal) has completed by now
     await Effect.runPromise(Fiber.interrupt(fiber));
     await expect(stat(out)).rejects.toThrow();
     await expect(stat(`${out}.identities.json`)).rejects.toThrow();
@@ -409,10 +364,7 @@ describe("maruhi project export (PF3)", () => {
         page: (args: { readonly query: { readonly cursor?: string } }) =>
           args.query.cursor === undefined
             ? Effect.succeed({ lines: lines.slice(0, 3), next: "Y3Vyc29y", head })
-            : // The defect is delayed so the partial file below provably
-              // exists when it lands — otherwise the release could remove
-              // it before the stat ever sees it
-              Effect.sleep("200 millis").pipe(
+            : Effect.sleep("200 millis").pipe(
                 Effect.andThen(Effect.die(new Error("injected defect"))),
               ),
         identities: () => Effect.succeed(identitiesAt(head.chainHeadHashHex)),
@@ -436,8 +388,6 @@ describe("maruhi project export (PF3)", () => {
         outPath: out,
       }),
     );
-    // The defect must land on a file that provably exists, or the stat
-    // rejections below would pass without the release doing anything
     await vi.waitFor(async () => {
       await stat(out);
     });
@@ -448,11 +398,6 @@ describe("maruhi project export (PF3)", () => {
   });
 
   it("removes the companion too when an interrupt races its write", async () => {
-    // writeFileString's wx create honors the abort signal — an interrupt
-    // mid-write must either let the write finish (so its ownership mark
-    // reaches the cleanup) or keep it from starting; a written-but-unowned
-    // companion is the orphan this guards. The oversized payload keeps
-    // the write in flight long enough for the interrupt to land inside it.
     const lines = snapshotLines();
     const head = {
       chainHeadSeq: built.entries.length,
@@ -491,9 +436,6 @@ describe("maruhi project export (PF3)", () => {
         outPath: out,
       }),
     );
-    // The companion's wx create means the write has started — interrupt
-    // while the payload may still be flushing (a tight poll, or the
-    // detection latency itself swallows the window)
     await vi.waitFor(
       async () => {
         await stat(companion);
@@ -512,7 +454,6 @@ describe("maruhi project export (PF3)", () => {
     try {
       expect(await runCli(["project", "export", "--out", out], fixture.env.layer)).toBe(1);
       expect(fixture.env.errors.join("\n")).toContain(`Writing ${out} failed (Error)`);
-      // The foreign file is untouched — the run provably created nothing
       expect(await readFile(out, "utf8")).toBe("a foreign file — never this run's to remove");
       await expect(stat(`${out}.identities.json`)).rejects.toThrow();
     } finally {

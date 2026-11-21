@@ -1,20 +1,3 @@
-// Tests for `maruhi agent` (KL2 — in-session memory key holding).
-//
-// - Protocol (newline-delimited JSON) parsing and rejection (version mismatch,
-//   malformed requests)
-// - Server and client (the Keychain implementation) round-trip over a real
-//   unix socket (node:net — the same path under vitest's Node and production
-//   Bun)
-// - Permissions: directory 0700, socket 0600; the socket disappears after exit
-// - `maruhi agent -- <cmd>`: the child gets MARUHI_AGENT_SOCK and the agent
-//   listens only while it lives; the child's exit code is inherited. Nesting
-//   is refused; no `--` is a usage error
-// - Restore-path wiring: `key recover` lands in the agent's memory and the
-//   success message names the right destination (reproduces recovery.test.ts's
-//   restore case on the agent side)
-// - A `maruhi run` child does NOT get MARUHI_AGENT_SOCK (corollary of the
-//   existing rule)
-
 import { chmod as setFileMode, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { platform, tmpdir } from "node:os";
@@ -52,9 +35,6 @@ import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-// Unix domain sockets are a different thing on Windows (named pipes). The
-// implementation already makes win32 an explicit error, so the socket-path
-// tests don't run there
 const describeSocket = platform() === "win32" ? describe.skip : describe;
 
 let cleanups: (() => Promise<void>)[] = [];
@@ -99,16 +79,13 @@ describe("agent protocol (newline-delimited JSON)", () => {
       op: "remove",
       name: "a",
     });
-    // Version mismatches are not silently parsed
     expect(parseAgentRequest('{"v":2,"op":"get","name":"a"}')).toBeNull();
     expect(parseAgentRequest('{"op":"get","name":"a"}')).toBeNull();
-    // set without value / empty name / unknown op / not JSON / an array
     expect(parseAgentRequest('{"v":1,"op":"set","name":"a"}')).toBeNull();
     expect(parseAgentRequest('{"v":1,"op":"get","name":""}')).toBeNull();
     expect(parseAgentRequest('{"v":1,"op":"dump","name":"a"}')).toBeNull();
     expect(parseAgentRequest("not json")).toBeNull();
     expect(parseAgentRequest("[1]")).toBeNull();
-    // list takes no name (for status)
     expect(parseAgentRequest('{"v":1,"op":"list"}')).toEqual({ v: 1, op: "list" });
     expect(parseAgentRequest('{"v":2,"op":"list"}')).toBeNull();
   });
@@ -179,19 +156,15 @@ describe("agent protocol (newline-delimited JSON)", () => {
     store.apply({ v: 1, op: "set", name: master, value: "m" });
     clock = 1_099;
     expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m" });
-    // Re-setting (set) carries a fresh deadline
     store.apply({ v: 1, op: "set", name: master, value: "m2" });
     clock = 1_150;
     expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: "m2" });
     clock = 1_198;
     expect(store.apply({ v: 1, op: "list" })).toEqual({ ok: true, names: [token, master] });
-    // Deadline reached (1099 + 100): the key is gone, the token remains (gone
-    // from status's list too)
     clock = 1_199;
     expect(store.apply({ v: 1, op: "get", name: master })).toEqual({ ok: true, value: null });
     expect(store.apply({ v: 1, op: "get", name: token })).toEqual({ ok: true, value: "t" });
     expect(store.apply({ v: 1, op: "list" })).toEqual({ ok: true, names: [token] });
-    // Without a TTL no deadline is attached
     const forever = makeAgentStore({ now: () => clock });
     forever.apply({ v: 1, op: "set", name: master, value: "m" });
     clock = Number.MAX_SAFE_INTEGER;
@@ -213,7 +186,6 @@ describeSocket("agent server and client (real unix socket)", () => {
     expect(await Effect.runPromise(keychain.get("token::x"))).toBeNull();
     await Effect.runPromise(keychain.set("token::x", '{"token":"maruhi_pat_a"}'));
     expect(await Effect.runPromise(keychain.get("token::x"))).toBe('{"token":"maruhi_pat_a"}');
-    // Other entries are independent
     expect(await Effect.runPromise(keychain.get("master::x::u"))).toBeNull();
     await Effect.runPromise(keychain.remove("token::x"));
     expect(await Effect.runPromise(keychain.get("token::x"))).toBeNull();
@@ -244,7 +216,6 @@ describeSocket("agent server and client (real unix socket)", () => {
       ok: false,
       error: "malformed request (protocol version mismatch?)",
     });
-    // Responds once a full line has arrived even if it arrives split
     const { createConnection: connect } = await import("node:net");
     const split = await new Promise<string>((resolve, reject) => {
       const socket = connect(server.socketPath);
@@ -280,14 +251,10 @@ describeSocket("agent server and client (real unix socket)", () => {
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     const { createConnection } = await import("node:net");
-    // A peer that stays silent without sending a line (broken / hostile client)
     const idle = createConnection(server.socketPath);
     await new Promise<void>((resolve) => idle.once("connect", () => resolve()));
     const clientClosed = new Promise<void>((resolve) => idle.once("close", () => resolve()));
     const started = Date.now();
-    // server.close only waits for every connection to end naturally, so it
-    // doesn't return unless they are cut (verify close itself cuts them, ahead
-    // of the 5-second idle timeout)
     await server.close();
     await Promise.race([
       clientClosed,
@@ -306,21 +273,13 @@ describeSocket("agent server and client (real unix socket)", () => {
   });
 });
 
-/** A trusted agent socket (ours, 0600, in a 0700 directory) whose answers the test scripts. */
 interface ScriptedAgent {
   readonly socketPath: string;
-  /** The first connection's request line, without its newline. */
   readonly received: Promise<string>;
-  /** Settles when the first connection closes on the agent's side. */
   readonly disconnected: Promise<void>;
   readonly isDisconnected: () => boolean;
 }
 
-/**
- * Listens on `<private dir>/agent.sock` (chmod 0600, so the client's
- * assertTrustedSocket passes) and hands each connection to `respond` once a
- * full request line has arrived.
- */
 async function scriptedAgent(respond: (socket: Socket) => void): Promise<ScriptedAgent> {
   const socketPath = join(await privateDir(), "agent.sock");
   let onReceived: (line: string) => void = () => undefined;
@@ -351,8 +310,6 @@ async function scriptedAgent(respond: (socket: Socket) => void): Promise<Scripte
       }
       respond(socket);
     });
-    // The client severing mid-write (EPIPE / ECONNRESET) is what these tests
-    // provoke; the outcome under test is the client's, asserted from its side
     socket.on("error", () => {
       socket.destroy();
     });
@@ -383,7 +340,6 @@ async function scriptedAgent(respond: (socket: Socket) => void): Promise<Scripte
   return { socketPath, received, disconnected, isDisconnected: () => closed };
 }
 
-/** The tagged failure `sendAgentRequest` ended with, as `{ _tag, reason }`. */
 function agentFailure(exit: Exit.Exit<unknown, unknown>): {
   readonly _tag: string;
   readonly reason: string;
@@ -402,7 +358,6 @@ function agentFailure(exit: Exit.Exit<unknown, unknown>): {
   return { _tag: tag, reason };
 }
 
-/** The user-facing message a Keychain call failed with. */
 function failureMessage(exit: Exit.Exit<unknown, unknown>): string {
   if (!Exit.isFailure(exit)) {
     throw new Error("expected a failure exit");
@@ -420,11 +375,6 @@ const AGENT_PROTOCOL_MESSAGE =
 const AGENT_GONE_MESSAGE =
   "Cannot connect to the maruhi agent (MARUHI_AGENT_SOCK points to a socket nobody is listening on). The agent session has ended — start a new one with `maruhi agent -- <shell>`, or unset MARUHI_AGENT_SOCK to use the OS keychain";
 
-/**
- * Runs `effect` against a silent agent on the TestClock: waits (on real I/O)
- * until the agent has the request, checks the connection is still held just
- * before the 5-second limit, then crosses it.
- */
 function acrossTheTimeout<A, E>(
   agent: ScriptedAgent,
   effect: Effect.Effect<A, E>,
@@ -434,7 +384,6 @@ function acrossTheTimeout<A, E>(
       const fiber = yield* Effect.forkChild(Effect.exit(effect));
       yield* Effect.promise(() => agent.received);
       yield* TestClock.adjust(Duration.millis(4_999));
-      // Give real I/O a turn so a premature disconnect would be seen
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
       const heldBeforeLimit = fiber.pollUnsafe() === undefined && !agent.isDisconnected();
       yield* TestClock.adjust(Duration.millis(1));
@@ -454,11 +403,9 @@ describeSocket("agent client failures (real unix socket, sendAgentRequest)", () 
     expect(await agent.received).toBe('{"v":1,"op":"list"}');
     expect(heldBeforeLimit).toBe(true);
     expect(agentFailure(exit)).toEqual({ _tag: "AgentProtocolError", reason: "timeout" });
-    // The interruption cleanup destroyed the client socket: the agent sees it go
     await agent.disconnected;
     expect(agent.isDisconnected()).toBe(true);
 
-    // Through the Keychain implementation the user sees the protocol message
     const viaKeychain = await scriptedAgent(() => undefined);
     const keychainRun = await acrossTheTimeout(
       viaKeychain,
@@ -502,8 +449,6 @@ describeSocket("agent client failures (real unix socket, sendAgentRequest)", () 
   });
 
   it("a response beyond the 64 KiB cap is refused as too large, and the client severs the connection", async () => {
-    // One byte over MAX_MESSAGE_BYTES, no newline, and the agent keeps the
-    // connection open — so only the size cap can end the conversation
     const oversized = "x".repeat(64 * 1024 + 1);
     const agent = await scriptedAgent((socket) => socket.write(oversized));
     const exit = await Effect.runPromiseExit(
@@ -524,8 +469,6 @@ describeSocket("agent client failures (real unix socket, sendAgentRequest)", () 
   });
 
   it("a trusted socket file nobody listens on fails the connect as ECONNREFUSED (the session has ended)", async () => {
-    // Move the socket inode aside before the agent closes: what remains is our
-    // own 0600 socket with no listener behind it
     const dir = await privateDir();
     const server = await startAgentServer(dir);
     const orphan = join(dir, "orphan.sock");
@@ -548,8 +491,6 @@ describeSocket("maruhi agent -- <command>", () => {
     let seenInside: string | null = null;
     env.setSessionHandler(async (call) => {
       socketPath = call.env[AGENT_SOCKET_ENV] ?? "";
-      // Connect to the agent as the child would (in production the child's
-      // maruhi chooses this path in live.ts)
       const inside = makeAgentKeychain(socketPath);
       await Effect.runPromise(inside.set("token::https://maruhi.test", "record"));
       seenInside = await Effect.runPromise(inside.get("token::https://maruhi.test"));
@@ -562,20 +503,14 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.sessionCalls[0]?.command).toEqual(["bash", "-l"]);
     expect(socketPath.endsWith("/agent.sock")).toBe(true);
     expect(seenInside).toBe("record");
-    // Once the child exits, the socket and directory are gone and the memory
-    // record is unreachable
     expect(await exists(socketPath)).toBe(false);
     expect(await exists(join(socketPath, ".."))).toBe(false);
     const after = await Effect.runPromiseExit(
       makeAgentKeychain(socketPath).get("token::https://maruhi.test"),
     );
     expect(Exit.isFailure(after)).toBe(true);
-    // Guidance goes to stderr (doesn't dirty the child's stdout). No key
-    // material is printed
     expect(env.errors.join("\n")).toContain("stay in memory only");
     expect(env.logs).toEqual([]);
-    // The agent itself is handed to the child only via the env var (no parent
-    // agent present)
     expect(env.sessionCalls[0]?.env).toEqual({ [AGENT_SOCKET_ENV]: socketPath });
   });
 
@@ -604,8 +539,6 @@ describeSocket("maruhi agent -- <command>", () => {
   });
 
   it("starts fresh when the session leftover (MARUHI_AGENT_SOCK pointing nowhere) is stale", async () => {
-    // The shape where the parent agent died first and only the shell remains —
-    // "start a new one" and "refuse nesting" must not deadlock
     const dir = await privateDir();
     const env = await makeTestEnv();
     env.setEnvVar(AGENT_SOCKET_ENV, join(dir, "agent.sock"));
@@ -624,18 +557,15 @@ describeSocket("maruhi agent -- <command>", () => {
     const { writeFile } = await import("node:fs/promises");
     const { chmod } = await import("node:fs/promises");
     const dir = await privateDir();
-    // A plain file (a destination someone swapped in)
     const file = join(dir, "not-a-socket");
     await writeFile(file, "");
     const asFile = await Effect.runPromiseExit(makeAgentKeychain(file).set("token::x", "v"));
     expect(JSON.stringify(asFile)).toContain("it is not a socket");
-    // Even a real socket is refused if other users can touch it
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
     await chmod(server.socketPath, 0o666);
     const loose = await Effect.runPromiseExit(makeAgentKeychain(server.socketPath).get("token::x"));
     expect(JSON.stringify(loose)).toContain("other users can access it");
-    // Back to 0600 and it passes (the shape your own agent makes)
     await chmod(server.socketPath, 0o600);
     expect(
       await Effect.runPromise(makeAgentKeychain(server.socketPath).get("token::x")),
@@ -646,7 +576,6 @@ describeSocket("maruhi agent -- <command>", () => {
     const env = await makeTestEnv();
     expect(await runCli(["agent"], env.layer)).toBe(2);
     expect(await runCli(["agent", "--", ""], env.layer)).toBe(2);
-    // A positional argument before `--` is diagnosed the same as run
     expect(await runCli(["agent", "sh", "--", "bash"], env.layer)).toBe(2);
     expect(env.sessionCalls).toEqual([]);
     expect(env.errors.join("\n")).toContain("after `--`");
@@ -663,8 +592,6 @@ describeSocket("maruhi agent -- <command>", () => {
     expect(env.sessionCalls).toHaveLength(1);
     const ttlHint = env.errors.join("\n");
     expect(ttlHint).toContain("This device's key is forgotten 2h after it is stored");
-    // Path forward (K7-4): a vanished device key is re-registered as a new
-    // device, and the forgotten key is revoked (not recovered)
     expect(ttlHint).toContain("`maruhi device add`");
     expect(ttlHint).toContain("`maruhi device revoke`");
     expect(ttlHint).not.toContain("`maruhi key recover`");
@@ -698,7 +625,6 @@ describeSocket("maruhi agent status", () => {
     );
     const env = await makeTestEnv();
     env.setEnvVar(AGENT_SOCKET_ENV, server.socketPath);
-    // An origin containing `::` (IPv6 loopback) must not break the delimiter
     await Effect.runPromise(
       agent.set(
         masterKeyEntryName("http://[::1]:8787", testUserId("user-0002")),
@@ -730,8 +656,6 @@ describeSocket("maruhi agent status", () => {
         }),
       ),
     );
-    // The current shape is complete but the hex is broken = the corruption
-    // side's guidance
     await Effect.runPromise(
       agent.set(
         masterKeyEntryName("https://maruhi.test", testUserId("user-0001")),
@@ -750,15 +674,12 @@ describeSocket("maruhi agent status", () => {
     expect(await runCli(["key", "show"], layer)).toBe(1);
     const message = env.errors.join("\n");
     expect(message).toContain("held by this agent session");
-    // Since it cannot be made reversible: the ordering (re-enter without
-    // exiting) and the condition (can only exit while the code exists)
     expect(message).toContain("re-run inside this session");
     expect(message).toContain(
       "only if you still have another device of yours or your recovery code",
     );
     expect(message).toContain("exit the session");
     expect(message).toContain("maruhi agent -- <shell>");
-    // Does not print the OS-keychain procedure (which cannot be run here)
     expect(message).not.toContain("by hand");
     expect(message).not.toContain("OS keychain");
   });
@@ -789,10 +710,6 @@ describeSocket("maruhi agent status", () => {
   });
 });
 
-/* -------------------------------------------------------------------------- */
-/* Restore-path wiring (supplement 12: fetch → decrypt → into L2 memory)       */
-/* -------------------------------------------------------------------------- */
-
 function storedMasterRecord(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
@@ -803,7 +720,6 @@ function storedMasterRecord(user: TestUser): StoredMasterKey {
   };
 }
 
-/** Builds a blob wrapped with a known secret and serves it at GET /auth/recovery (same shape as recovery.test.ts). */
 async function wrappedBlobHandler(
   user: TestUser,
   secret: Uint8Array,
@@ -831,15 +747,11 @@ async function wrappedBlobHandler(
 
 describeSocket("key recover lands in memory inside an agent session", () => {
   it("the newly issued device key goes only into the agent; nothing remains in the test keychain", async () => {
-    // DK: the reserve key B opened from the ledger is used only to issue the
-    // device key and is not stored (§8.1). What gets stored is the new device
-    // key — pin down that its destination is the agent's memory
     const user = await makeTestUser("user-agent-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await wrappedBlobHandler(user, secret);
     const maruhi = await MockServer.start([
       handler,
-      // The project list the restore tail scans (AUTH_SPEC §11-5) — empty
       onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } })),
     ]);
     cleanups.push(() => maruhi.close());
@@ -848,8 +760,6 @@ describeSocket("key recover lands in memory inside an agent session", () => {
     const server = await startAgentServer(dir);
     cleanups.push(() => server.close());
     const agent = makeAgentKeychain(server.socketPath);
-    // Place the logged-in state on the agent side (in production `maruhi
-    // login` writes via the same path)
     await Effect.runPromise(
       agent.set(
         tokenEntryName(maruhi.origin),
@@ -864,24 +774,16 @@ describeSocket("key recover lands in memory inside an agent session", () => {
 
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
-    // Just the code (no projects, so no reserve-key confirmation appears — DK
-    // K14-2's nowhere)
     env.setPromptResponses([code]);
-    // Same swap live.ts does on MARUHI_AGENT_SOCK: only Keychain goes to the
-    // agent implementation
     const layer = Layer.merge(env.layer, Layer.succeed(Keychain, agent));
     expect(await runCli(["key", "recover"], layer)).toBe(0);
 
-    // The destination is the agent's memory. The test (OS-equivalent) keychain
-    // has nothing
     expect(env.keychain.size).toBe(0);
     const stored = await Effect.runPromise(
       agent.get(masterKeyEntryName(maruhi.origin, user.userId)),
     );
     const device = parseStoredMasterKey(stored ?? "");
     if (device === null) throw new Error("expected the new device key in the agent");
-    // What is stored is the new device key. The ledger's reserve key B is
-    // stored nowhere
     expect(device.encPubHex).not.toBe(user.encPubHex);
     expect(serializeStoredMasterKey(device)).not.toBe(
       serializeStoredMasterKey(storedMasterRecord(user)),
@@ -899,7 +801,6 @@ describeSocket("key recover lands in memory inside an agent session", () => {
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(code);
 
-    // Later commands in the same session read the agent's key (key show)
     const status = onRequest("GET", "/auth/recovery/status", () => ({
       status: 200,
       json: { registered: true, updatedAtMs: 1754006400000 },

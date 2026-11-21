@@ -1,16 +1,3 @@
-// Integration tests for `maruhi device add / approve / list / revoke` and the
-// first-sync device registration (CRYPTO_SPEC §3 / §6.2 / §7, AUTH_SPEC §13-11
-// — 2026-09-19 DK K4. Design doc dk-design.md §9).
-// Device ops are signed / verified with real crypto; the server is a wire-level mock.
-//
-// Pinned properties:
-//  1. `device approve` puts the ceremony gate (TTY + non-agent) before fetching
-//     the request list, and recomputes the FP from the request row's public key
-//     to compare (the claimed FP is never used — K4-6). Approval is each
-//     project's `add_device` + backfill + local record (approved) + the registry PUT
-//  6. Approval over the old device path (`source: "device"`) is rejected by
-//     the wire type (pinning the removal)
-
 import { readFile } from "node:fs/promises";
 
 import { HandoffApprovalSchema, HandoffLookupSchema } from "@maruhi/api-schema";
@@ -47,7 +34,6 @@ import {
 } from "./support/device.ts";
 import { makeTestEnv } from "./support/env.ts";
 
-/** An `add_device` append for a given device key (across all projects — with project id and cap role). */
 function addsOf(
   state: ServerState,
   device: TestUser,
@@ -70,7 +56,6 @@ describe("maruhi device approve", () => {
     });
     const env = await startEnv(server.origin, built.projectId, owner);
     expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
-    // The device lands on the chain and the later stages (record · registry · cancellation) run — pull fills the gap
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
     expect(state.requestCancels).toEqual([dev2.fingerprintHex]);
     const errors = env.errors.join("\n");
@@ -116,7 +101,6 @@ describe("maruhi device approve", () => {
       await runCli(["device", "approve", dev2.fingerprintHex.toUpperCase()], env.layer),
       env.errors.join("\n"),
     ).toBe(0);
-    // owner's device signed and appended the add_device (default cap = owner / all)
     expect(state.appended).toHaveLength(1);
     const entry = state.appended[0]!;
     expect(entry.op).toBe("add_device");
@@ -128,7 +112,6 @@ describe("maruhi device approve", () => {
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
-    // Backfill: env-app's epoch 1 was registered addressed to the new device's enc key
     expect(state.registered).toHaveLength(1);
     expect(
       state.registered[0]?.deks.map((wrap) => [
@@ -137,7 +120,6 @@ describe("maruhi device approve", () => {
         wrap["epoch"],
       ]),
     ).toEqual([[owner.userId, dev2.encPubHex, 1]]);
-    // The local record (approved — the approving device's FP is the provenance)
     const recorded = await readOwnDevices(env, server.origin);
     const row = recorded.find((candidate) => candidate.keyFingerprintHex === dev2.fingerprintHex);
     expect(row).toMatchObject({
@@ -146,7 +128,6 @@ describe("maruhi device approve", () => {
       addedByFingerprintHex: owner.fingerprintHex,
       revokedAtMs: null,
     });
-    // The registry PUT (the signal — last) and the request's cancellation
     expect(state.registryPuts).toEqual([
       {
         fp: dev2.fingerprintHex,
@@ -160,9 +141,6 @@ describe("maruhi device approve", () => {
     );
     const approveLogs = env.logs.join("\n");
     expect(approveLogs).toContain("registered the device (backfilled 1 DEK wrap");
-    // The FP provenance rule (K7-7): right after the label / 12 words, one
-    // sentence saying to compare it with the screen of the machine being
-    // added (whoever can place a request holds an account-wide admin token — `ensureKeyMaterialAccess`)
     expect(approveLogs).toContain(
       "Compare them with the screen of the machine you are adding, never with a fingerprint sent to you: a request can be placed by anyone holding an account-wide admin API token of yours",
     );
@@ -237,7 +215,6 @@ describe("maruhi device approve", () => {
     );
     expect(errors).toContain("No pending device-add request matches that fingerprint");
     expect(state.appended).toEqual([]);
-    // Prefixes or 11 words are not accepted (§3's no-truncation rule)
     expect(await runCli(["device", "approve", dev2.fingerprintHex.slice(0, 16)], env.layer)).toBe(
       2,
     );
@@ -246,7 +223,6 @@ describe("maruhi device approve", () => {
     );
   });
   it("even when every project is skipped (this device unregistered, etc.), exit code is 1 and the request is kept", async () => {
-    // session is member (not on the chain) → skipped on the only project
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -264,7 +240,6 @@ describe("maruhi device approve", () => {
   });
 
   it("a project where this device is not on the chain is skipped, and guides toward the sync path rather than request-less approval (DK K10-5)", async () => {
-    // dev2 is a device key of the same person as owner, but is not on this project's chain
     const built = await chainWithEnvironment();
     const { server, state } = await makeServer({
       built,
@@ -277,7 +252,6 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       `skipped — this machine's key is not one of your registered devices here, so it cannot register devices here. A device of yours that is registered here adds the new device (and this machine) when it runs a keyed command on this project at a terminal (\`maruhi pull --project ${built.projectId}\`, for instance)`,
     );
-    // Never guides toward an unachievable procedure (request-less approval)
     expect(errors).not.toContain("approve this machine first");
     expect(state.appendedTo).toEqual([]);
   });
@@ -318,7 +292,6 @@ describe("maruhi device approve", () => {
       requests: [requestRowOf(dev2)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // A scope naming a nonexistent environment → failed on the only project (a pre-communication check)
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex, "--env", "env-missing"], env.layer),
     ).toBe(1);
@@ -328,7 +301,6 @@ describe("maruhi device approve", () => {
       "the device was not registered on any project, so nothing was recorded and the request was left in place",
     );
     expect(state.appended).toEqual([]);
-    // Only the first-sync observation (this device) is recorded — no approved row is written
     expect((await readOwnDevices(env, server.origin)).map((row) => row.source)).toEqual([
       "observed",
     ]);
@@ -345,27 +317,22 @@ describe("maruhi device approve", () => {
       registryPutStatuses: [429],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // It did land on the chain, so it is not a failure (exit code 0 — K8-5 round 3)
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
       env.errors.join("\n"),
     ).toBe(0);
     expect(state.appended).toHaveLength(1);
     expect(state.registryPuts).toHaveLength(1);
-    // The signal could not be raised, so its material (the request) is kept
     expect(state.requestCancels).toEqual([]);
     const note = env.errors.join("\n");
     expect(note).toContain("the device registry is full (32 rows)");
-    // The two sentences docs (`devices.mdx`) quotes sit adjacent on both branches (PR #196 pullfrog)
     expect(note).toContain(
       "will not see the completion signal. The request is left in place until",
     );
-    // The re-issue command carries the same cap (DK K10-1 — a flagless re-run is the default owner / all)
     expect(note).toContain(
       `re-run \`maruhi device approve ${dev2.fingerprintHex} --cap owner --all-envs\` before then to list it`,
     );
     expect(note).toContain("unlisted in your device registry");
-    // The approver clears rows and re-runs: every project is already (no append) → PUT → cancellation
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex], env.layer),
       env.errors.join("\n"),
@@ -438,7 +405,6 @@ describe("maruhi device approve", () => {
   });
 
   it("re-running for a key already on the chain under a different cap refuses without appending or recording, keeps the request, and emits the same-cap command (DK K10-1)", async () => {
-    // The state where the previous approval (member / env-app) left the request behind on a PUT failure or interruption
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
@@ -453,7 +419,6 @@ describe("maruhi device approve", () => {
       requests: [requestRowOf(dev2)],
     });
     const env = await startEnv(server.origin, built.projectId, owner);
-    // Flagless = the default owner / all (the person who typed the K9 Note flagless — the widening direction)
     expect(await runCli(["device", "approve", dev2.fingerprintHex], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain(
@@ -462,7 +427,6 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       `Re-run it with that cap: \`maruhi device approve ${dev2.fingerprintHex} --cap member --env ${ENV_ID}\`.`,
     );
-    // The re-add procedure is spelled in one function (DK K12-7): a revoked key never comes back, so a new key + approval
     expect(errors).toContain(
       "To give the device another cap, revoke it, then run `maruhi device add --replace` on that machine (a revoked key is never registered again, so it generates a new key) and approve the fingerprint it prints from a registered device with the cap you want",
     );
@@ -470,12 +434,10 @@ describe("maruhi device approve", () => {
     expect(state.appendedTo).toEqual([]);
     expect(state.registryPuts).toEqual([]);
     expect(state.requestCancels).toEqual([]);
-    // The record is not overwritten by the approval (the row stays as the sync observation wrote it with the chain's cap)
     const before = (await readOwnDevices(env, server.origin)).find(
       (row) => row.keyFingerprintHex === dev2.fingerprintHex,
     );
     expect(before).toMatchObject({ source: "observed", roleCap: "member" });
-    // Re-issuing via the emitted command converges (already → record → PUT → cancellation)
     expect(
       await runCli(
         ["device", "approve", dev2.fingerprintHex, "--cap", "member", "--env", ENV_ID],
@@ -497,7 +459,6 @@ describe("maruhi device approve", () => {
   });
 
   it("even if unregistered on another project, a disagreement with any chain's cap appends this run's cap nowhere (DK K10-4's 2 phases)", async () => {
-    // Present on P1 as member / all. Absent on P2 (genesis's device differs = a different project id)
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2, { roleCap: "member" }) },
@@ -517,8 +478,6 @@ describe("maruhi device approve", () => {
     expect(env.errors.join("\n")).toContain(
       `Device ${dev2.fingerprintHex} is already registered with cap member/all on ${p1.projectId}`,
     );
-    // An add_device with this run's cap (owner / all) appears on no project
-    // (the sync observation → registration may append to P2, but that uses the chain's cap = member)
     expect(addsOf(state, dev2).map((add) => add.roleCap)).not.toContain("owner");
     expect(
       (await readOwnDevices(env, server.origin)).find(
@@ -527,7 +486,6 @@ describe("maruhi device approve", () => {
     ).not.toBe("approved");
     expect(state.registryPuts).toEqual([]);
     expect(state.requestCancels).toEqual([]);
-    // The same-cap re-issue lands as member on both projects and converges
     expect(
       await runCli(["device", "approve", dev2.fingerprintHex, "--cap", "member"], env.layer),
       env.errors.join("\n"),
@@ -562,7 +520,6 @@ describe("maruhi device approve", () => {
     expect(errors).toContain(
       "Its cap differs between those projects, so re-run it once per project with `--project <id>` and the cap shown for that project.",
     );
-    // dev2 is appended nowhere (the sync appending another device [genesis's reserve key] is a different path)
     expect(addsOf(state, dev2)).toEqual([]);
     expect(state.requestCancels).toEqual([]);
   });
@@ -591,7 +548,6 @@ describe("the removal of the old device path (wire types)", () => {
       Schema.decodeUnknownEffect(HandoffLookupSchema)(lookup),
     );
     expect(Exit.isFailure(rejectedLookup)).toBe(true);
-    // The reserve key's secret never lands on the local record (public side only — K4-1)
     const env = await makeTestEnv();
     await recordOwnDevice(env, "https://example.test", reserve, "reserve");
     const json = await readFile(ownDevicesPathOf(env.configPath), "utf8");

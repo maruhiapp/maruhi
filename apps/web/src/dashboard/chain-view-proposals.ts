@@ -1,5 +1,3 @@
-// See chain-view.ts for the display-only contract.
-
 import { applyOperation, type OperationOf } from "./chain-view-operations.ts";
 import {
   hasStrings,
@@ -15,7 +13,6 @@ import {
 } from "./chain-view-state.ts";
 import { isRecord } from "./json-record.ts";
 
-/** Principle 2's S = {the proposer who proposed as an owner} ∪ approvals. */
 export function signersOf(pending: PendingFold): Vote[] {
   const proposer: Vote[] = pending.proposerSignedAsOwner
     ? [{ userId: pending.proposerUserId, keyFingerprintHex: pending.proposerKeyFingerprintHex }]
@@ -23,28 +20,17 @@ export function signersOf(pending: PendingFold): Vote[] {
   return [...proposer, ...pending.approvals];
 }
 
-/** If the vote's FP is one of that person's bound devices, whether that device's roleCap is owner (undefined if unbound). */
 function ownerVoteByDevice(member: MutableMember, fp: string): boolean | undefined {
   const device = member.devices.find((d) => d.keyFingerprintHex === fp);
   return device === undefined ? undefined : device.roleCap === "owner";
 }
 
-/** An unbindable signing FP: counted only when **all** of that person's unbound devices are roleCap owner. */
 function ownerVoteByUnbound(member: MutableMember, fp: string): boolean {
   if (!member.unboundSignerFps.has(fp)) return false;
   const unbound = unboundDevicesOf(member);
   return unbound.length > 0 && unbound.every((d) => d.roleCap === "owner");
 }
 
-/**
- * Whether one vote counts (§6.2's device vocabulary — K5-2): the
- * voter is a current owner, the vote's FP matches one of that person's
- * bound devices, and the device's roleCap is owner (effective role =
- * owner). A signing FP that could not be bound counts only when **all**
- * of that person's unbound devices are roleCap owner (the conclusion
- * is the same whichever device it was). Anything else is not counted
- * (fail-closed — an unidentifiable vote is not counted).
- */
 function countsAsOwnerVote(state: FoldState, signer: Vote): boolean {
   const member = state.members.get(signer.userId);
   if (member === undefined || member.role !== "owner") return false;
@@ -54,13 +40,11 @@ function countsAsOwnerVote(state: FoldState, signer: Vote): boolean {
   );
 }
 
-/** The vote count = the distinct user_ids in S that are "current owner and the key FP matches (known)" (recounted). */
 export function countedVoters(state: FoldState, signers: ReadonlyArray<Vote>): string[] {
   const counted = signers.filter((signer) => countsAsOwnerVote(state, signer));
   return [...new Set(counted.map((signer) => signer.userId))];
 }
 
-/** Whether the proposal's inner op is in a readable shape (a record whose op name is a string). */
 function readableInner(inner: unknown): inner is ProposableEntry {
   return hasStrings(inner, ["op"]);
 }
@@ -90,14 +74,6 @@ export function applyPropose(
   });
 }
 
-/**
- * approve: records the vote and, once the recount reaches the current
- * policy's required, applies the inner op and removes it from pending
- * (§6.2 — applied at the approve entry's seq). An approve on the chain
- * already passed the consensus rule at the acceptance surface (an
- * invalid one is never on the chain), so only the arithmetic of votes
- * is transcribed here.
- */
 export function applyApprove(state: FoldState, entry: EntryOf<"approve">): void {
   if (typeof entry.payload.proposalHashHex !== "string") {
     state.unreadableEntries += 1;
@@ -117,14 +93,11 @@ export function applyApprove(state: FoldState, entry: EntryOf<"approve">): void 
   applyOperation(state, entry.seq, pending.inner);
 }
 
-/** Whether the recounted vote count reached the current policy's required (never reached when the policy is off). */
 function quorumReached(state: FoldState, signers: ReadonlyArray<Vote>): boolean {
   const required = state.policy?.requiredApprovals;
   return required !== undefined && countedVoters(state, signers).length >= required;
 }
 
-// One-line summaries of inner ops (identifiers stay raw — the render
-// side neutralizes them)
 const INNER_SUMMARIES: {
   readonly [Op in ProposableEntry["op"]]?: (operation: OperationOf<Op>) => string;
 } = {
@@ -140,8 +113,6 @@ const INNER_SUMMARIES: {
 };
 
 export function summarizeInner(operation: ProposableEntry): string {
-  // The summary reads the inner payload's fields — a non-record falls
-  // back to the op name
   if (!isRecord(operation.payload)) return operation.op;
   return (
     (ownProp(INNER_SUMMARIES, operation.op) as InnerSummarizer | undefined)?.(operation) ??

@@ -1,19 +1,8 @@
-// Reference generator for dek-wrap.json (CRYPTO_SPEC §5).
-// Generation uses hpke-js (@hpke/core + @hpke/dhkem-x25519): an
-// implementation family independent of the panva hpke the product
-// implementation adopts, and the Seal direction can be pinned
-// deterministically via ekm derandomize (impossible with panva.
-// docs/notes/spike-c.md).
-// A disposable reference tool, not product code. All keys and values are
-// dummies.
-// Regenerate: bun install && bun run generate-dek-wrap.mjs (run in this
-// directory)
 import { writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 length-prefixed encoding (same definition as generate_reference.py)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -42,17 +31,11 @@ const suite = new CipherSuite({
   aead: new Aes256Gcm(),
 });
 
-// The recipient key is a DeriveKeyPair from a fixed ikm (deterministic)
 const ikmR = pat(0x70, 32);
 const kp = await suite.kem.deriveKeyPair(ikmR.slice().buffer);
 const pkRm = new Uint8Array(await suite.kem.serializePublicKey(kp.publicKey));
 const skRm = new Uint8Array(await suite.kem.serializePrivateKey(kp.privateKey));
 
-// Recipient class server (CRYPTO_SPEC §9. 2026-08-12): the server
-// (deployment) key is also a DeriveKeyPair from a fixed ikm. The
-// recipient_user_id position of info carries the server key FP
-// (lowercase hex of SHA-256(server_enc_pub)[:16]) (a server has no
-// user_id)
 const ikmS = pat(0xb0, 32);
 const kpS = await suite.kem.deriveKeyPair(ikmS.slice().buffer);
 const pkSm = new Uint8Array(await suite.kem.serializePublicKey(kpS.publicKey));
@@ -71,8 +54,8 @@ const serverInfoFields = ["maruhi/v1/dek-wrap", projectId, environmentId, epoch,
 const serverInfo = lpEncode(serverInfoFields);
 const dek = pat(0x80, 32);
 const ikmE = pat(0x90, 32);
-const ikmE2 = pat(0xc0, 32); // for the server-bound Seal (an independent ekm per Seal)
-const aad = new Uint8Array(0); // §5: context binding is carried by info; aad is empty
+const ikmE2 = pat(0xc0, 32);
+const aad = new Uint8Array(0);
 
 async function seal(infoBytes, recipientPk, ekm) {
   const sender = await suite.createSenderContext({
@@ -85,14 +68,11 @@ async function seal(infoBytes, recipientPk, ekm) {
 }
 
 const { enc, ct } = await seal(info, pkRm, ikmE);
-// Also wrap the same-epoch DEK to the server key (same shape as a real
-// recipient set: one DEK x multiple recipients. The §7 wrap-complete set)
 const { enc: serverEnc, ct: serverCt } = await seal(serverInfo, pkSm, ikmE2);
 
 const tamperedEnc = enc.slice();
 tamperedEnc[0] ^= 0x01;
 
-// The server key FP with its first byte flipped — "another server key's FP" (for the transplant negative)
 const wrongServerFp = `${(Number.parseInt(serverFpHex.slice(0, 2), 16) ^ 0x01)
   .toString(16)
   .padStart(2, "0")}${serverFpHex.slice(2)}`;

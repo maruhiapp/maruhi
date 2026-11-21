@@ -1,11 +1,3 @@
-// The `exec` connector (PF8 — the connector overview lives in
-// connector.ts): a script of the repository creates the new credential.
-// Its environment carries the current credential, its companions, the
-// admin inputs and the control variables; its stdout is the new value, or
-// a JSON answer with the companions and facts. Anything a script prints is
-// scrubbed of every secret the run knows before it is shown. Finalize runs
-// the rule's finalize script with the previous credential.
-
 import { Effect, Redacted } from "effect";
 
 import { countNoun, decodeValueText, displayText } from "../display.ts";
@@ -32,30 +24,17 @@ const encoder = new TextEncoder();
 
 type ExecRule = Extract<RotateRule, { connector: "exec" }>;
 
-/** The lines of a script's stderr shown on failure (the tail, scrubbed). */
 const EXEC_SHOWN_LINES = 20;
-/** The lines of a finalize script's stdout kept as facts. */
 const EXEC_FACT_LINES = 10;
 
-/** A secret the script could echo, in the shape the scrubber takes. */
 function secretOf(name: string, bytes: Uint8Array): SyncWrite {
   return { name, value: Redacted.make(bytes, { label: "exec-secret" }) };
 }
 
-/** Scrubs script output of every secret it could carry and keeps the tail (the sync driver's discipline). */
 function scrubbedLines(output: string, secrets: readonly SyncWrite[], lines: number): string[] {
   return scrubVendorOutput(output, secrets).slice(-lines);
 }
 
-/**
- * The environment of a script: the credential under the rule's variable
- * name and `MH_ROTATE_CURRENT`, its companions and the admin inputs under
- * their names (the `maruhi run` shape — every value is a UTF-8 text
- * without NUL, as an environment variable must be), and the control
- * variables. The previous credential (finalize) rides as
- * `MH_ROTATE_PREVIOUS`. Names were validated at config time; here only
- * the values can refuse, each naming the variable and never the value.
- */
 const scriptEnvironment = Effect.fn("connector-exec.scriptEnvironment")(function* (input: {
   readonly rule: ExecRule;
   readonly site: RotationSite;
@@ -102,8 +81,6 @@ const scriptEnvironment = Effect.fn("connector-exec.scriptEnvironment")(function
     if (bytes !== undefined) {
       yield* set(envName, bytes, `the value of ${displayText(variable)}`);
     }
-    // The companion the previous credential carried (the key id to
-    // retire), when the finalize knows it (C-7)
     const previousBytes = input.previous?.companions[envName];
     if (previousBytes !== undefined) {
       yield* set(
@@ -119,7 +96,6 @@ const scriptEnvironment = Effect.fn("connector-exec.scriptEnvironment")(function
   return env;
 });
 
-/** The secrets a script of this rotation could echo (scrubbed out of anything shown). */
 function scriptSecrets(input: {
   readonly current: CredentialValues;
   readonly previous: CredentialValues | null;
@@ -148,16 +124,12 @@ function scriptSecrets(input: {
   return secrets;
 }
 
-/** A capture that rejected, as the connector's error: stopped by maruhi (D-6), a leftover's output (D-14), or a launch failure. */
 function captureFailure(
   error: unknown,
   phase: "rotate" | "finalize",
   script: string,
 ): ConnectorError {
   if (error instanceof ScriptStoppedError) {
-    // Stopped by maruhi after it started (a flooded stdout) — not a
-    // launch failure (ruling D revision, round 4); a rotate script had
-    // started printing, so the credential may exist at the issuer (D-17)
     const created =
       phase === "rotate"
         ? ". The new credential may exist at the issuer: re-run the rotation once the script prints only the value (make it idempotent, or retire the unused credential at the issuer by hand)"
@@ -167,9 +139,6 @@ function captureFailure(
     });
   }
   if (error instanceof ScriptLeftoverError) {
-    // The script's own answer cannot be told from a leftover process's
-    // output (D-14); a script that exited 0 may have created the
-    // credential, so the recovery is named
     const created =
       error.exitCode === 0 && phase === "rotate"
         ? ". The script exited 0, so the new credential may exist at the issuer: re-run the rotation once the script redirects that output (make it idempotent, or retire the unused credential at the issuer by hand)"
@@ -182,7 +151,6 @@ function captureFailure(
   });
 }
 
-/** Runs one script; a launch failure or a non-zero exit is a connector error naming the script and the scrubbed stderr tail. */
 const runScript = Effect.fn("connector-exec.runScript")(function* (
   rule: ExecRule,
   argv: readonly string[],
@@ -204,7 +172,6 @@ const runScript = Effect.fn("connector-exec.runScript")(function* (
   return outcome;
 });
 
-/** The new value as the rotate script printed it: one trailing newline (LF or CRLF) is dropped, nothing else is touched. */
 function valueFromStdout(stdout: Uint8Array): Effect.Effect<Uint8Array, ConnectorError> {
   let end = stdout.length;
   if (end > 0 && stdout[end - 1] === 0x0a) {
@@ -228,7 +195,6 @@ interface ScriptAnswer {
   readonly facts: readonly string[];
 }
 
-/** The rotate script's stdout as a JSON object (anything else is refused with the contract spelled out). */
 function jsonObjectFromStdout(
   stdout: Uint8Array,
 ): Effect.Effect<Record<string, unknown>, ConnectorError> {
@@ -249,7 +215,6 @@ function jsonObjectFromStdout(
   const unknown = Object.keys(record).filter(
     (key) => !["value", "companions", "facts"].includes(key),
   );
-  // The keys are the script's words: counted, never echoed
   if (unknown.length > 0) {
     return new ConnectorError({
       message: `exec: the rotate script's JSON answer has ${countNoun(unknown.length, "unknown key")}; it takes value, companions, facts`,
@@ -258,14 +223,11 @@ function jsonObjectFromStdout(
   return Effect.succeed(record);
 }
 
-/** One answered companion: declared by the rule and a non-empty string. */
 function companionBytes(
   rule: ExecRule,
   name: string,
   value: unknown,
 ): Effect.Effect<Uint8Array, ConnectorError> {
-  // The script's own words never reach an error message (a mistyped key
-  // could be a credential): the message names what the rule declares
   if (!(name in rule.companions)) {
     return new ConnectorError({
       message: `exec: the rotate script answered a companion the rule does not declare (the rule declares ${declaredCompanions(rule)}); declare it under companions in the rotation config`,
@@ -274,17 +236,11 @@ function companionBytes(
   return producedBytes(value, `the companion ${displayText(name)} in the rotate script's answer`);
 }
 
-/** The declared companion names for a message ("STRIPE_KEY_ID", "none"). */
 function declaredCompanions(rule: ExecRule): string {
   const names = Object.keys(rule.companions);
   return names.length === 0 ? "none" : names.map(displayText).join(", ");
 }
 
-/**
- * A produced value (the primary or a companion) as bytes: a non-empty
- * string of UTF-8 text without NUL — what a value must be to be injected
- * by `maruhi run` later. `what` names the value, never carries it.
- */
 function producedBytes(value: unknown, what: string): Effect.Effect<Uint8Array, ConnectorError> {
   if (typeof value !== "string" || value.length === 0) {
     return new ConnectorError({ message: `exec: ${what} is not a non-empty string` });
@@ -292,7 +248,6 @@ function producedBytes(value: unknown, what: string): Effect.Effect<Uint8Array, 
   return producedText(encoder.encode(value), what);
 }
 
-/** The produced bytes checked as UTF-8 text without NUL (a value that could not be injected is refused before it is stored). */
 function producedText(bytes: Uint8Array, what: string): Effect.Effect<Uint8Array, ConnectorError> {
   const text = decodeValueText(bytes);
   if (text === null || text.includes("\0")) {
@@ -303,7 +258,6 @@ function producedText(bytes: Uint8Array, what: string): Effect.Effect<Uint8Array
   return Effect.succeed(bytes);
 }
 
-/** The answer's companions: every one the rule declares, nothing it does not, each a non-empty string. */
 const companionsFromAnswer = Effect.fn("connector-exec.companionsFromAnswer")(function* (
   rule: ExecRule,
   raw: unknown,
@@ -327,7 +281,6 @@ const companionsFromAnswer = Effect.fn("connector-exec.companionsFromAnswer")(fu
   return companions;
 });
 
-/** The rotate script's JSON answer: `{ value, companions?, facts? }`. */
 const answerFromJson = Effect.fn("connector-exec.answerFromJson")(function* (
   rule: ExecRule,
   stdout: Uint8Array,
@@ -371,8 +324,6 @@ export const rotateExec = Effect.fn("connector-exec.rotateExec")(function* (
           values: { primary: yield* valueFromStdout(outcome.stdout), companions: {} },
           facts: [],
         };
-  // The script's own words may carry a credential by mistake: scrub them
-  // of everything this run knows before they reach the report
   const all = scriptSecrets({ current, previous: null, inputs, produced: answer.values });
   const facts = answer.facts.flatMap((fact) => scrubbedLines(fact, all, 1));
   const script = rule.rotate[0] ?? "";

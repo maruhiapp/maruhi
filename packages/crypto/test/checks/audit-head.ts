@@ -1,18 +1,9 @@
-// Checks for the AUDIT_SPEC §5.1 audit head cumulative hash:
-// - computeAuditRowDigest / computeAuditHeadHash reproduce the chain section of
-//   audit-head.json (the row_digest and h_n chaining)
-// - the NULL vs empty-string preimage difference (null_vs_empty section)
-// - invalid-input on numeric bounds (non-integer, >= 2^53) and hex format
-//   (the split under convention 21 — rejections are pinned on the harness side, not
-//   by JSON vectors)
-
 import type { AuditHeadRow } from "../../src/index.ts";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "../../src/index.ts";
 import auditHeadVectors from "../../test-vectors/audit-head.json" with { type: "json" };
 import { testEnvironmentId, testUserId, testVariableId } from "../support/fixture.ts";
 import { type CheckResult, Checks } from "./support.ts";
 
-/** A row of the vector JSON (taken as a structural type, not an inferred literal type — passed from both chain and null_vs_empty). */
 interface VectorRow {
   readonly seq: number;
   readonly row_id: string | null;
@@ -91,7 +82,6 @@ async function nullVsEmptyChecks(c: Checks): Promise<void> {
   c.push("audit-head: null and empty string differ", nullDigest !== emptyDigest);
 }
 
-/** invalid-input on numeric bounds and hex format (pinning the rejection side — the split under vector convention 21). */
 async function invalidInputChecks(c: Checks): Promise<void> {
   const base = toTypedRow(auditHeadVectors.chain[0]!.row);
   const rejectsRow = async (name: string, row: AuditHeadRow, field: string): Promise<void> => {
@@ -147,7 +137,6 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     [SUITE_ID, "", 1, digest.toUpperCase()],
     "rowDigestHex",
   );
-  // The inside of the upper bound is accepted (MAX_SAFE_INTEGER itself — the flip side of the §2.1 boundary)
   const boundary = await computeAuditRowDigest({ ...base, serverTs: Number.MAX_SAFE_INTEGER });
   c.push("audit-head: MAX_SAFE_INTEGER serverTs accepted", boundary.ok);
 }

@@ -1,15 +1,3 @@
-// `--help` consistency (DP5 ruling F): pin the output of every command
-// level + bare `maruhi` + `maruhi --help` against the golden file
-// (test/golden/help.txt).
-//
-// - When the wording changes, regenerate with `UPDATE_GOLDEN=1 bunx vp test
-//   run --project cli test/help.test.ts` and read the diff in review (this is
-//   the single place where usage lines vs. actual flags/descriptions are
-//   checked by eye)
-// - Plus a mechanical check: descriptions are one verb-led line (no § spec
-//   references — users can't read the spec), help goes to stderr, and no
-//   color (test environment)
-
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -22,12 +10,10 @@ import { makeTestEnv } from "./support/env.ts";
 const GOLDEN_PATH = join(import.meta.dirname, "golden", "help.txt");
 const ESC = "\u001B";
 
-/** Captures one command level's help (stderr). */
 async function helpOf(argv: readonly string[]): Promise<string> {
   const env = await makeTestEnv();
   const code = await runCli(argv, env.layer);
   expect(code, argv.join(" ")).toBe(0);
-  // Help does not pollute stdout (ADR-0016 decision 9)
   expect(env.logs, argv.join(" ")).toEqual([]);
   return env.errors.join("\n");
 }
@@ -69,8 +55,6 @@ describe("--help consistency (golden)", () => {
   it("descriptions are one verb-led line and contain no spec § references", async () => {
     const rendered = await renderAll();
     expect(rendered).not.toContain("§");
-    // The line right after DESCRIPTION = the description. It starts with a
-    // capitalized verb (sentence case)
     const lines = rendered.split("\n");
     const descriptions = lines.flatMap((line, index) =>
       line === "DESCRIPTION" ? [lines[index + 1] ?? ""] : [],

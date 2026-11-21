@@ -1,53 +1,8 @@
-// Reference generator for master-key-wrap.json (CRYPTO_SPEC §8 — the
-// reserve key wrap ledger. Regenerated at 0.9-draft / KL3 and 0.12-draft /
-// DK, deleting the old-device handoff route [kind = "device" / source =
-// "device"]).
-// Uses hpke-js for the same reason as dek-wrap.json / lease-wrap.json: an
-// implementation family independent of the panva hpke the product
-// implementation adopts, and the Seal direction can be pinned
-// deterministically via ekm derandomize (impossible with panva.
-// docs/notes/spike-c.md). HKDF / AES-GCM / SHA-256 use WebCrypto (Bun).
-// A disposable reference tool, not product code. All keys and values are
-// dummies.
-//
-// Reads recovery-wrap.json and inherits its master_secret_blob_hex (blob B)
-// and user_id: the ledger is "the set of wraps that pack the same B for
-// each recipient", so it is traceable on the vectors that the
-// recovery-code row (an existing vector — unchanged) and the new routes
-// point at the same B.
-// Since 2026-09-20 DK, B is the blob of the reserve key (§3 / §8.1). The
-// old "device migration" (a handoff where the old device acts as
-// approver — a co-delivery of the B wrap with kind = "device") was
-// removed; approvers are now guardians only (§8.4). Adding a device is
-// the chain op `add_device` (§6.2), out of scope for this vector. The
-// removal is an intentional exception to README convention 28 (the
-// discipline of not changing existing vectors); the byte strings of the
-// other cases are unchanged
-//
-// Pinned (§8.1-8.4):
-//   - master_wrap_aad = LP("maruhi/v1/master-wrap", user_id, kind, wrap_ref, mode)
-//     (kind in {passkey-prf, guardian} — `device` was removed at
-//     2026-09-20 DK)
-//   - passkey-prf: KEK = HKDF(prf_out, salt=empty, info="maruhi/v1/passkey-prf")
-//   - guardian: mode any = every segment is the KEK / mode all = random
-//     XOR split (s_n = KEK XOR the others); a segment is an HPKE Seal
-//     (info = LP("maruhi/v1/guardian-wrap", user_id, group_id, mode,
-//     share_index, guardian_user_id), aad empty)
-//   - handoff: request_id = SHA-256(LP("maruhi/v1/handoff-id", E_pub_hex));
-//     handoff code = Base32(E_pub || SHA-256(E_pub)[:4]) in groups of 4
-//     characters separated by hyphens; approval = HPKE Seal
-//     (info = LP("maruhi/v1/handoff-wrap", user_id, request_id, source,
-//     share_index, approver_user_id), aad empty)
-//
-// Regenerate: bun install && bun run generate (run in this directory)
 import { readFileSync, writeFileSync } from "node:fs";
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";
 
-// CRYPTO_SPEC §2.1 length-prefixed encoding (same definition as the other
-// generators. tools/ is disposable, so per existing convention each file
-// carries its own independent definition rather than sharing a module)
 function lpEncode(fields) {
   const parts = [];
   for (const f of fields) {
@@ -81,7 +36,6 @@ const xor = (...arrays) => {
   return out;
 };
 
-// --- Base32 (RFC 4648 alphabet, no padding) ------------------------------
 const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 function base32Encode(bytes) {
   let bits = 0;
@@ -158,7 +112,6 @@ async function hkdf(ikmBytes, infoUtf8) {
   );
 }
 
-// --- Inherit B and user_id from recovery-wrap.json -------------------------------
 const recoveryDoc = JSON.parse(
   readFileSync(new URL("../recovery-wrap.json", import.meta.url), "utf8"),
 );
@@ -179,19 +132,17 @@ const guardianInfo = (groupId, mode, shareIndex, guardianUserId) =>
 const handoffInfo = (requestId, source, shareIndex, approverUserId) =>
   lpEncode([HANDOFF_WRAP_DOMAIN, userId, requestId, source, shareIndex, approverUserId]);
 
-// --- Class S: passkey-prf -----------------------------------------------------
 const passkeyWrapId = "01JMKWRAP0000000000000PASSK";
 const credentialId = pat(0x11, 16);
 const prfSalt = pat(0x20, 32);
-const prfOut = pat(0x10, 32); // the authenticator's HMAC output (a fixed pattern in the vector)
-const otherPrfOut = pat(0x18, 32); // an output evaluated under a different prf_salt (material for prf-salt-mismatch)
+const prfOut = pat(0x10, 32);
+const otherPrfOut = pat(0x18, 32);
 const passkeyKek = await hkdf(prfOut, PASSKEY_HKDF_INFO);
 const otherPasskeyKek = await hkdf(otherPrfOut, PASSKEY_HKDF_INFO);
 const passkeyNonce = pat(0xe0, 12);
 const passkeyAad = masterAad("passkey-prf", passkeyWrapId, "");
 const passkeyCt = await aesGcmEncrypt(passkeyKek, passkeyNonce, passkeyAad, blob);
 
-// --- Class G: guardian (any-2 / all-3) ----------------------------------------
 const guardianKeys = {
   "user-member-0002": await deriveKeyPair(pat(0x71, 32)),
   "user-admin-0003": await deriveKeyPair(pat(0x72, 32)),
@@ -246,7 +197,6 @@ async function sealShares(group, ekmPrefix) {
 any2.sealed = await sealShares(any2, 0x91);
 all3.sealed = await sealShares(all3, 0x93);
 
-// --- Class H: handoff ----------------------------------------------------------
 const ephemeral = await deriveKeyPair(pat(0xd1, 32));
 const otherEphemeral = await deriveKeyPair(pat(0xd2, 32));
 const requestIdOf = async (pkHex) => hex(await sha256(lpEncode([HANDOFF_ID_DOMAIN, pkHex])));
@@ -263,8 +213,6 @@ const codeOf = async (pkHex) => {
 };
 const code = await codeOf(ephemeral.pk_hex);
 
-// The guardian's approval: re-seal segment 1 of all-3 (user-member-0002)
-// to E.pub
 const guardianApprovalInfo = handoffInfo(requestId, all3.group_id, 1, "user-member-0002");
 const guardianApprovalEkm = pat(0x96, 32);
 const guardianApproval = await seal(
@@ -274,15 +222,9 @@ const guardianApproval = await seal(
   guardianApprovalEkm,
 );
 
-// (The old-device approval — a co-delivery of the B wrap with kind =
-// "device" — was removed at 2026-09-20 DK. Approvers are guardians only)
-
-// --- Material for the negatives -----------------------------------------------
 const flipFirstHexNibble = (h) =>
   `${(Number.parseInt(h.slice(0, 2), 16) ^ 0x01).toString(16).padStart(2, "0")}${h.slice(2)}`;
 const badChecksumSymbols = `${code.symbols.slice(0, 55)}${code.symbols[55] === "A" ? "B" : "A"}${code.symbols.slice(56)}`;
-// The low 2 bits of the final symbol (zero-padding) are non-zero: final
-// symbol value +1
 const lastValue = B32.indexOf(code.symbols[57]);
 const badPaddingSymbols = `${code.symbols.slice(0, 57)}${B32[(lastValue + 1) % 32]}`;
 
@@ -412,8 +354,6 @@ const vector = {
     {
       name: "aad-kind-mismatch",
       base: "guardian-any-2",
-      // mode exists only for guardian (§8.1). The mode field of an AAD
-      // relabeled to passkey-prf is the empty string
       decrypt_aad_hex: hex(masterAad("passkey-prf", any2.group_id, "")),
       must_fail: true,
       note: "Relabeling the kind (guardian → passkey-prf, same wrap_ref; the mode field is the empty string as the spec prescribes for passkey-prf) fails decryption. Rebuilt at 2026-09-20 DK from the old passkey-prf → device form (device no longer exists in the kind set)",

@@ -1,7 +1,3 @@
-// The argument layer of `maruhi member` (member.package/command.ts): its
-// nested subcommands (ADR-0016 decision 6), driven through the real runCli
-// as in effect-cli.test.ts.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -73,7 +69,6 @@ describe("member's nested subcommands (ADR-0016 decision 6 — stage 2 ④)", ()
     expect(dup.env.errors.join("\n")).toContain("Flag --role was specified more than once");
     expect(dup.server.requests).toHaveLength(0);
 
-    // The FP format check is the shared parser (fingerprint-flag.ts). The typed value is never shown
     const badFp = await startEnv();
     expect(
       await runCli(["member", "add", "--expect-fingerprint", "sk-live-hunter2"], badFp.env.layer),

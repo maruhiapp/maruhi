@@ -1,8 +1,3 @@
-// The `cloudflare-api-token` connector (the connector overview lives in
-// connector.ts): Cloudflare's v4 API tokens. A rotation creates a
-// replacement token with the current token's policies; finalize deletes
-// the previous token.
-
 import { Effect, Option, Schema } from "effect";
 import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
@@ -23,7 +18,6 @@ const encoder = new TextEncoder();
 
 const CLOUDFLARE_BASE = "https://api.cloudflare.com";
 
-/** Cloudflare's JSON envelope (`{success, errors, result}`; other keys are not read). */
 const CloudflareEnvelope = Schema.Struct({
   success: Schema.optionalKey(Schema.Boolean),
   errors: Schema.optionalKey(
@@ -38,17 +32,8 @@ const CloudflareEnvelope = Schema.Struct({
 });
 type CloudflareEnvelope = typeof CloudflareEnvelope.Type;
 
-/*
- * The envelope's `result` per step, decoded where it is read. A result that
- * is absent, `null` or another shape decodes to none, and each step answers
- * that with its own wording (an unverifiable token, a definition without a
- * name and policies, a creation without the new value).
- */
-
-/** `/verify`'s result: the id of the token that authenticated. */
 const VerifiedToken = Schema.Struct({ id: Schema.NonEmptyString });
 
-/** A token's definition — the fields the replacement copies (the optional ones are checked where they are copied). */
 const TokenDefinition = Schema.Struct({
   name: Schema.String,
   policies: Schema.Array(Schema.Unknown),
@@ -57,7 +42,6 @@ const TokenDefinition = Schema.Struct({
   not_before: Schema.optionalKey(Schema.Unknown),
 });
 
-/** The created token: its id and its value (shown only in this answer). */
 const CreatedToken = Schema.Struct({ id: Schema.String, value: Schema.NonEmptyString });
 
 function tokensPath(rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>): string {
@@ -98,11 +82,6 @@ const cloudflareCall = Effect.fn("connector-cloudflare.cloudflareCall")(function
         }),
     ),
   );
-  // A successful answer that is not the JSON envelope is a connector
-  // error now (it was read as an empty envelope before — silently). An
-  // error status may not carry the envelope either, and there the status
-  // classification below still owns the message — an edge answer of HTML
-  // still reads "Cloudflare answered 502 to …", a 404 still "already".
   const envelope = yield* response.pipe(
     HttpClientResponse.schemaBodyJson(CloudflareEnvelope),
     Effect.catch(() =>
@@ -133,7 +112,6 @@ function cloudflareFailure(
   });
 }
 
-/** The id of the token whose value this is (`/verify` with the token itself), or null when it is not valid. */
 const cloudflareTokenId = Effect.fn("connector-cloudflare.cloudflareTokenId")(function* (
   rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>,
   token: string,
@@ -156,7 +134,6 @@ function adminTokenOf(current: CredentialValues, inputs: RotateInputs): string {
   return decoder.decode(admin ?? current.primary).trim();
 }
 
-/** The definition of a token (name, policies, condition, validity window) as the replacement's request body. */
 const cloudflareDefinition = Effect.fn("connector-cloudflare.cloudflareDefinition")(function* (
   rule: Extract<RotateRule, { connector: "cloudflare-api-token" }>,
   admin: string,

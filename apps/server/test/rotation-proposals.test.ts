@@ -1,29 +1,3 @@
-// Integration tests for sealed value proposals (CRYPTO_SPEC §5.3 /
-// AUTH_SPEC §14-5 / AUDIT_SPEC §3.3 — PF7b). Verifies the HttpApi and DO
-// SQLite via SELF on @cloudflare/vitest-plugin (the real workerd
-// environment).
-//
-// What this suite pins:
-// - the mint shares the lease's credential and authorization (no grant =
-//   the same uniform 404; a copy of the token with another key = 401
-//   token-replayed) and touches no server wrap (no backfill is needed)
-// - the recipient set is exactly W(E) = member-or-above devices in scope
-//   (a missing member, an extra reader, a duplicate device = 422
-//   recipients-mismatch); readers never see proposals (403), strangers
-//   get 404, a listed member of another environment sees nothing
-// - the §14-5 acceptance checks and their reason codes; the mint window
-//   is consumed only on success
-// - members list only their own wraps and can open them with their
-//   device key; acceptance verifies the member's own push (version >
-//   base, stored) and both resolutions delete the rows and leave the
-//   audit rows (rotation.proposed actor system with the claims digest
-//   and grant seq; rotation.proposal_accepted / _rejected actor member)
-// - an expired proposal is neither listed nor resolvable
-// - the environment's deletion removes its proposals in the same
-//   transaction, closing each one's history (a pending one cancelled by the
-//   deleting member, an expired-but-unswept one expired), so even a member
-//   whose scope is `all` no longer lists or resolves them (AUTH_SPEC §12-4)
-
 import {
   encodeHex,
   importEncryptionKeyPair,
@@ -75,12 +49,6 @@ import { queryProjectDo, readAuditEvents } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/**
- * One ephemeral key per test: the fake issuer mints byte-identical tokens
- * within a second (same claims, same iat), so two mints in one test must
- * present the same key or the second trips the first-come binding
- * (§14-1) — exactly what a real job does (one token, one key)
- */
 let workload: Awaited<ReturnType<typeof workloadKeyPair>>;
 beforeEach(async () => {
   workload = await workloadKeyPair();
@@ -90,7 +58,6 @@ const PROPOSAL_ID = "00112233445566778899aabbccddeeff";
 const NEW_VALUE = "postgres://app_b:rotated-dummy@db.example:5432/shop";
 const utf8 = (text: string) => new TextEncoder().encode(text);
 
-/** The recipient set W(E) of the fixture: owner + member (the reader is excluded — §5.3). */
 const WRITERS = [OWNER, MEMBER] as const;
 
 interface WireWrap {
@@ -100,14 +67,12 @@ interface WireWrap {
   readonly ciphertextHex: string;
 }
 
-/** Seals `plaintext` to one member's device key under the §5.3 info (the minting client's step). */
 async function sealTo(input: {
   readonly proposalId: string;
   readonly variableId: string;
   readonly baseVersion: number;
   readonly recipientUserId: string;
   readonly plaintext: string;
-  /** A device other than the user's primary vector key (an added device's enc key). */
   readonly encPubHex?: string;
 }): Promise<WireWrap> {
   const encPubHex = input.encPubHex ?? vectorKeyOf(input.recipientUserId).enc_pub_hex;
@@ -138,7 +103,6 @@ async function sealTo(input: {
   };
 }
 
-/** Opens a distributed wrap with the member's device key (the accepting client's step). */
 async function openAs(userId: string, proposalId: string, variableId: string, wrap: WireWrap) {
   const baseVersion = 1;
   const keys = vectorKeyOf(userId);
@@ -173,7 +137,6 @@ interface ProposalOptions {
   readonly wraps?: readonly WireWrap[];
 }
 
-/** A well-formed proposal of one variable sealed to W(E) unless overridden. */
 async function proposalFor(options: ProposalOptions = {}) {
   const proposalId = options.proposalId ?? PROPOSAL_ID;
   const variableId = options.variableId ?? VAR;
@@ -199,14 +162,9 @@ async function proposalFor(options: ProposalOptions = {}) {
   };
 }
 
-/** W(E) of the fixture's environment: the writers' device enc keys. */
 const writerRecipients = () =>
   WRITERS.map((userId) => ({ userId, encPubHex: vectorKeyOf(userId).enc_pub_hex }));
 
-/**
- * The pre-flight of a mint (AUTH_SPEC §14-5 — the mint's checks before the
- * issuer is touched). The recipient set defaults to W(E).
- */
 async function preflight(input: {
   readonly variables: readonly { variableId: string; baseVersion: number }[];
   readonly oidcToken?: string;
@@ -275,7 +233,6 @@ function resolveAs(userId: string, proposalId: string, body: unknown): Promise<R
   return requestJson("POST", `/rotation/proposals/${proposalId}/resolution`, token(userId), body);
 }
 
-/** An environment with one variable, granted for leasing (no server-wrap backfill — the mint needs none). */
 async function grantedProject() {
   const dek = await createEnvironmentOk(fixture, ENV, "App");
   const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -283,7 +240,6 @@ async function grantedProject() {
   return { dek, v1 };
 }
 
-/** Pins a status and, on a mismatch, shows the body (the reason code) in the failure. */
 async function expectStatus(response: Response, status: number): Promise<void> {
   if (response.status !== status) {
     throw new Error(
@@ -304,7 +260,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     await expectStatus(minted, 200);
     expect(await minted.json()).toMatchObject({ proposalId: PROPOSAL_ID });
 
-    // The audit row (AUDIT_SPEC §3.3): actor system, the lease's attribution
     const proposed = (await readAuditEvents(projectId)).filter(
       (event) => event["event"] === "rotation.proposed",
     );
@@ -321,7 +276,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     );
     expect(payload["grantChainSeq"]).toBe(granted[0]?.["chain_seq"]);
 
-    // Each member sees only its own wraps and can open them with its device key
     const forMember = await proposalsOf(MEMBER);
     expect(forMember).toHaveLength(1);
     const listed = forMember[0];
@@ -338,16 +292,12 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       return;
     }
     expect(await openAs(MEMBER, PROPOSAL_ID, VAR, wrap)).toBe(NEW_VALUE);
-    // The owner's copy is a different Seal of the same value
     const forOwner = await proposalsOf(OWNER);
     expect(forOwner[0]?.variables[0]?.wraps.map((own) => own.recipientUserId)).toEqual([OWNER]);
-    // A reader is never a recipient (403); a non-member gets the uniform 404
     expect((await listAs(READER)).status).toBe(403);
     expect((await listAs(STRANGER)).status).toBe(404);
-    // Nothing a member sees decrypts under another member's key
     expect(await openAs(OWNER, PROPOSAL_ID, VAR, wrap)).toBeNull();
 
-    // Acceptance = the member's own push (§4.1), then the resolution naming it
     const v2 = await encryptValue(
       dek,
       {
@@ -412,7 +362,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       await mint({ proposal: await proposalFor({ recipients: [OWNER, MEMBER, MEMBER] }) }),
       "recipients-mismatch",
     );
-    // The reader's own copy was never stored (nothing to list)
     expect(await proposalsOf(MEMBER)).toEqual([]);
   });
 
@@ -426,8 +375,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       await mint({ proposal: await proposalFor({ variableId: "var-nope" }) }),
       "variable-inactive",
     );
-    // The lifetime is a bounded duration on the wire (1 to 30 days): out of
-    // range is a payload refusal, never a reason after the issuer was touched
     expect((await mint({ proposal: await proposalFor({ expiresInDays: 31 }) })).status).toBe(400);
     expect((await mint({ proposal: await proposalFor({ expiresInDays: 0 }) })).status).toBe(400);
     const windows = await queryProjectDo(
@@ -487,7 +434,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       }),
       "version-missing",
     );
-    // A reader cannot resolve (member or above)
     expect((await resolveAs(READER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(403);
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(204);
     expect(await proposalsOf(MEMBER)).toEqual([]);
@@ -517,8 +463,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
           }),
         ),
       );
-    // The ids sort the other way round (USER_VAR > VAR), so an id-ordered
-    // store would invert the push order
     expect(USER_VAR > VAR).toBe(true);
     const minted = await mint({
       proposal: {
@@ -536,7 +480,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     const listed = await proposalsOf(MEMBER);
     expect(listed[0]?.variables.map((variable) => variable.variableId)).toEqual([USER_VAR, VAR]);
     expect(listed[0]?.connector).toBe("postgres");
-    // The rows carry the position
     const rows = await queryProjectDo(
       projectId,
       "SELECT variable_id, position FROM rotation_proposal_variables WHERE proposal_id = ? ORDER BY position",
@@ -593,7 +536,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
           }),
         ),
       );
-    // Without the phone: a member is left out → refused
     await expectRejected(
       await mint({
         proposal: await proposalFor({
@@ -602,7 +544,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       }),
       "recipients-mismatch",
     );
-    // With the reader-capped device: an extra recipient → refused
     await expectRejected(
       await mint({
         proposal: await proposalFor({
@@ -616,7 +557,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       }),
       "recipients-mismatch",
     );
-    // Exactly W(E): the owner's two member-or-above devices and the member
     await expectStatus(
       await mint({
         proposal: await proposalFor({
@@ -629,7 +569,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       }),
       200,
     );
-    // The owner lists both of its own wraps (every device of the caller)
     const forOwner = await proposalsOf(OWNER);
     expect(
       forOwner[0]?.variables[0]?.wraps.map((wrap) => wrap.recipientEncPubHex).toSorted(),
@@ -647,8 +586,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     expect(receipt.expiresAtMs).toBeLessThanOrEqual(Date.now() + threeDays);
     await queryProjectDo(projectId, "DELETE FROM rotation_proposals");
     await queryProjectDo(projectId, "DELETE FROM lease_windows WHERE kind = 'proposed'");
-    // Fill the pending slots (distinct ids, one variable each — a variable
-    // holds one pending proposal at a time), then one more is refused
     for (let i = 0; i < MAX_PENDING_ROTATION_PROPOSALS; i += 1) {
       const proposalId = i.toString(16).padStart(32, "0");
       const variableId = i === 0 ? VAR : `var-slot-${i.toString().padStart(14, "0")}`;
@@ -670,7 +607,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       }),
       "pending-limit",
     );
-    // The window: exhausted = 429 after authorization, with a denied row (reason only)
     await queryProjectDo(
       projectId,
       "UPDATE lease_windows SET count = ?, window_start = ? WHERE kind = 'proposed'",
@@ -687,7 +623,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
   });
 
   it("the pre-flight answers the mint's checks without storing anything: ok, then variable-pending once a proposal is stored, stale base, and the uniform 404 without a grant", async () => {
-    // No grant: the same uniform 404 as the lease (existence concealment)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     expect((await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] })).status).toBe(
@@ -695,9 +630,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     );
     await grantServer({ scope: [ENV] });
     await expectStatus(await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }), 200);
-    // The recipient set the job will seal to is checked here too (ruling O
-    // revision, round 4): exactly W(E) passes (above), a missing writer is
-    // refused before the issuer is touched
     const writers = writerRecipients();
     await expectRejected(
       await preflight({
@@ -714,7 +646,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       await preflight({ variables: [{ variableId: "var-unknown-0000000000", baseVersion: 1 }] }),
       "variable-inactive",
     );
-    // Nothing was stored or counted by the pre-flights
     expect(await proposalsOf(MEMBER)).toEqual([]);
     expect(
       await queryProjectDo(projectId, "SELECT count FROM lease_windows WHERE kind = 'proposed'"),
@@ -722,9 +653,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     expect(
       (await readAuditEvents(projectId)).filter((event) => event["event"] === "rotation.proposed"),
     ).toEqual([]);
-    // A stored proposal makes the same variable pending for the next job —
-    // at the mint as well as at the pre-flight (two jobs that both
-    // pre-flighted before either minted — ruling O revision, round 4)
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
     await expectRejected(
       await preflight({ variables: [{ variableId: VAR, baseVersion: 1 }] }),
@@ -735,8 +663,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       "variable-pending",
     );
     expect(await proposalsOf(MEMBER)).toHaveLength(1);
-    // The expiry sweep (on a pre-flight too) leaves the proposal's history
-    // as an audit row and frees the variable
     await queryProjectDo(
       projectId,
       "UPDATE rotation_proposals SET expires_at = ? WHERE proposal_id = ?",
@@ -754,7 +680,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       expiresAtMs: expect.any(Number),
     });
     expect(await proposalsOf(MEMBER)).toEqual([]);
-    // An exhausted mint window is read by the pre-flight (nothing consumed)
     await queryProjectDo(
       projectId,
       "UPDATE lease_windows SET count = ?, window_start = ? WHERE kind = 'proposed'",
@@ -768,7 +693,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
 
   it("an expired proposal is not listed but is still resolvable until swept, and a listed member of another environment sees nothing", async () => {
     await grantedProject();
-    // A member listed on another environment is not in W(ENV) and sees no proposal there
     const DEV = testUserId("user-devmember-0010");
     await createEnvironmentOk(fixture, "env-other", "Other");
     await seedMemberToken(fixture, DEV, 9010);
@@ -776,8 +700,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
     expect(await proposalsOf(DEV)).toEqual([]);
     expect(await proposalsOf(MEMBER)).toHaveLength(1);
-    // Out of scope, the resolution is the same 404 as unknown / resolved /
-    // expired (the environment is known only from the stored row)
     expect((await resolveAs(DEV, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
     expect(await proposalsOf(MEMBER)).toHaveLength(1);
     await queryProjectDo(
@@ -786,19 +708,12 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       Date.now() - 1000,
       PROPOSAL_ID,
     );
-    // A member who began the resolution before the expiry reaches the row
-    // until a sweep drops it: the outcome is theirs, not "nobody's"
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(204);
     const events = (await readAuditEvents(projectId)).map((event) => event["event"]);
     expect(events).toContain("rotation.proposal_rejected");
     expect(events).not.toContain("rotation.proposal_expired");
     expect((await resolveAs(MEMBER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
-    // The id is free again
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
-    // The member list sweeps too (ruling P revision, round 4): a project
-    // whose rotation job is gone still closes its expired proposals' history
-    // on the next `rotation proposals` / `--fail-on-pending`, and the
-    // sealed values leave the §12-8 meter
     await queryProjectDo(
       projectId,
       "UPDATE rotation_proposals SET expires_at = ? WHERE proposal_id = ?",
@@ -828,7 +743,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       }),
       200,
     );
-    // The second one is past its expiry and no sweep has dropped it yet
     const expiredAtMs = Date.now() - 1000;
     await queryProjectDo(
       projectId,
@@ -864,11 +778,8 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
       proposalId: EXPIRED_ID,
       expiresAtMs: expiredAtMs,
     });
-    // Both closing rows sit before env.deleted, in the deletion's transaction
     const order = events.map((event) => event["event"]);
     expect(order.indexOf("rotation.proposal_cancelled")).toBeLessThan(order.indexOf("env.deleted"));
-    // The owner's scope is `all`, which a scope filter alone would still
-    // match: the rows are gone, so nothing is listed and nothing resolves
     expect(await proposalsOf(OWNER)).toEqual([]);
     expect((await resolveAs(OWNER, PROPOSAL_ID, { outcome: "rejected" })).status).toBe(404);
     expect(
@@ -880,12 +791,6 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
 });
 
 describe("a never-initialized project materializes no tables (Sc-7 / A-4)", () => {
-  // A valid workload credential aimed at an arbitrary (never-initialized)
-  // project ID: the mint and the pre-flight fold to the uniform 404 through
-  // the chain load (the server key is configured, so the §14-3 503 does not
-  // apply), and leave the DO with no tables — the proposal paths cannot grow
-  // operator storage any more than the lease can. Each test uses its own
-  // project ID so neither relies on the other's (never-materialized) state.
   const tablesOf = async (unknown: string): Promise<string[]> =>
     (await queryProjectDo(unknown, "SELECT name FROM sqlite_master WHERE type = 'table'")).map(
       (row) => String(row["name"]),

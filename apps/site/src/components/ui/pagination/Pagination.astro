@@ -1,15 +1,4 @@
 ---
-/**
- * Pagination — previous/next page links as one surface. A highlight slides to
- * whichever half you point at, and [ / ] move between pages from the keyboard.
- *
- * Pass `prevNext` for the docs default, or compose your own links:
- *
- *   <Pagination>
- *     <PaginationLink rel="prev" href="/blog/older" label="Older">Older post</PaginationLink>
- *     <PaginationLink rel="next" href="/blog/newer" label="Newer">Newer post</PaginationLink>
- *   </Pagination>
- */
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 import type { PrevNext } from "@cloudflare/nimbus-docs/types";
@@ -17,16 +6,9 @@ import { withBase } from "@cloudflare/nimbus-docs/runtime";
 import PaginationLink from "./PaginationLink.astro";
 
 interface Props extends HTMLAttributes<"nav"> {
-  /** The page's neighbours. Ignored when links are passed as children. */
   prevNext?: PrevNext;
-  /** Caption above the previous page's title. */
   prevLabel?: string;
-  /** Caption above the next page's title. */
   nextLabel?: string;
-  /** The previous/next keys (`[` and `]` by default, from `src/lib/shortcuts.ts`).
-   *  A bar built from `prevNext` answers them anywhere on the page while the
-   *  reader has single-key shortcuts on; a composed bar, while focus is in it.
-   *  `false` turns a bar's keys off. */
   keys?: boolean;
 }
 
@@ -79,7 +61,6 @@ const next = composed ? undefined : prevNext?.next;
 )}
 
 <style>
-  /* With one neighbour, the bar is that half alone, on its own side. */
   @media (min-width: 40rem) {
     .nb-pagination-bar:not(:has([data-slot="pagination-link"] + [data-slot="pagination-link"])) {
       width: 50%;
@@ -89,7 +70,6 @@ const next = composed ? undefined : prevNext?.next;
     }
   }
 
-  /* The highlight moves between halves; it never jumps or blinks. */
   .nb-pagination-highlight {
     opacity: 0;
     transition:

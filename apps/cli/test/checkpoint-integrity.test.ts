@@ -1,22 +1,3 @@
-// Wiring tests for client rule 2 of checkpoint integrity (CRYPTO_SPEC §6.3 —
-// value non-regression; session-27 §13-5's bundled snapshot verification).
-//
-// Pillars verified:
-//  1. Accepting positive cases: matching enumeration, post-checkpoint
-//     advanced versions (at or above the baseline epoch), disappearances
-//     explained by tombstones, and post-checkpoint new creations (new epoch)
-//  2. Every rejection path: missing enumeration (with a baseline), digest
-//     mismatch, version regression, same-version hash mismatch, an advanced
-//     version on an old epoch, disappearance without a tombstone, an old-epoch
-//     creation of a variable outside the snapshot, and locator forgery
-//  3. The two locator classes (ruling S): attested seq > own head = bounded
-//     resync (pull) / on a lease it's an immediate self-contradiction
-//  4. Cross-layer (ruling W): even a distribution that passes rule 2 is
-//     dropped independently by floor rule (a) (the chain's coarse baseline
-//     must not short-circuit the local finer one)
-//  5. Lease path: reaches the same implementation + warns on a valued
-//     distribution for a baseline-less environment (SHOULD)
-
 import type { ChainOperation } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { Effect, Exit } from "effect";
@@ -56,29 +37,21 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "prod";
-/** Position of the baseline checkpoint (baseSteps' 3 entries + checkpoint = seq 4). */
 const CHECKPOINT_SEQ = 4;
 
 let owner: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** [genesis, create ENV (epoch 1), rotate (epoch 2)] (no checkpoint). */
 let baseChain: BuiltChain;
-/** baseChain + a checkpoint covering ENV appended (rule 2's baseline). */
 let chain: BuiltChain;
 let projectId: string;
 let envStatement: WireDistributedEnvironmentStatement;
 let stmtA: WireDistributedVariableStatement;
 let stmtB: WireDistributedVariableStatement;
-/** va v2 epoch 2 (latest as of the checkpoint). */
 let valueA: WireDistributedValue;
-/** vb v1 epoch 1 (the legitimate state after rotation, before re-encryption — §12-7). */
 let valueB: WireDistributedValue;
-/** The correct enumeration corresponding to the checkpoint on the chain (model of the server-stored rows). */
 let snapshot: WireCheckpointSnapshot;
-/** The mv1 manifest the checkpoint tuple binds ([A active, B active]). */
 let manifestMain: WireDistributedManifest;
-/** A checkpoint op covering ENV (the benign-race test reuses it as a second checkpoint). */
 let checkpointOperation: ChainOperation;
 let wraps: WireRecipientDek[];
 let servers: MockServer[] = [];
@@ -92,10 +65,6 @@ beforeAll(async () => {
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
   ];
-  // Two-pass construction: signing (Ed25519) and timestamps are
-  // deterministic, so rebuilding the same steps yields the same entry list
-  // (build base first to fix the distributed head / digest, then rebuild
-  // with a checkpoint carrying those baked-in values appended)
   baseChain = await buildChain(baseSteps);
   projectId = baseChain.projectId;
   const genesisHead = { seq: 1, hashHex: projectId };
@@ -213,7 +182,6 @@ interface PullOverrides {
   }[];
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly manifest?: WireDistributedManifest;
-  /** null = distribute no enumeration (missing-enumeration negative). Omitted = the correct enumeration. */
   readonly checkpointSnapshot?: WireCheckpointSnapshot | null;
 }
 
@@ -252,7 +220,6 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
   return env;
 }
 
-/** Phase switch within the same TestEnv (= the same floor) — same idiom as floor-detection. */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<void> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -264,7 +231,6 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
   });
 }
 
-/** The mv2 manifest (prev = mv1's real hash; for negatives/positives where the served set changes). */
 async function manifestNext(
   statements: readonly WireDistributedVariableStatement[],
 ): Promise<WireDistributedManifest> {
@@ -376,10 +342,6 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
   });
 
   it("resolves an enumeration attested at a seq beyond the own head via bounded resync (same shape as §6.3-2b — ruling S)", async () => {
-    // The first chain fetch = a view without the checkpoint; later fetches =
-    // the extended whole. The pull response carries the new checkpoint's
-    // enumeration (models a benign race where the checkpoint landed right
-    // before the response was built)
     let chainCalls = 0;
     const staleChain: MockHandler = (request) => {
       if (request.method !== "GET" || request.path !== `/projects/${projectId}/chain`) {
@@ -461,8 +423,6 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
   });
 
   it("rejects a distribution with different signed bytes at the same version (equivocation vs the checkpoint)", async () => {
-    // A different ciphertext at the same coordinates (va, v2, epoch 2) — the
-    // nonce differs so the signed bytes differ too
     const substituted = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -495,8 +455,6 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
       version: 3,
       plaintext: "alpha-forged",
       writer: owner,
-      // A declared head positioned where epoch 1 was current (still passes
-      // signature verification)
       head: headOf(baseChain, 2),
     });
     await expectRejected(
@@ -591,12 +549,6 @@ describe("an unchanged environment left out of a later checkpoint keeps its guar
     payload: { environments: [], auditHeadHashHex: "" },
   };
 
-  /**
-   * The baseline checkpoint (seq 4) followed by a later one (seq 5) that
-   * either re-notarizes ENV's identical tuple (the former all-environment
-   * cover) or leaves ENV out (the changed-only cover). The served
-   * enumeration names the latest checkpoint containing ENV.
-   */
   async function laterCheckpoint(renotarize: boolean) {
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -659,12 +611,6 @@ describe("an unchanged environment left out of a later checkpoint keeps its guar
 
 describe("classifying a benign race (baseline advancing after the fetch view is not evidence)", () => {
   it("rejects an honest response where a second checkpoint landed inside the resync window as retriable, not evidence", async () => {
-    // The view at fetch = baseChain (no checkpoint). The response carries
-    // checkpoint (seq 4)'s enumeration, but the post-resync chain includes a
-    // second checkpoint (seq 5) — the response's locator (4) disagrees with
-    // the latest baseline (5), yet the baseline advanced after the fetch view
-    // (head 3), which an honest response can produce. Don't escalate to
-    // evidence (which a re-run cannot clear); reject with re-pull guidance
     const doubleChain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -707,8 +653,6 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
         claimedHeadHashHex: chain.hashes[chain.hashes.length - 1] ?? "",
       }),
     );
-    // No enumeration + baseline landed after the fetch view (head 3) →
-    // retriable
     const missingAfterFetch = await checkCheckpointIntegrity({
       history: verified.history,
       environmentId: testEnvironmentId(ENV_ID),
@@ -718,8 +662,6 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
       fetchedAtHeadSeq: 3,
     });
     expect(missingAfterFetch).toMatchObject({ kind: "rejected", evidence: false });
-    // No enumeration + baseline already stored at the fetch view → MUST
-    // evidence rejection
     const missingStored = await checkCheckpointIntegrity({
       history: verified.history,
       environmentId: testEnvironmentId(ENV_ID),
@@ -729,8 +671,6 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
       fetchedAtHeadSeq: CHECKPOINT_SEQ,
     });
     expect(missingStored).toMatchObject({ kind: "rejected", evidence: true });
-    // An enumeration at the old position + baseline already stored at the
-    // fetch view → stale-distribution evidence rejection
     const staleStored = await checkCheckpointIntegrity({
       history: verified.history,
       environmentId: testEnvironmentId(ENV_ID),
@@ -745,8 +685,6 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
 
 describe("cross-layer: rule 2 does not substitute for floor rule (a) (ruling W)", () => {
   it("the floor rejects a value distribution at/above the checkpoint baseline but below the floor", async () => {
-    // Phase 1: establish the floor with va v3 (advanced past baseline v2,
-    // epoch 2)
     const v3 = await encryptValueFor({
       dek: dek2,
       projectId,
@@ -770,9 +708,6 @@ describe("cross-layer: rule 2 does not substitute for floor rule (a) (ruling W)"
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // Phase 2: roll back to checkpoint-time va v2. Rule 2 passes (v2 = same
-    // version and hash as the snapshot), but floor rule (a) drops it (below
-    // v3)
     await startPhase(env, [chainHandler(chain), pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("value-version rollback");
@@ -796,8 +731,6 @@ describe("the lease path (§14-2 — reaching the same implementation and the ba
   function leaseWire(overrides: PullOverrides = {}): LeaseWire {
     const served =
       overrides.checkpointSnapshot === undefined ? snapshot : overrides.checkpointSnapshot;
-    // The test's Wire* structural types match the api-schema distribution
-    // types structurally (support/crypto.ts)
     return {
       statement: envStatement,
       variables: overrides.variables ?? [

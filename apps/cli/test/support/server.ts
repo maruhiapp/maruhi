@@ -1,48 +1,26 @@
-// Wire-level HTTP mock server for tests (node:http).
-//
-// Why this was chosen (see the comparison in session-11.md): a wrangler dev
-// spawn can't use the server's fake-github (the fetch override of
-// @cloudflare/vitest-plugin) and needs D1 applied beforehand — while the CLI's
-// core, client-side verification (§5.1 / §6.3), needs "a server that returns
-// malformed responses", which a real server can't produce.
-// Responses are assembled with real crypto (support/crypto.ts) and the wire
-// shapes match the api-schema schemas.
-
 import { createServer, type Server } from "node:http";
 
-/**
- * The minimal structural type used for writing responses. Using @types/node's
- * ServerResponse directly breaks structural compatibility when multiple
- * @types/node versions coexist in the dependency tree — a method present in
- * only one of them (26.1 / 26.2's writeInformation) — so this is narrowed to
- * the 2 methods actually used, independent of the version skew.
- */
 interface ResponseWriter {
   writeHead(status: number, headers: Record<string, string>): unknown;
   end(payload: string): unknown;
 }
 
-/** One recorded request (body is parsed JSON when the content type is JSON). */
 export interface MockRequest {
   readonly method: string;
   readonly path: string;
-  /** Query string (for asserting filters / cursors of the audit read API). Duplicate keys: last wins. */
   readonly query: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly headers: Readonly<Record<string, string | string[] | undefined>>;
 }
 
-/** A canned response: `json` takes precedence over `bodyText`. */
 export interface MockResponse {
   readonly status: number;
   readonly json?: unknown;
   readonly bodyText?: string;
   readonly contentType?: string;
-  /** Extra headers (e.g. redirect Location). Use the dedicated field for content-type. */
   readonly headers?: Readonly<Record<string, string>>;
 }
 
-/** Returns a response to serve, or null to let the next handler try. */
 export type MockHandler = (
   request: MockRequest,
 ) => MockResponse | null | Promise<MockResponse | null>;
@@ -94,7 +72,6 @@ async function dispatch(
     }
     writeResponse(response, { status: 404, json: { error: "no handler" } });
   } catch (error) {
-    // An assertion failure inside a handler gets a 500 rather than hanging the test
     writeResponse(response, {
       status: 500,
       bodyText: error instanceof Error ? error.message : "handler error",
@@ -103,7 +80,6 @@ async function dispatch(
   }
 }
 
-/** An ephemeral-port HTTP server driven by a handler chain. */
 export class MockServer {
   readonly origin: string;
   readonly requests: MockRequest[] = [];
@@ -149,7 +125,6 @@ export class MockServer {
   }
 }
 
-/** Handler matching an exact method + path. */
 export function onRequest(
   method: string,
   path: string,

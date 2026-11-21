@@ -1,15 +1,3 @@
-// Acceptance verification of DEK wraps (AUTH_SPEC §12-6 = the server side of
-// the CRYPTO_SPEC §6.3 ghost-member countermeasure) and assembly of the
-// dek.registered event (AUDIT_SPEC §3.3).
-//
-// Device-axis (2026-09-19 DK — K3; design record dk-design.md §8 K3-1 / K3-4 /
-// K3-5): the recipient set R(E) expands into (person, device) pairs ×
-// effective scope, and the slot primary key includes the recipient's enc
-// public key. The signer of the registration signature (the calling
-// principal's device) is resolved from the first wrap (tried in ascending FP
-// order — key uniqueness means at most one device can verify), and the
-// remaining wraps are verified with that key alone.
-
 import type { EnvironmentId, ProjectId, UserId } from "@maruhi/core";
 import { cryptoEffect } from "@maruhi/core";
 import type { ChainMember, ChainState, KeyFingerprintHex } from "@maruhi/crypto";
@@ -40,12 +28,6 @@ import {
 import { MAX_DEK_WRAPS_PER_REQUEST } from "./policy.ts";
 import { ensureWrapRowCapacity } from "./quotas.ts";
 
-/**
- * Duplicate-detection key of (epoch × recipient class × recipient × device
- * key) — the deletion path (programs-dek). The class's source of truth is the
- * stored row's recipient_class column; beyond duplicate detection on this key,
- * the deletion path is guarded by matching the class against the stored value.
- */
 export function wrapRefKey(ref: {
   readonly epoch: number;
   readonly recipientClass: DekRecipientClass;
@@ -55,24 +37,6 @@ export function wrapRefKey(ref: {
   return `${ref.epoch}:${ref.recipientClass}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
 }
 
-/**
- * The **registration path**'s duplicate-detection key = same granularity as
- * the stored row's uniqueness unit (environment, epoch, recipient_user_id,
- * recipient_enc_pub_hex) — no class. A member's user_id (ULID) and a server's
- * FP (32 lowercase hex characters) never actually collide in format, but
- * add_member's target user_id is an intentionally unvalidated free-form string
- * (AUTH_SPEC §11-1), so the type does not separate them. Since 2026-10-25 the
- * consensus rules do for the current devices: §6.2's key uniqueness keeps
- * every key a grant has named off them, so past the recipient checks no
- * member wrap and server wrap of one request share a slot. A stored member
- * row can still hold a grant's slot (a member whose user_id is the server-key
- * FP of its own enc key, removed, and that key granted afterwards — the A-1
- * residue, which the class-agnostic stored-existence check answers with
- * 409). The key mirrors the primary key, not the rules, so any duplicate slot
- * fails to a 422 (duplicate-recipient) before acceptance, never to a
- * primary-key violation in the write phase = defect (500) that would block
- * that environment's rotations and creations (A-1).
- */
 function wrapStorageKey(ref: {
   readonly epoch: number;
   readonly recipientUserId: UserId | KeyFingerprintHex;
@@ -81,20 +45,6 @@ function wrapStorageKey(ref: {
   return `${ref.epoch}:${ref.recipientUserId}:${ref.recipientEncPubHex}`;
 }
 
-/**
- * The expected recipient count of a complete wrap set for (environment, epoch)
- * (AUTH_SPEC §12-4 / §12-6) = the size of the recipient set R(E)
- * (wrapRecipientsOf in @maruhi/crypto — the single definition of CRYPTO_SPEC
- * §6.2, which the client's wrap set is built from): every device of each
- * current member whose effective scope contains E, plus the server keys of
- * valid grant_servers whose disclosure scope contains the environment. Both
- * the exact match of initial registration and the count check of composite
- * requests use it (the acceptance boundary does not shift). No two elements
- * of R(E) share a wrap address (identifier + enc key, the granularity of the
- * storage key — wrapStorageKey): §6.2's key uniqueness keeps every key a
- * grant has named off the current devices, so a member whose user_id is a
- * grant's FP holds a key of its own and takes a slot of its own
- */
 export function expectedWrapRecipientCount(
   state: ChainState,
   environmentId: EnvironmentId,
@@ -102,7 +52,6 @@ export function expectedWrapRecipientCount(
   return wrapRecipientsOf(state, environmentId).length;
 }
 
-/** Per-request wrap-count limit (shared by the registration and deletion paths). Returns null when ok. */
 export function checkWrapRequestCount(count: number): DataRejection | null {
   if (count > MAX_DEK_WRAPS_PER_REQUEST) {
     return {
@@ -114,22 +63,6 @@ export function checkWrapRequestCount(count: number): DataRejection | null {
   return null;
 }
 
-/**
- * Recipient identification (per class — AUTH_SPEC §12-6). member = the user_id
- * is a current member, the enc public key strictly equals one of that person's
- * **live device keys**, and the target environment is inside that device's
- * **effective scope** (out of scope is 422 `scope-out-of-range` — 2026-09-15
- * ES K3 / 2026-09-19 DK; the device-axis version of CRYPTO_SPEC §6.3's
- * "accepting a wrap addressed to a revoked device or a device outside its
- * scope is forbidden" = the ghost-member countermeasure).
- * server = both the server key FP at the recipientUserId position and the enc
- * public key strictly match the payload of a chain-derived valid grant_server,
- * and the target environment is inside the disclosure scope (out of scope is
- * the same 422). The reason-code order (identify → key → scope) is the same
- * across classes, and the scope test is R(E)'s own predicate (the member
- * side is @maruhi/crypto's deviceReceivesEnvironment, the grant side its
- * scope_environments), the one the expected count above applies.
- */
 function checkServerRecipient(
   state: ChainState,
   environmentId: EnvironmentId,
@@ -157,9 +90,6 @@ function checkMemberRecipient(
   if (member === undefined) {
     return { kind: "dek-wrap-rejected", reason: "recipient-not-member" };
   }
-  // The recipient's key = one of that person's live device keys (the device
-  // expansion of R(E) — AUTH_SPEC §12-6). A wrap addressed to a revoked or
-  // unregistered key falls to the non-matching side
   const device = [...member.devices.values()].find(
     (candidate) => candidate.encPubHex === wrap.recipientEncPubHex,
   );
@@ -182,14 +112,6 @@ function checkWrapRecipient(
     : checkMemberRecipient(state, environmentId, wrap);
 }
 
-/**
- * The predicate for a reader's self-backfill (AUTH_SPEC §12-3 — 2026-09-19 DK;
- * design record §8 K3-5): every wrap has recipient class member, recipient =
- * the calling principal, and an enc public key that is one of the calling
- * principal's live device keys. If any wrap deviates, member-or-higher is
- * required as before. The check is id + key (id alone would mistake a wrap
- * addressed to someone else's key for "addressed to me").
- */
 export function allRecipientsAreOwnDevices(
   caller: ChainMember,
   wraps: readonly DekWrapInput[],
@@ -203,7 +125,6 @@ export function allRecipientsAreOwnDevices(
   );
 }
 
-/** Per-wrap check (split for cognitive complexity). Returns null when ok. */
 function checkOneWrap(
   state: ChainState,
   environmentId: EnvironmentId,
@@ -218,9 +139,6 @@ function checkOneWrap(
   if (recipientRejection !== null) {
     return recipientRejection;
   }
-  // Duplicate detection at storage granularity (class-agnostic). The same
-  // (epoch, recipient, key) in different classes cannot coexist as stored rows
-  // either, so they are rejected for the same reason as same-class duplicates
   const key = wrapStorageKey(wrap);
   if (seen.has(key)) {
     return { kind: "dek-wrap-rejected", reason: "duplicate-recipient" };
@@ -249,7 +167,6 @@ function checkWrapRecipients(
   return null;
 }
 
-/** Verify one wrap's registration signature with one key (the signed signer = the calling principal — §12-6). */
 const verifyOneWrapSignature = (
   projectId: ProjectId,
   environmentId: EnvironmentId,
@@ -268,32 +185,18 @@ const verifyOneWrapSignature = (
         recipientEncPubHex: wrap.recipientEncPubHex,
         encHex: wrap.encHex,
         ciphertextHex: wrap.ciphertextHex,
-        // The signed signer = the calling principal (§12-6). Key-duplicated
-        // members are forbidden by the chain layer (CRYPTO_SPEC §6.2), but
-        // even if one existed, reattribution is caught here (an independent
-        // defense layer of §5.1)
         signerUserId: signer.userId,
       },
       signatureHex: wrap.signatureHex,
       signerPublicKey,
     }),
   ).pipe(
-    // Fold every crypto failure — including InvalidInput (structural
-    // badness) — into signature-rejected (on a Schema-validated wire,
-    // effectively only DekWrapSignatureInvalid reaches here)
     Effect.mapError(() => rejectData({ kind: "dek-wrap-rejected", reason: "signature-invalid" })),
   );
 
-/** Import a sig public key derived from a verified chain (failure is a storage / verifier bug = defect). */
 const importSignerKey = Effect.fn("dek-wraps.importSignerKey")(function* (
   signer: MemberWithDevice,
 ) {
-  // Note: the import succeeding below also relies on the current runtime
-  // behavior that "WebCrypto's raw Ed25519 import only checks length" (the
-  // target keys of add_member / add_device are not imported at chain
-  // acceptance). If the runtime introduces point validation, requests from a
-  // member who holds a bad 32-byte key become defects (self-harm only;
-  // unusable as an attack)
   const signerKeyBytes = decodeHex(signer.sigPubHex);
   if (signerKeyBytes === null) {
     return yield* Effect.die(new Error("chain-derived signing key is not valid hex"));
@@ -301,19 +204,6 @@ const importSignerKey = Effect.fn("dek-wraps.importSignerKey")(function* (
   return yield* cryptoEffect(() => importSigningPublicKey(signerKeyBytes)).pipe(Effect.orDie);
 });
 
-/**
- * §12-6 / CRYPTO_SPEC §5.1: verify every wrap's registration signature and
- * return the signing device. Since signer = the API calling principal is an
- * exact-match acceptance condition, the verification key is the calling
- * principal's **chain-derived sig public key at acceptance time** (= the key
- * at registration time; all operations are serialized under the permit). The
- * device is resolved on the first wrap (`withSigningDevice` — design record §8
- * K3-1) and the rest are verified with that key alone (not all-wraps ×
- * all-devices). A wrap signed by someone else (including a third party
- * re-injecting into a deleted slot) falls to signature-invalid here. With no
- * wraps, returns null (the device is undetermined — the caller's count check
- * rejects with recipient-missing).
- */
 const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(function* (
   projectId: ProjectId,
   environmentId: EnvironmentId,
@@ -337,15 +227,6 @@ const ensureWrapSignatures = Effect.fn("dek-wraps.ensureWrapSignatures")(functio
   return signer;
 });
 
-/**
- * Per-epoch set check (§12-6): initial registration (no existing wraps)
- * requires an exact match against the recipient set R(E) (every device of each
- * current member whose effective scope contains E + the server keys of valid
- * grant_servers inside the disclosure scope) — recipients are already checked,
- * so a count match = complete; the check is applied identically across
- * recipient classes. Appending to an existing epoch rejects duplicates of an
- * existing (epoch, recipient, device key).
- */
 const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
   environmentId: EnvironmentId,
   state: ChainState,
@@ -363,10 +244,6 @@ const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
       continue;
     }
     for (const wrap of epochWraps) {
-      // The existence check is at the same granularity as the storage key
-      // (environment, epoch, recipient_user_id, recipient_enc_pub_hex) — an
-      // identical (ID, key) in a different class would still be a primary-key
-      // collision on insert, so fail it to a 409 here
       const stored = yield* store.wrapStoredRecipient(
         environmentId,
         epoch,
@@ -374,12 +251,6 @@ const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
         wrap.recipientEncPubHex,
       );
       if (stored !== null) {
-        // Return the occupying wrap's stored recipient enc public key
-        // (AUTH_SPEC §12-6). Under the device-axis primary key it always
-        // equals the key that was sent (an old-key wrap is a separate slot =
-        // it does not block registration of the new key), so its role as
-        // material shrinks to the "already registered = idempotent" decision
-        // — the wire is unchanged (design record §8 K3-3)
         return yield* rejectData({
           kind: "dek-wrap-exists",
           epoch,
@@ -391,20 +262,6 @@ const checkWrapSets = Effect.fn("dek-wraps.checkWrapSets")(function* (
   }
 });
 
-/**
- * Acceptance verification of a wrap set (§12-6) + quantity policy (§12-8) +
- * registration-signature verification (CRYPTO_SPEC §5.1). Insertion happens in
- * the caller's synchronous write phase. Every wrap-insertion path — the
- * standalone registration API (backfill, repair re-registration) and composite
- * requests (environment creation, rotation — composite-programs.ts) — passes
- * through here, so wiring the cumulative-row limit and signature requirement
- * once in this place suffices. Signature verification (Ed25519 × count) is the
- * most expensive step, so it runs after all the cheap checks (count,
- * recipients, duplicates, sets) pass.
- * Return value = the signing device (the caller uses it for the second-stage
- * authorization — ensureDevicePermission — and as the signer FP for writes and
- * audit. null when there are no wraps).
- */
 export const ensureWrapSetAcceptable = Effect.fn("dek-wraps.ensureWrapSetAcceptable")(function* (
   projectId: ProjectId,
   environmentId: EnvironmentId,
@@ -422,18 +279,6 @@ export const ensureWrapSetAcceptable = Effect.fn("dek-wraps.ensureWrapSetAccepta
   return yield* ensureWrapSignatures(projectId, environmentId, caller, wraps);
 });
 
-/**
- * dek.registered (AUDIT_SPEC §3.3): one row per recipient (the §5.1 column
- * structure = one target per row). A member recipient goes on target_user_id,
- * so the (target_user_id, seq) index directly yields "the registration history
- * of wraps addressed to this recipient". A server recipient has no user_id
- * (the §2 actor model), so the server key FP goes on target_key_fingerprint
- * (the same column as chain.server_granted — §3.4 — ; do not mix
- * non-provider identifiers into the user_id column).
- * actor_key_fingerprint carries the signer FP of the registration signature
- * (the signing device) (§3.3 — session 07 ruling B, "record E's signer FP so
- * it can be cross-checked").
- */
 export function dekRegisteredEvent(
   actor: DataActor,
   signer: { readonly keyFingerprintHex: KeyFingerprintHex },

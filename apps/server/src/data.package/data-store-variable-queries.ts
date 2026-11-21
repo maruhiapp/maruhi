@@ -1,7 +1,3 @@
-// The variable-side read queries of the data store (variables, variable
-// meta statements, checkpoint snapshot reads) — assembled into
-// DataStoreShape by dataStoreLayer in data-store.ts.
-
 import type { EnvironmentId, VariableId } from "@maruhi/core";
 import { decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -81,11 +77,6 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map(variableStatementOf),
     ),
-  // The active side of deletedVariableStatements (the metadata-only
-  // mode — §12-7): the latest statements only. Values and DEKs are not
-  // selected (never distributed, so never touched). The statements of
-  // declared variables are included too (the latest form of every
-  // non-deleted variable — status carries the discrimination)
   activeVariableStatements: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
@@ -103,10 +94,6 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map(variableStatementOf),
     ),
-  // The latest statements of declared variables (the bundled material
-  // of a value-bearing pull — §12-7; they never appear in
-  // latestVersions because no value or version exists: the JOIN
-  // naturally excludes the rows with latest_version 0)
   declaredVariableStatements: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
@@ -135,10 +122,6 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()[0];
       return countsOf(row);
     }),
-  // The recompute input of variables_digest (§12-5 (7)): the latest
-  // form of every variable, tombstones included. The canonical order
-  // (byte-ascending variable_id) is established internally by crypto's
-  // computeVariablesDigest, so the order is not canonicalized here
   variableDigestEntries: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
@@ -156,19 +139,11 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         .toArray()
         .map((row): VariableDigestEntryRow => ({
           variableId: decodeVariableId(stringColumn(row, "variable_id")),
-          // declared naturally rides along as an entry's status value
-          // (CRYPTO_SPEC §4.3 — the canonical form and encoder are
-          // unchanged)
           status: storedVariableStatus(stringColumn(row, "status")),
           metaVersion: numberColumn(row, "meta_version"),
           metaSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
     ),
-  // The recompute input of a checkpoint values_digest (§6.4): each
-  // active variable's latest version and stored value_signed_bytes
-  // hash. The canonical order (byte-ascending variable_id) is
-  // established internally by crypto's computeEnvValuesDigest, so the
-  // order is not canonicalized here
   checkpointValueEntries: (environmentId: EnvironmentId) =>
     Effect.sync(() =>
       sql
@@ -190,8 +165,6 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
           valueSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
     ),
-  // The distributed checkpoint snapshot (§12-7 — the stored rows
-  // themselves)
   checkpointSnapshot: (environmentId: EnvironmentId) =>
     Effect.sync((): CheckpointSnapshotValue | null => {
       const row = sql

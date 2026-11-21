@@ -1,9 +1,3 @@
-// Checks for CRYPTO_SPEC §5 (DEK wrap).
-// Because panva hpke cannot derandomize a single-shot Seal (spike-c finding),
-// the fixed vectors (generated via hpke-js ekm derandomize) are verified in the
-// Open direction, and the Seal direction is covered by round-trip. The official
-// RFC 9180 vectors are in rfc9180.ts.
-
 import {
   buildDekWrapInfo,
   computeServerKeyFingerprint,
@@ -19,7 +13,6 @@ import dekWrapVectors from "../../test-vectors/dek-wrap.json" with { type: "json
 import { testEnvironmentId, testProjectId, testUserId } from "../support/fixture.ts";
 import { type CheckResult, Checks, fromHex, toHex } from "./support.ts";
 
-/** Required fixture string (verifying read of a field made optional by the JSON union type). */
 function fixtureString(value: string | undefined, name: string): string {
   if (value === undefined) {
     throw new Error(`dek-wrap.json: ${name} missing`);
@@ -34,7 +27,6 @@ if (baseVector === undefined) {
 const base = baseVector;
 const baseRecipientUserId = fixtureString(base.recipient_user_id, "basic recipient_user_id");
 
-// Recipient class server (§9): the recipient position of info holds the server key FP
 const serverVectorFound = dekWrapVectors.vectors.find((v) => v.name === "server-basic");
 if (serverVectorFound === undefined) {
   throw new Error("dek-wrap.json: server-basic vector missing");
@@ -59,7 +51,6 @@ function serverContext(): DekWrapContext {
     projectId: testProjectId(serverVector.project_id),
     environmentId: testEnvironmentId(serverVector.environment_id),
     epoch: serverVector.epoch,
-    // §9: the recipient_user_id position uses the server key FP (lowercase hex)
     recipientUserId: testUserId(serverFingerprintHex),
   };
 }
@@ -81,7 +72,6 @@ async function serverKeyPair() {
 async function vectorOpenChecks(c: Checks): Promise<void> {
   c.push("dek-wrap: info construction", toHex(buildDekWrapInfo(baseContext())) === base.info_hex);
 
-  // Open of the fixed vector (the KeyPair is imported non-extractable)
   const pair = await recipientKeyPair();
   if (!pair.ok) {
     c.push("dek-wrap: vector open", false, "recipient key import failed");
@@ -95,11 +85,6 @@ async function vectorOpenChecks(c: Checks): Promise<void> {
   c.push("dek-wrap: vector open == DEK", dek.ok && toHex(dek.value) === base.dek_hex);
 }
 
-/**
- * A single info-swap negative: the vector's open_info_hex matches the info
- * construction, and Open under that context becomes DekUnwrapFailed (shared by
- * negativeChecks / the server cases).
- */
 async function infoNegativeCheck(
   c: Checks,
   input: {
@@ -124,9 +109,6 @@ async function infoNegativeCheck(
 }
 
 async function serverVectorChecks(c: Checks): Promise<void> {
-  // Recipient class server (§9): the implementation recomputes
-  // FP = SHA-256(server_enc_pub)[:16], and a construction that puts the FP in
-  // the recipient position of info matches the vector
   const fp = await computeServerKeyFingerprint(fromHex(dekWrapVectors.server_keypair.pkSm_hex));
   c.push(
     "dek-wrap: server key fingerprint matches vector",
@@ -154,10 +136,8 @@ async function serverVectorChecks(c: Checks): Promise<void> {
     "dek-wrap: server vector open == DEK",
     dek.ok && toHex(dek.value) === serverVector.dek_hex,
   );
-  // The same epoch DEK as basic (one DEK × multiple recipient classes — the §7 complete wrap set shape)
   c.push("dek-wrap: server vector wraps the same DEK", serverVector.dek_hex === base.dek_hex);
 
-  // Transplant negatives across recipient classes (build the server-addressed info with a member user_id / a different FP)
   const serverWrapped = {
     encHex: serverVector.enc_hex,
     ciphertextHex: serverVector.ciphertext_hex,
@@ -175,7 +155,6 @@ async function serverVectorChecks(c: Checks): Promise<void> {
     ...serverWrapped,
   });
 
-  // The reverse-direction transplant (a server FP in the recipient position of a member-addressed wrap) also fails Open
   const memberPair = await recipientKeyPair();
   if (!memberPair.ok) {
     c.push("dek-wrap negative: member-info-server-fp", false, "recipient key import failed");
@@ -190,7 +169,6 @@ async function serverVectorChecks(c: Checks): Promise<void> {
   });
 }
 
-/** The "different server key FP" of the server-info-fp-mismatch vector (first byte flipped). */
 function wrongServerFingerprintHex(): string {
   const fp = fromHex(dekWrapVectors.server_keypair.server_key_fingerprint_hex);
   const flipped = fp.slice();
@@ -205,8 +183,6 @@ async function negativeChecks(c: Checks): Promise<void> {
     return;
   }
 
-  // The info-family negatives are reproduced as context swaps; also confirm
-  // the info construction matches the vector's open_info_hex
   const contexts: readonly { name: string; context: DekWrapContext }[] = [
     { name: "info-epoch-mismatch", context: { ...baseContext(), epoch: 4 } },
     {
@@ -228,7 +204,6 @@ async function negativeChecks(c: Checks): Promise<void> {
     });
   }
 
-  // Tampering with enc (the encapsulated public key)
   const encTampered = dekWrapVectors.negative.find((n) => n.name === "enc-tampered");
   if (encTampered?.enc_hex === undefined) {
     c.push("dek-wrap negative: enc-tampered", false, "vector missing");
@@ -246,7 +221,6 @@ async function negativeChecks(c: Checks): Promise<void> {
 }
 
 async function invalidContextChecks(c: Checks): Promise<void> {
-  // A non-(non-negative safe integer) epoch returns InvalidInput rather than throwing
   const recipient = await generateEncryptionKeyPair();
   try {
     const wrapped = await wrapDek({
@@ -272,7 +246,6 @@ async function invalidContextChecks(c: Checks): Promise<void> {
 }
 
 async function roundtripChecks(c: Checks): Promise<void> {
-  // Seal direction: self round-trip (the recipient is a generated, non-extractable key)
   const recipient = await generateEncryptionKeyPair();
   const dek = generateDek();
   const wrapped = await wrapDek({
@@ -291,7 +264,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("dek-wrap: roundtrip", unwrapped.ok && toHex(unwrapped.value) === toHex(dek));
 
-  // Swapping the context fails Open
   const wrongContext = await unwrapDek({
     recipientKeyPair: recipient,
     wrapped: wrapped.value,
@@ -299,7 +271,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
   });
   c.push("dek-wrap: roundtrip wrong context rejected", !wrongContext.ok);
 
-  // A different recipient key fails Open
   const otherRecipient = await generateEncryptionKeyPair();
   const wrongKey = await unwrapDek({
     recipientKeyPair: otherRecipient,

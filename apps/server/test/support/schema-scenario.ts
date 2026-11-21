@@ -1,6 +1,3 @@
-// Shared helpers for layout v3 (valueless schema) integration tests.
-// Assumes the fixture of data-scenario.ts (registerDataScenario).
-
 import { encryptValue } from "./data-crypto.ts";
 import { testEnvironmentId, testProjectId, testVariableId } from "./data-crypto.ts";
 import { MEMBER, projectId, requestJson } from "./data-fixture.ts";
@@ -13,8 +10,6 @@ import {
   varStatements,
 } from "./data-scenario.ts";
 
-/** v3 value-bundled creation (§12-5 — active + schema field). Advances the
- * record on 200. */
 export async function createVariableV3Request(input: {
   readonly variableId: string;
   readonly name: string;

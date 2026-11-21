@@ -1,28 +1,3 @@
-// Integration tests for the acceptance surface of standalone (periodic)
-// checkpoints and GET /audit-head
-// (AUTH_SPEC §16-2 / CRYPTO_SPEC §6.4 / AUDIT_SPEC §5.1).
-//
-// - Two authorization levels (the effective-permission matrix): an empty
-//   audit head = write scope × member or above; a non-empty one =
-//   effective admin (insufficient → 403)
-// - The 5 reasons of acceptance-time cross-checking (manifest-mismatch /
-//   values-digest-mismatch / audit-head-unknown / audit-head-stale /
-//   environment-deleted), including refusing to notarize a
-//   manifest_version that does not exist yet
-// - Atomicity (a rejection leaves nothing behind — no chain, mirror, or
-//   snapshot row) and path-identity of the snapshot preservation
-//   discipline (re-checkpointing only A preserves B's baseline — §16-2
-//   "identical regardless of path")
-// - Audit head: lazy-materialize initialization (recomputation from
-//   existing rows), advancement on row appends, the position floor
-//   (audit-head-stale), and vacuous truth on the first one
-//
-// The consensus rules' reason codes and check order themselves (role /
-// audit role / unknown / epoch / regression) are already pinned by the
-// crypto layer's 4-runtime tests (chain-entries.json); here we only
-// exercise the representatives of the API-facing surface
-// (unknown-environment / epoch / reader role) against real data.
-
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
@@ -62,19 +37,12 @@ import { callProjectDo, queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-// The same seed values as data-fixture.ts's GITHUB_IDS (copied since that one is private)
 const GITHUB_IDS: Record<string, number> = {
   [OWNER]: 9001,
   [MEMBER]: 9002,
   [READER]: 9003,
 };
 
-/**
- * A write-scope token limited to this project (b / d of the effective-
- * permission matrix). Issued under a distinct name so same-name rotation
- * does not revoke the fixture's default token (the default name of CLI
- * login).
- */
 async function writeScopedToken(userId: string): Promise<string> {
   const githubId = GITHUB_IDS[userId];
   if (githubId === undefined) {
@@ -87,7 +55,6 @@ async function writeScopedToken(userId: string): Promise<string> {
   );
 }
 
-/** The stored latest-manifest tuple coordinates (material for the match side of acceptance-time cross-checking). */
 async function currentManifestTuple(
   environmentId: string,
 ): Promise<{ manifestVersion: number; manifestSigHashHex: string }> {
@@ -105,7 +72,6 @@ async function currentManifestTuple(
   };
 }
 
-/** A tuple matching the state stored at acceptance time (epoch defaults to 1 — unless a rotate intervenes). */
 async function matchingTuple(
   environmentId: string,
   overrides?: Partial<CheckpointEnvironmentEntry>,
@@ -121,7 +87,6 @@ async function matchingTuple(
   };
 }
 
-/** Send a standalone checkpoint to generic chain append (§16-2). On 200 the head advances. */
 async function sendStandaloneCheckpoint(input: {
   readonly actorUserId: string;
   readonly environments: readonly CheckpointEnvironmentEntry[];
@@ -164,7 +129,6 @@ async function auditHeadOk(authToken: string): Promise<string> {
   return body.auditHeadHashHex;
 }
 
-/** The number of chain.checkpointed mirror rows (material for checking atomicity / mirror recording). */
 async function checkpointMirrorCount(): Promise<number> {
   const rows = await queryProjectDo(
     projectId,
@@ -189,11 +153,7 @@ async function snapshotRow(
 
 describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", () => {
   it("returns the cumulative hash to effective admin, initializing the derived column from existing rows", async () => {
-    // The first access recomputes from the existing audit rows (the base
-    // chain's mirrors) = this doubles as the §5.1 introduction migration
-    // (lazy materialize)
     const first = await auditHeadOk(token(OWNER));
-    // Idempotent: a re-fetch returns the same head (as long as no rows were added)
     expect(await auditHeadOk(token(OWNER))).toBe(first);
   });
 
@@ -208,7 +168,6 @@ describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", ()
   it("rejects non-admin chain roles with 403 and strangers with 404 (§11-2 concealment)", async () => {
     expect((await fetchAuditHead(token(MEMBER))).status).toBe(403);
     expect((await fetchAuditHead(token(READER))).status).toBe(403);
-    // A half-scoped shortfall (admin role × write token) is also a 403 (the min of effective permissions)
     expect((await fetchAuditHead(await writeScopedToken(OWNER))).status).toBe(403);
   });
 
@@ -226,15 +185,12 @@ describe("GET /projects/:id/audit-head(AUTH_SPEC §16-2 / AUDIT_SPEC §5.1)", ()
 describe("two authorization levels for standalone checkpoints (the effective-permission matrix)", () => {
   it("(a) admin role × admin token + a fresh audit head is accepted, (d) member × write token + empty head is accepted", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // (d): member role × write scope × empty audit head = a data-layer checkpoint
     const memberAttempt = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
       authToken: await writeScopedToken(MEMBER),
     });
     expect(memberAttempt.response.status).toBe(200);
-    // (a): notarization of an attestation fetched after the CAS parent
-    // settled, at effective permission admin
     const head = await auditHeadOk(token(OWNER));
     const ownerAttempt = await sendStandaloneCheckpoint({
       actorUserId: OWNER,
@@ -293,21 +249,14 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
     const manifest = await currentManifestTuple(ENV);
     const headBefore = fixture.head.seq;
     const mirrorsBefore = await checkpointMirrorCount();
-    // The shape where a malicious member notarizes a future
-    // manifest_version that does not exist, jamming every later
-    // legitimate manifest with checkpoint-regressed. The consensus rule
-    // (regression = non-regression) passes it, but the match against the
-    // latest stored manifest at acceptance (§6.4) drops it
     const attempt = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV, { manifestVersion: manifest.manifestVersion + 5 })],
     });
     await expectMismatch(attempt.response, "manifest-mismatch");
-    // Atomicity: the rejection leaves nothing on the chain or the mirrors (no contamination of the baseline)
     const chain = await requestJson("GET", "/chain", token(OWNER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
     expect(await checkpointMirrorCount()).toBe(mirrorsBefore);
-    // A notarization of the legitimate current version is still accepted afterwards (not jammed)
     const legitimate = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
@@ -318,10 +267,6 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
   it("rejects a stale manifest reference (manifest-mismatch — the issuer's view is behind)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const stale = await matchingTuple(ENV);
-    // A meta op (variable creation) advances manifestVersion → the stale
-    // reference no longer matches. Since the consensus rule's regression
-    // (non-regression) allows equality, the rejection is on the
-    // acceptance-time cross-check side
     await createVariableOk(dek, "var-meta-advance-0001", "API_KEY", "sk-alpha");
     const attempt = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
@@ -332,14 +277,7 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
 
   it("refuses a live environment with no stored manifest as a server fault, not a mismatch (0.28-draft)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // Taken before the row goes: the tuple names the manifest the
-    // environment had, so only the missing row is wrong
     const tuple = await matchingTuple(ENV);
-    // The creation composite writes the manifest atomically, so a live
-    // environment without one can only come from a corrupted DO or a
-    // crafted snapshot — an invariant violation (AUTH_SPEC §12-5 (6) /
-    // §16-2), the same 500 as every other surface, never a 422 that
-    // reads as the issuer's stale view
     await queryProjectDo(
       projectId,
       "DELETE FROM environment_manifests WHERE environment_id = ?",
@@ -351,21 +289,15 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
       actorUserId: MEMBER,
       environments: [tuple],
     });
-    // The rejected DO RPC makes workerd log an "uncaught exception" line
-    // even though the worker catches it — expected
     expect(attempt.response.status).toBe(500);
-    // The defect body carries no environment data
     const body = await attempt.response.text();
     expect(body).not.toContain(ENV);
     expect(body).not.toContain("manifestVersion");
-    // Any defect would answer the same 500; the direct call on the
-    // instance pins which one fires (append's checkpoint acceptance)
     await expect(
       callProjectDo(projectId, (instance) =>
         instance.append(fixture.head.hashHex, attempt.entry, MEMBER),
       ),
     ).rejects.toThrow("environment manifest row missing");
-    // Atomicity: nothing reaches the chain or the mirrors
     const chain = await requestJson("GET", "/chain", token(OWNER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
     expect(await checkpointMirrorCount()).toBe(mirrorsBefore);
@@ -393,10 +325,6 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
 
   it("rejects an attestation older than the previous checkpoint's mirror row (audit-head-stale) and accepts a refetched one", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // Fetch the attestation before creating "the previous checkpoint's
-    // mirror row" that becomes the position floor's reference (the shape
-    // of an issuance that did not re-fetch the attestation after a CAS
-    // race — §6.4)
     const staleHead = await auditHeadOk(token(OWNER));
     const first = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
@@ -409,7 +337,6 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
       auditHeadHashHex: staleHead,
     });
     await expectMismatch(attempt.response, "audit-head-stale");
-    // Accepted once the attestation is re-fetched (the §16-2 retry)
     const refetched = await auditHeadOk(token(OWNER));
     const retried = await sendStandaloneCheckpoint({
       actorUserId: OWNER,
@@ -420,9 +347,6 @@ describe("acceptance-time cross-checking for standalone checkpoints (the 5 reaso
   });
 
   it("does not impose the position floor on the project's first checkpoint (vacuously true — the §6.4 base case)", async () => {
-    // The base chain has no environments = no checkpoint exists yet. A
-    // zero-element (zero-environment) + notarization is valid under the
-    // consensus rules (§6.2), and no position floor is imposed
     const head = await auditHeadOk(token(OWNER));
     const attempt = await sendStandaloneCheckpoint({
       actorUserId: OWNER,
@@ -470,7 +394,6 @@ describe("audit-head notarization on a boundary checkpoint (§16-2 — the same 
   it("accepts a rotate composite whose boundary checkpoint attests a fresh audit head (effective admin)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const head = await auditHeadOk(token(OWNER));
-    // For the positive case that proceeds to acceptance, pass the wrapped DEK's own commitment
     const next = makeDek();
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -506,7 +429,6 @@ describe("audit-head notarization on a boundary checkpoint (§16-2 — the same 
   });
 });
 
-/** The stored snapshot enumeration (the expectation for distribution — the §16-2 stored rows themselves). */
 async function storedSnapshotEnumeration(
   environmentId: string,
 ): Promise<readonly { variableId: string; version: number; valueSigHashHex: string }[]> {
@@ -544,18 +466,15 @@ async function pullBody(environmentId: string): Promise<PullSnapshotBody> {
 describe("distribution of the value snapshot (AUTH_SPEC §12-7 / §14-2)", () => {
   it("value pull bundles the stored enumeration of the latest covering checkpoint", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // The creation composite's boundary checkpoint (empty enumeration) is the baseline from birth (§12-4)
     const creation = await pullBody(ENV);
     const creationRow = await snapshotRow(ENV);
     expect(creation.checkpointSnapshot).toBeDefined();
     expect(creation.checkpointSnapshot?.chainSeq).toBe(creationRow?.chainSeq);
     expect(creation.checkpointSnapshot?.values).toEqual([]);
-    // Variable creation issues no checkpoint — the distributed enumeration stays the stored row (empty)
     await createVariableOk(dek, "var-m3-0001", "DATABASE_URL", "postgres://alpha");
     const beforeCheckpoint = await pullBody(ENV);
     expect(beforeCheckpoint.checkpointSnapshot?.chainSeq).toBe(creationRow?.chainSeq);
     expect(beforeCheckpoint.checkpointSnapshot?.values).toEqual([]);
-    // After a standalone checkpoint is accepted, the enumeration stored at acceptance is distributed verbatim
     const accepted = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
@@ -584,7 +503,6 @@ describe("path-identity of the snapshot preservation discipline (§16-2 — subs
     const dekA = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dekA, "var-a-0001", "DATABASE_URL", "postgres://alpha");
     await createEnvironmentOk(fixture, ENV_B, "Batch");
-    // Establish the baseline with a standalone checkpoint covering both A + B
     const both = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV), await matchingTuple(ENV_B)],
@@ -594,25 +512,17 @@ describe("path-identity of the snapshot preservation discipline (§16-2 — subs
     const baselineB = await snapshotRow(ENV_B);
     expect(baselineA?.chainSeq).toBe(both.entry.seq);
     expect(baselineB?.chainSeq).toBe(both.entry.seq);
-    // Re-checkpoint A alone (a subset is valid under the consensus rules — §6.2)
     const onlyA = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
     });
     expect(onlyA.response.status).toBe(200);
     expect((await snapshotRow(ENV))?.chainSeq).toBe(onlyA.entry.seq);
-    // B's baseline (its latest covering checkpoint) is preserved — an
-    // environment not in the payload keeps its existing snapshot
-    // unchanged (§16-2)
     expect(await snapshotRow(ENV_B)).toEqual(baselineB);
-    // Distribution (§12-7) also tracks each environment's latest
-    // covering checkpoint: A serves the enumeration at the
-    // re-checkpoint's position, B at the original position
     expect((await pullBody(ENV)).checkpointSnapshot?.chainSeq).toBe(onlyA.entry.seq);
     const pulledB = await pullBody(ENV_B);
     expect(pulledB.checkpointSnapshot?.chainSeq).toBe(both.entry.seq);
     expect(pulledB.checkpointSnapshot?.values).toEqual(await storedSnapshotEnumeration(ENV_B));
-    // A mirror row (chain.checkpointed) is recorded per acceptance (AUDIT_SPEC §3.4)
     const mirrors = await queryProjectDo(
       projectId,
       "SELECT chain_seq FROM audit_events WHERE event = 'chain.checkpointed' AND chain_seq IN (?, ?)",
@@ -624,7 +534,6 @@ describe("path-identity of the snapshot preservation discipline (§16-2 — subs
 });
 
 describe("skipping snapshot-enumeration replacement (values digest match — the §6.4 stored state is unchanged)", () => {
-  /** The rowids of the environment's enumeration rows (material to observe whether replacement = DELETE + re-INSERT happened). */
   async function snapshotRowids(environmentId: string): Promise<readonly number[]> {
     const rows = await queryProjectDo(
       projectId,
@@ -663,9 +572,6 @@ describe("skipping snapshot-enumeration replacement (values digest match — the
     const firstValues = await storedSnapshotEnumeration(ENV);
     expect(firstValues.length).toBe(1);
     const firstTuple = await storedTupleRow(ENV);
-    // Push the max rowid up with another environment's row (if
-    // replacement happens, ENV's rows get fresh rowids — a marker to make
-    // the observation reliable; deleted at the end)
     await queryProjectDo(
       projectId,
       `INSERT INTO checkpoint_snapshot_values (environment_id, variable_id, version, value_sig_hash_hex)
@@ -673,7 +579,6 @@ describe("skipping snapshot-enumeration replacement (values digest match — the
     );
     const rowidsBefore = await snapshotRowids(ENV);
 
-    // (1) Re-checkpoint with no value change: the enumeration is identical, so it is not replaced
     const unchanged = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
       environments: [await matchingTuple(ENV)],
@@ -681,7 +586,6 @@ describe("skipping snapshot-enumeration replacement (values digest match — the
     expect(unchanged.response.status).toBe(200);
     const unchangedTuple = await storedTupleRow(ENV);
     expect(unchangedTuple.valuesDigestHex).toBe(firstTuple.valuesDigestHex);
-    // The tuple-coordinates row is always updated (latest covering checkpoint = this time's seq / hash)
     expect(unchangedTuple.chainSeq).toBe(unchanged.entry.seq);
     expect(unchangedTuple.chainSeq).not.toBe(firstTuple.chainSeq);
     expect(unchangedTuple.entryHashHex).not.toBe(firstTuple.entryHashHex);
@@ -692,7 +596,6 @@ describe("skipping snapshot-enumeration replacement (values digest match — the
     expect(pulled.checkpointSnapshot?.entryHashHex).toBe(unchangedTuple.entryHashHex);
     expect(pulled.checkpointSnapshot?.values).toEqual(firstValues);
 
-    // (2) Re-checkpoint after a value change: the digest changes and the enumeration is fully replaced
     await createVariableOk(dek, "var-skip-0002", "REDIS_URL", "redis://beta");
     const changed = await sendStandaloneCheckpoint({
       actorUserId: MEMBER,
@@ -707,7 +610,6 @@ describe("skipping snapshot-enumeration replacement (values digest match — the
       "var-skip-0001",
       "var-skip-0002",
     ]);
-    // digest of stored enumeration = the tuple row's digest (the invariant the skip judgment rests on)
     expect(
       await valuesDigestOf(
         changedValues.map((row) => ({ ...row, variableId: testVariableId(row.variableId) })),

@@ -1,13 +1,3 @@
-// The run procedures of `maruhi sync`'s http driver (sync-http.ts):
-// runBatch — the entry point sync-plan.ts's runBatches folds per batch
-// — and the pieces it is built from. A target's list is read once for
-// name/ID matching only (values are never read); a create-or-update
-// write then sends one variable at a time, stopping at the first
-// failure (a create that hits an existing key re-reads the list and
-// switches to an update); a lookup delete matches the target's
-// environment in the list, then deletes per looked-up ID — or per item
-// when the match was the item's last values.
-
 import { Effect } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
@@ -35,16 +25,10 @@ import {
   renderQuery,
 } from "./sync-http.ts";
 
-/** Reading a list (the array of items and its completeness). On failure, already-redacted lines. */
 type Listing =
   | { readonly items: readonly Record<string, unknown>[]; readonly complete: boolean }
   | { readonly failure: readonly string[] };
 
-/**
- * Reads the list once (values are discarded unread — used only for
- * name/ID matching). Also returns whether there might be a next page (if
- * there is, "absent" is not evidence — fail-closed).
- */
 const fetchListing = Effect.fn("sync-http-run.fetchListing")(function* (
   input: HttpTargetInput,
   spec: HttpListSpec,
@@ -69,7 +53,6 @@ const fetchListing = Effect.fn("sync-http-run.fetchListing")(function* (
   return { items: listed.filter(isRecord), complete: isListingComplete(spec, body) };
 });
 
-/** Whether there is no next page (Vercel's `pagination.next`. No declaration / null = the list is complete). */
 function isListingComplete(spec: HttpListSpec, body: unknown): boolean {
   if (spec.nextPage === undefined || !isRecord(body)) {
     return true;
@@ -80,7 +63,6 @@ function isListingComplete(spec: HttpListSpec, body: unknown): boolean {
   return next === undefined || next === null || next === false;
 }
 
-/** The list items in name-addressable form (only those with a string `keyField`). */
 function listedByKey(
   items: readonly Record<string, unknown>[],
   keyField: string,
@@ -95,11 +77,6 @@ function listedByKey(
   return byKey;
 }
 
-/**
- * The guard of an attribute an update cannot change (`updateGuards`): the
- * message when broken (variable name and attribute name only — no value),
- * null when honored.
- */
 function guardUpdate(
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
   name: string,
@@ -114,7 +91,6 @@ function guardUpdate(
   return null;
 }
 
-/** The delete's matching: whether the element belongs to "this target's environment" (a same-named variable of a different environment is never deleted). */
 function matchesTarget(
   element: Record<string, unknown>,
   match: Extract<HttpDeleteSpec, { kind: "lookup" }>["match"],
@@ -132,12 +108,6 @@ function matchesTarget(
   return targetMatches && branchMatches;
 }
 
-/**
- * The delete's first step: look up the target-side IDs in the list.
- * `whole` = the matched elements were all of that name's item's elements
- * (the item may be deleted whole — only presets with a `removeItem` use
- * this).
- */
 function lookupIds(
   items: readonly Record<string, unknown>[],
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
@@ -168,19 +138,10 @@ function lookupIds(
   return { ids, whole: matchedItems > 0 && wholeItems === matchedItems };
 }
 
-/** A batch of exactly one variable (each step of create-or-update goes through readResponse). */
 function singleBatch(write: SyncWrite): HttpBatch {
   return { kind: "write", names: [write.name], writes: [write], deletes: [] };
 }
 
-/**
- * The create-or-update write: look the names up in the list, send a create
- * for each absent name and an update for each present one, one variable at
- * a time. Stop at the first failure and return the delivered names (if a
- * same-named variable gets created between the listing and the send, the
- * create surfaces as a target-side failure — the next apply becomes an
- * update).
- */
 const createOrUpdate = Effect.fn("sync-http-run.createOrUpdate")(function* (
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -188,9 +149,6 @@ const createOrUpdate = Effect.fn("sync-http-run.createOrUpdate")(function* (
 ): Effect.fn.Return<HttpRequestResult, CliError, HttpClient.HttpClient> {
   const listing = yield* fetchListing(input, write.list);
   if ("failure" in listing) {
-    // The listing did get a response back (lines state the HTTP status),
-    // so don't say "not sent" — what failed is reported as the listing's
-    // failure
     return {
       delivered: [],
       failure: {
@@ -201,9 +159,6 @@ const createOrUpdate = Effect.fn("sync-http-run.createOrUpdate")(function* (
     };
   }
   if (!listing.complete) {
-    // Judging by a list that has a continuation would create a name that
-    // already exists and fail (or create it twice under the target's
-    // rules). Stop without sending anything
     return {
       delivered: [],
       failure: {
@@ -218,7 +173,6 @@ const createOrUpdate = Effect.fn("sync-http-run.createOrUpdate")(function* (
   return yield* writeOneByOne(input, write, batch, listedByKey(listing.items, write.list.keyField));
 });
 
-/** The sending part of create-or-update: one variable at a time, stopping at the first failure. */
 const writeOneByOne = Effect.fn("sync-http-run.writeOneByOne")(function* (
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -229,11 +183,6 @@ const writeOneByOne = Effect.fn("sync-http-run.writeOneByOne")(function* (
   for (const item of batch.writes) {
     const one = singleBatch(item);
     const listed = existing.get(item.name);
-    // Even if sending one variable fails with a typed error (attempts
-    // exhausted, Retry-After exceeded), the names delivered earlier in
-    // this batch are not lost: reported as that variable's failure, and
-    // the delivered ones go to the receipt (in create-or-update the whole
-    // write is one batch, so letting it fall erases the run's progress)
     const result = yield* (
       listed === undefined
         ? createOrRecover(input, write, one)
@@ -258,7 +207,6 @@ const writeOneByOne = Effect.fn("sync-http-run.writeOneByOne")(function* (
   return { delivered, failure: null };
 });
 
-/** A name in the list: pass the guard (`updateGuards`), then send one update. */
 function updateOne(
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -267,7 +215,6 @@ function updateOne(
 ): Effect.Effect<HttpRequestResult, CliError, HttpClient.HttpClient> {
   const refused = guardUpdate(write, one.names[0] ?? "", listed, input.options);
   if (refused !== null) {
-    // Stop without sending (no value lands. The delivered share goes to the receipt)
     return Effect.succeed({
       delivered: [],
       failure: { names: one.names, what: "maruhi did not send the request", lines: [refused] },
@@ -278,15 +225,6 @@ function updateOne(
   );
 }
 
-/**
- * A name not in the list: send the create. create is not an upsert (it
- * refuses an existing key), so shapes like a delivered response lost and
- * resent (`send`'s retry) or a same-named variable created between the
- * listing and the send come back as a target-side failure. In that case,
- * **re-read the list** and switch to an update if the name is there
- * (regardless of the response's wording). If not, the create's failure
- * stands.
- */
 const createOrRecover = Effect.fn("sync-http-run.createOrRecover")(function* (
   input: HttpTargetInput,
   write: Extract<HttpWriteStrategy, { kind: "create-or-update" }>,
@@ -297,10 +235,6 @@ const createOrRecover = Effect.fn("sync-http-run.createOrRecover")(function* (
   if (created.failure === null) {
     return created;
   }
-  // Even if the re-read listing fails (transport layer, attempts
-  // exhausted = a typed error), fall back to reporting the create's
-  // failure: failing here would keep names already delivered in the same
-  // batch off the receipt
   const listing = yield* fetchListing(input, write.list).pipe(
     Effect.catch((error: CliError) => Effect.succeed({ failure: [error.message] })),
   );
@@ -314,7 +248,6 @@ const createOrRecover = Effect.fn("sync-http-run.createOrRecover")(function* (
   return listed === undefined ? created : yield* updateOne(input, write, one, listed);
 });
 
-/** Attaches the re-read listing's failure (already-redacted lines) to a create's failure. */
 function withRecheckFailure(
   created: HttpRequestResult,
   lines: readonly string[],
@@ -334,20 +267,6 @@ function withRecheckFailure(
       };
 }
 
-/**
- * Runs one batch against the vendor API: the write request(s), or the
- * lookup-then-delete pair for presets whose delete does not ride along.
- *
- * Even when the batch's send fails with a typed error (attempts exhausted,
- * Retry-After exceeded), return it as that batch's failure: the caller
- * (sync-plan.ts's runBatches) is mid-way folding the names earlier batches
- * delivered, and failing here would erase that progress (a delete batch's
- * listing and DELETEs, an upsert's second-and-later batches). Uniform
- * across every http preset and batch kind (exec's runInvocations has the
- * same shape — a launch failure is folded into that invocation's
- * failure). A create-or-update write receives one variable at a time
- * inside and keeps the delivered share.
- */
 export const runBatch: (
   input: HttpTargetInput,
   batch: HttpBatch,
@@ -384,7 +303,6 @@ export const runBatch: (
     ),
 );
 
-/** A delete batch (one name): look the ID up in the list, then delete per value (or per item). */
 const lookupAndRemove = Effect.fn("sync-http-run.lookupAndRemove")(function* (
   input: HttpTargetInput,
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
@@ -393,8 +311,6 @@ const lookupAndRemove = Effect.fn("sync-http-run.lookupAndRemove")(function* (
   const name = batch.names[0] ?? "";
   const listing = yield* fetchListing(input, spec.list);
   if ("failure" in listing) {
-    // The listing did get a response back (lines state the HTTP status),
-    // so don't say "not sent"
     return {
       delivered: [],
       failure: {
@@ -406,9 +322,6 @@ const lookupAndRemove = Effect.fn("sync-http-run.lookupAndRemove")(function* (
   }
   const looked = lookupIds(listing.items, spec, name, input.options);
   if (looked.ids.length === 0 && !listing.complete) {
-    // A name missing from a list that has a continuation: cannot say
-    // it's "gone". Don't record it as delivered and leave it on the
-    // receipt (the next apply tries again — fail-closed)
     return {
       delivered: [],
       failure: {
@@ -420,14 +333,12 @@ const lookupAndRemove = Effect.fn("sync-http-run.lookupAndRemove")(function* (
       },
     };
   }
-  // Absent from a complete list = already deleted at the target (the re-read only matches IDs; values are never read)
   if (looked.whole && spec.removeItem !== undefined) {
     return yield* removeOne(input, spec.removeItem, batch, { id: null, name });
   }
   return yield* removeByIds(input, spec, batch, name, looked.ids);
 });
 
-/** The delete's second step: DELETE each looked-up ID (404 = deleted concurrently right after the listing). */
 const removeByIds = Effect.fn("sync-http-run.removeByIds")(function* (
   input: HttpTargetInput,
   spec: Extract<HttpDeleteSpec, { kind: "lookup" }>,
@@ -444,7 +355,6 @@ const removeByIds = Effect.fn("sync-http-run.removeByIds")(function* (
   return { delivered: batch.names, failure: null };
 });
 
-/** One DELETE (by ID or name). 404 is "already gone" = success. */
 const removeOne = Effect.fn("sync-http-run.removeOne")(function* (
   input: HttpTargetInput,
   spec: HttpRemoveSpec,

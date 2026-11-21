@@ -1,5 +1,3 @@
-// `maruhi sync` (discipline: see commands/index.ts).
-
 import { EnvironmentIdSchema, type ProjectId, ProjectIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -21,12 +19,6 @@ import {
 } from "./sync-config.ts";
 import { syncInitOp } from "./sync-init.ts";
 
-/**
- * The declarations of `maruhi sync plan` / `apply` (SY2 stage 1). The
- * environment is decided not by a flag but by the repository config (the
- * `maruhi.sync.json` targets), so there is no `--env`. `--project` exists
- * but is checked against the config's `project` when present.
- */
 const syncTargetArgument = () =>
   Argument.String("target").pipe(
     Argument.withDescription("Target name from the sync config (a key under `targets`)"),
@@ -57,12 +49,7 @@ export const syncApplyConfig = {
   target: syncTargetArgument(),
 };
 
-/**
- * `maruhi sync init <target>`'s declaration (SY2 stage 2 — ruling F):
- * touches neither network nor files; assembles the config JSON from the
- * flags and prints it to stdout.
- * @public
- */
+/** @public */
 export const syncInitConfig = {
   preset: singleValued(
     "preset",
@@ -123,33 +110,18 @@ export const syncInitConfig = {
   target: syncTargetArgument(),
 };
 
-/** `maruhi sync init`'s required flags (a misspelling = 2). */
 function requireInitFlag(value: string | undefined, flag: string): Effect.Effect<string, CliError> {
   return value === undefined
     ? Effect.fail(usageError(`sync init requires ${flag} (pass --preset, --env, and --receipts)`))
     : Effect.succeed(value);
 }
 
-/**
- * The command body. Since the handler can only return `Effect<void>`
- * (`Command.runWith` discards the value), the child process's exit code is
- * carried out via `onExitCode`.
- */
-/**
- * `maruhi sync`'s shared prologue: config → target → project (matching
- * the config's `project` against the flag) → the floor handles of the
- * sync-source / receipt environments. The config is read exactly once
- * here. The project prologue happens once (never compare two verified
- * views that disagree by opening two environments separately — same
- * reason as env diff).
- */
 const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (values: {
   readonly server: string | undefined;
   readonly project: ProjectId | undefined;
   readonly config: string | undefined;
   readonly target: string;
 }) {
-  // The config is read before any network (a broken file's detection is never placed behind a round trip)
   const config = yield* loadSyncConfig(values.config ?? DEFAULT_SYNC_CONFIG_PATH);
   const target = yield* requireSyncTarget(config, values.target);
   yield* checkConfigProject(config, values.project);
@@ -159,10 +131,6 @@ const openSyncTarget = Effect.fn("sync-command.openSyncTarget")(function* (value
   });
   const sourceFloor = yield* floorHandleFor(context, target.environment);
   const receiptsFloor = yield* floorHandleFor(context, config.receiptsEnvironment);
-  // The http driver's integration-token environment. When it equals
-  // the sync-source / receipt environment, **the same floor handle** is
-  // used (holding two handles on one environment would leave the
-  // receipt's push unaware of the floor the token's pull advanced)
   const tokenFloor =
     target.driver.kind !== "http"
       ? null
@@ -220,7 +188,6 @@ export function makeSyncCommands() {
         sourceFloor: opened.sourceFloor,
         receiptsEnvironment: opened.config.receiptsEnvironment,
         receiptsFloor: opened.receiptsFloor,
-        // The receipt's signature (§4.1): writer = my internal user_id, key = the master sig key
         writerUserId: opened.context.session.userId,
         signingKey: opened.context.masterKeys.sigKeyPair.privateKey,
         yes: values.yes,

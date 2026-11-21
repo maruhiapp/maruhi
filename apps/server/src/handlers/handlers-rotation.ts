@@ -1,17 +1,3 @@
-// Handlers for the needs-rotation flag API (AUDIT_SPEC §4.1 / §6 / §7).
-//
-// - flags: a derived view (read scope × chain role reader — class 1).
-//   The flag set is a stateless read (no audit record), so the CSRF
-//   header is not required (unlike the var.read record of a bulk pull —
-//   AUTH_SPEC §12-7)
-// - dismiss: a withdrawal operation (admin scope × chain role admin —
-//   §3.3; same level as wrap deletion). Target validation (existence of
-//   an active flag) is on the DO side
-//
-// The shared path is callProjectData in data-http.ts. The set of
-// returnable errors is derived from each endpoint's contract
-// declaration (api-schema).
-
 import { maruhiApi } from "@maruhi/api-schema";
 import { decodeEnvironmentId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
@@ -28,20 +14,8 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         endpoint,
         projectId: params.projectId,
         permission: "read",
-        // The audit seq is not carried by the derived result itself
-        // (AUDIT_SPEC §7 — 2026-08-16 C1 ruling. Removed from the type
-        // rather than stripped at the boundary, leaving no room to
-        // forget)
         invoke: (stub, actor) => stub.rotationFlags(actor),
       }).pipe(
-        // Unlike the audit read filters, these decodes stay. Each flag's ids
-        // replay a var.created row whose ids passed EnvironmentIdSchema /
-        // VariableIdSchema when the variable was created, so only a corrupt
-        // store can fail here, and a corrupt store is a defect (500) like
-        // every other storage read. Two alternatives were rejected: skipping
-        // the flag would silently drop a rotation obligation, and a
-        // plain-string wire field would only move the same decode into the
-        // client
         Effect.map((flags) => ({
           flags: flags.map((flag) => ({
             ...flag,
@@ -59,9 +33,6 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         invoke: (stub, actor) => stub.dismissRotationFlags(actor, payload.targets),
       }).pipe(Effect.as(noContent)),
     )
-    // Sealed value proposals (AUTH_SPEC §14-5): a member's view (read
-    // scope × chain role member — own wraps only; the role floor and the
-    // scope filter are on the DO side)
     .handle("proposals", ({ params, endpoint }) =>
       callProjectData<readonly MemberProposalValue[]>()({
         endpoint,
@@ -70,8 +41,6 @@ export const rotationLive = HttpApiBuilder.group(maruhiApi, "rotation", (handler
         invoke: (stub, actor) => stub.listRotationProposals(actor),
       }).pipe(Effect.map((proposals) => ({ proposals }))),
     )
-    // A member's resolution (write scope × chain role member × environment
-    // ∈ scope — the DO verifies the named versions on acceptance)
     .handle("resolveProposal", ({ params, payload, endpoint }) =>
       callProjectData<void>()({
         endpoint,

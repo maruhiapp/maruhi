@@ -34,7 +34,6 @@ export let wrap2: WireRecipientDek;
 export let envStatement: WireDistributedEnvironmentStatement;
 export let servers: MockServer[] = [];
 
-/** One variable of a pull response (verified statement + value). The declared head is genesis. */
 export async function entryOf(
   variableId: string,
   name: string,
@@ -66,7 +65,6 @@ beforeAll(async () => {
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
   ]);
-  // The shape where a rotation is stacked on the same genesis (same project)
   const rotated = await rotatedEnvironmentFor({ owner, environmentId: ENV_ID, dek1, dek2 });
   chainV2 = rotated.chain;
   [wrap1, wrap2] = rotated.wraps;
@@ -85,7 +83,6 @@ afterEach(async () => {
 });
 
 export function chainHandlerOf(chains: readonly BuiltChain[]): MockHandler {
-  // Advances on each call (the EpochConflict resync reveals the new chain). Stops at the last one
   let call = 0;
   return onRequest("GET", `/projects/${chainV1.projectId}/chain`, () => {
     const built = chains[Math.min(call, chains.length - 1)] as BuiltChain;
@@ -112,10 +109,6 @@ export function deksHandlerOf(sets: readonly (readonly WireRecipientDek[])[]): M
   });
 }
 
-/**
- * The manifest computed from the distributed set itself (§12-7). Ed25519 is
- * deterministic, so recomputing the same set matches byte-exactly (no equivocation).
- */
 export async function manifestOf(
   statements: readonly WireDistributedVariableStatement[],
   currentEpoch = 1,
@@ -135,7 +128,6 @@ export async function manifestOf(
   });
 }
 
-/** The response JSON of a value-bearing pull (§12-7) — manifest bundled. */
 export async function pullJsonOf(
   variables: readonly {
     variableId: string;
@@ -144,9 +136,7 @@ export async function pullJsonOf(
   }[],
   deks: readonly WireRecipientDek[],
   currentEpoch = 1,
-  /** A response whose meta set changes takes the next version (a same-version set difference is equivocation). */
   manifestVersion = 1,
-  /** prev for version > 1 (the previous manifest's hash — the chain for the adjacent prev check). */
   prevManifestSigHashHex?: string,
 ): Promise<unknown> {
   return {
@@ -166,7 +156,6 @@ export async function pullJsonOf(
   };
 }
 
-/** The signed-bytes hash of the manifest for a given set · version (material for the next version's prev). */
 export async function manifestHashAt(
   statements: readonly WireDistributedVariableStatement[],
   currentEpoch = 1,
@@ -202,17 +191,11 @@ export function pullHandlerOf(
   );
 }
 
-/**
- * The box that records variable-creation acceptances (shared state so the
- * §12-10 (3) confirmation pull can mimic distributing the accepted statement + manifest).
- */
 export interface CreateEcho {
   body: CreateBody | null;
-  /** The variant that became the creation's issueBase (distributed set = variant + creation statement). */
   baseVariant: readonly WireDistributedVariableStatement[];
 }
 
-/** Issued form → distributed form (§12-2 — the server attaches the caller's attribution). */
 export function distributedStatementOf(body: CreateBody): WireDistributedVariableStatement {
   return {
     ...body.statement,
@@ -221,14 +204,6 @@ export function distributedStatementOf(body: CreateBody): WireDistributedVariabl
   } as WireDistributedVariableStatement;
 }
 
-/**
- * The response of a metadata-only pull (§12-7). Advances through variants on
- * each call (stops at the last). Manifests between variants actually chain
- * their prev (models a legitimate "another member's meta operation" that
- * satisfies the adjacent-version prev check).
- * When `echo` holds an accepted creation, it returns that distribution
- * (variant + creation statement + accepted manifest) — material for the confirmation (§12-10 (3)).
- */
 export function pullMetadataHandlerOf(
   variants: readonly (readonly WireDistributedVariableStatement[])[],
   currentEpoch = 1,
@@ -253,9 +228,6 @@ export function pullMetadataHandlerOf(
     `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
     async () => {
       if (echo !== undefined && echo.body !== null) {
-        // Accepted: the distributed form = the issueBase set + creation
-        // statement; the manifest = the accepted issued form + issuer
-        // attribution (isomorphic to acceptRotate in support/env-rotate.ts)
         return {
           status: 200,
           json: {
@@ -284,8 +256,6 @@ export function pullMetadataHandlerOf(
           statement: envStatement,
           variables,
           deletedVariables: [],
-          // A variant advance = one meta operation by another member, modeled.
-          // manifestVersion advances with it (consistent with the floor's monotonicity)
           manifest: await manifestAt(index),
           schemaPolicy: "enabled" as const,
         },
@@ -311,7 +281,6 @@ export async function startEnv(handlers: readonly MockHandler[], stdin: string):
 export interface CreateBody {
   readonly statement: WireDistributedVariableStatement;
   readonly value: WireEncryptedPayload;
-  /** The bundled manifest (§12-4 — variable creation also re-issues the manifest). */
   readonly manifest: {
     readonly environmentId: string;
     readonly epoch: number;

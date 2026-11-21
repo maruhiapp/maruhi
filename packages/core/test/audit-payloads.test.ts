@@ -68,9 +68,6 @@ describe("project event payloads (AUDIT_SPEC §3.3–§3.5) — compile time", (
     const plain: AuditText = "production";
     // @ts-expect-error a provider subject is never audit text (§1-2)
     const subject: AuditText = providerSubject;
-    // The exclusion's limit (AuditText's doc): a union with a plain string
-    // widens to string, which is audit text — the runtime check and the
-    // per-event key set are what close a payload, not this exclusion
     const widened: AuditText = [providerSubject, "x"][0] ?? "x";
     const text = [plain, subject, widened];
     const rows: AuditEventRecord[] = [
@@ -179,7 +176,6 @@ describe("project event payloads (AUDIT_SPEC §3.3–§3.5) — compile time", (
   it("narrows by the event name", () => {
     const row = {} as AuditEventRecord;
     if (row.event === "rotation.recommended") {
-      // The per-variable basis rides the aggregate payload's enumeration (§3.3 — Sc-5)
       const basis: "read" | "readable" | undefined = row.payload.variables[0]?.basis;
       expect(basis).toBeUndefined();
     }
@@ -268,7 +264,6 @@ describe("the stores' payload check (runtime)", () => {
       assertProjectAuditPayload({ event: "env.created", payload: { name: "production" } }),
     ).not.toThrow();
     expect(() => assertProjectAuditPayload({ event: "var.deleted" })).not.toThrow();
-    // The aggregate rotation.recommended (§3.3 — Sc-5): basis rides the enumeration
     expect(() =>
       assertProjectAuditPayload({
         event: "rotation.recommended",
@@ -279,14 +274,12 @@ describe("the stores' payload check (runtime)", () => {
         },
       }),
     ).not.toThrow();
-    // The pre-Sc-5 per-pair shape (basis at the top level, no enumeration) is refused
     expect(() =>
       assertProjectAuditPayload({
         event: "rotation.recommended",
         payload: { basis: "read", triggerChainSeq: 2, trigger: "remove_member" },
       }),
     ).toThrow();
-    // The enumeration discipline (§3.3): non-empty, ascending, unique by variableId
     for (const variables of [
       [],
       [
@@ -314,7 +307,6 @@ describe("the stores' payload check (runtime)", () => {
   });
 
   it("rejects a key the spec does not list even when it escaped the types (a widened object)", () => {
-    // Structural typing lets a wider object through: this compiles
     const snapshot = { name: "production", login: providerLogin };
     const row: AuditEventRecord = { ...columns, event: "env.created", payload: snapshot };
     expect(() => assertProjectAuditPayload(row)).toThrow(
@@ -378,7 +370,6 @@ describe("the chain mirror writes only spec'd payloads (§3.4)", () => {
   it("maps every vector entry, applied rows included, to rows the store accepts", () => {
     const entries = vectorEntries.map(toTypedEntry);
     const hashes = new Map(vectorEntries.map((entry) => [entry.seq, entry.entry_hash_hex]));
-    // Nothing pending: the approved proposal counts as completed, so the applied row is mapped too
     const index = indexProposals(entries, (seq) => hashes.get(seq), new Set());
     const rows = [
       ...entries.flatMap((entry) => chainMirrorEvents(entry, 1, index)),

@@ -1,5 +1,3 @@
-// `maruhi audit` (discipline: see commands/index.ts).
-
 import {
   AUDIT_ROW_ID_PATTERN,
   DEFAULT_AUDIT_EVENTS_PAGE_LIMIT,
@@ -27,7 +25,6 @@ import { CliError, usageError } from "../errors.ts";
 import type { AuditListFilters } from "./audit-list.ts";
 import type { AuditPageOptions } from "./audit-page.ts";
 
-/** audit's pagination flag (shared by list / invites / self). */
 const auditPageFlags = () => ({
   limit: Flag.Int("limit").pipe(
     Flag.withDescription(
@@ -74,8 +71,6 @@ export const auditListConfig = {
 /** @public */
 export const auditInvitesConfig = { ...projectFlags(), ...auditPageFlags() };
 
-// self takes no project account-wide (no --project on the declaration =
-// Unknown flag)
 /** @public */
 export const auditSelfConfig = { ...serverOnlyFlags(), ...auditPageFlags() };
 
@@ -85,7 +80,6 @@ export const auditVerifyConfig = { ...projectFlags() };
 /** @public */
 export const auditReconcileConfig = { ...projectFlags() };
 
-/** Unspecified is allowed; when given, only an integer in [1, max] passes. */
 function outsideIntRange(value: number | undefined, max: number): boolean {
   if (value === undefined) {
     return false;
@@ -104,9 +98,6 @@ function parseAuditPage(
       ),
     );
   }
-  // The cursor is a row id (AUDIT_SPEC §5.1 row_id — the format is shared
-  // with api-schema's Schema). Pass the value the previous page's trailing
-  // "To continue:" guidance showed, as-is
   if (before !== undefined && !AUDIT_ROW_ID_PATTERN.test(before)) {
     return Effect.fail(
       usageError(
@@ -125,12 +116,10 @@ interface AuditFilterFlags {
   readonly var: VariableId | undefined;
 }
 
-/** Unspecified is allowed; when given, only non-empty within max chars passes. */
 function boundedFlagValue(value: string | undefined, max: number): boolean {
   return value === undefined || (value.length > 0 && value.length <= max);
 }
 
-/** The first misspelling among the filter flags (null when none). */
 function auditFilterProblem(values: AuditFilterFlags): string | null {
   if (!boundedFlagValue(values.event, 64)) {
     return "--event must be an event name (area.verb — e.g. var.version_pushed)";
@@ -144,13 +133,11 @@ function auditFilterProblem(values: AuditFilterFlags): string | null {
   return null;
 }
 
-/** Checking list's filter flags (the format is checked before any network). */
 function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFilters, CliError> {
   const problem = auditFilterProblem(values);
   if (problem !== null) {
     return Effect.fail(usageError(problem));
   }
-  // --env / --var arrive decoded (their declarations check the format)
   return Effect.succeed({
     event: values.event ?? null,
     actorUserId: values.actor === undefined ? null : decodeUserId(values.actor),
@@ -162,12 +149,6 @@ function parseAuditFilters(values: AuditFilterFlags): Effect.Effect<AuditListFil
 
 /** @public */
 export function makeAuditCommands(onExitCode: (code: number) => void) {
-  /**
-   * audit list's body (shared by bare `maruhi audit` and `maruhi audit
-   * list`). The master key is not required (audit rows are non-secret
-   * metadata — the same keyless class as rotation list). The visibility
-   * class and the invite.* authority axis are enforced server-side.
-   */
   const runAuditList = (values: {
     readonly server?: string | undefined;
     readonly project?: string | undefined;
@@ -281,11 +262,6 @@ export function makeAuditCommands(onExitCode: (code: number) => void) {
     ),
   );
 
-  // **bare `maruhi audit` = list** (keeping the current spec — stage 3's
-  // ruling). The parent itself carries list's declaration and handler
-  // (measured: a handler-carrying parent + withSubcommands runs the
-  // handler on the bare parent, and only the child runs when a subcommand
-  // is given. An unknown subcommand is UnknownSubcommand = exit 2)
   const audit = Command.make("audit", auditListConfig, runAuditList).pipe(
     Command.withDescription(
       "View and verify audit events (list / invites / self / verify / reconcile). Bare `maruhi audit` runs list",

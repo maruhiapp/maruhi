@@ -1,15 +1,3 @@
-// `maruhi project list` (AUTH_SPEC §11-5): the list of projects
-// where I am a chain-derived member. Verifies the server
-// implementation as the API's first consumer.
-//
-// TCB discipline: the response (projectId / role) is a **server
-// declaration** (§11-5 — role is the value DO's read-time check
-// returns, but from the client's view it is a declaration that went
-// through no verification). Where verified state is needed is
-// `maruhi project verify`'s remit; this display is for discovery
-// (which project IDs I hold). Projects outside the token's scope do
-// not appear in the response (§11-5's scope intersection).
-
 import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
@@ -20,25 +8,13 @@ import { cliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";
 import { CliIo } from "../io.ts";
 
-/**
- * Bounds the page chasing (server-fixed at 100 / page — §11-5). At
- * a volume an honest server never reaches (10,000 projects), it
- * bounds a runaway or malicious server's infinite nextAfter chain.
- */
 const MAX_LIST_PAGES = 100;
 
-/** One row of the list (the received shape of api-schema's ProjectMembershipSchema). */
 interface MembershipRow {
   readonly projectId: ProjectId;
   readonly role: "owner" | "admin" | "member" | "reader";
 }
 
-/**
- * Fetches every page of the caller's project memberships (server-reported —
- * discovery only; verified state comes from syncing each chain). `maruhi
- * project list` and the device-side commands that scan every
- * project (device.ts / key-recover.ts) share this.
- */
 export const fetchProjectMemberships = Effect.fn("project-list.fetchProjectMemberships")(function* (
   client: MaruhiClient,
 ): Effect.fn.Return<readonly MembershipRow[], CliError> {
@@ -64,7 +40,6 @@ export const fetchProjectMemberships = Effect.fn("project-list.fetchProjectMembe
   return rows;
 });
 
-/** Fetches every page and displays one project per line (stdout carries data only). */
 export const projectListOp = Effect.fn("project-list.projectListOp")(function* (input: {
   readonly client: MaruhiClient;
 }): Effect.fn.Return<void, CliError, CliIo> {

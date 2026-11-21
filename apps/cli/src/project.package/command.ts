@@ -1,5 +1,3 @@
-// `maruhi project` and `project policy approvals / schema` (discipline: see commands/index.ts).
-
 import { APPROVAL_TARGET_OPS, type ApprovalTargetOp, isApprovalTargetOp } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
@@ -109,11 +107,6 @@ export const projectPolicySchemaConfig = {
   ),
 };
 
-/**
- * `maruhi project policy schema [--set <tier>]` (AUTH_SPEC §12-11): no
- * flag = show the policy; `--set` = set it (admin). Keyless and chain-free
- * — the policy is a server acceptance setting (project-schema-policy.ts).
- */
 const projectPolicySchemaCommand = Effect.fn("project-command.projectPolicySchemaCommand")(
   function* (flags: CommonFlags & { readonly set?: string | undefined }) {
     const tier = flags.set;
@@ -129,7 +122,6 @@ const projectPolicySchemaCommand = Effect.fn("project-command.projectPolicySchem
   },
 );
 
-/** `maruhi project verify`: chain verification + floor / anchor checks + state display. */
 const projectVerify = Effect.fn("project-command.projectVerify")(function* (
   serverFlag: string | undefined,
   projectFlag: string | undefined,
@@ -142,20 +134,12 @@ const projectVerify = Effect.fn("project-command.projectVerify")(function* (
   const context = yield* openSession(serverFlag);
   const projectId = yield* resolveProjectId(projectFlag, context.config);
   const synced = yield* syncProject(context.client, projectId);
-  // The chain-floor check (§6.3 rule (a)) is also part of verify
   const checked = (yield* loadCheckedFloor(
     projectId,
     synced,
     syncProject(context.client, projectId),
   )).verified;
-  // The mechanical matching of the invite-link anchor (§6.3 (a) / §6.5) is also part of verify
   yield* checkInviteAnchor(projectId, checked);
-  // Matching against other members' head claims (§6.3 head gossip /
-  // §6.6) is also part of verify (a contradictory claim = hard evidence
-  // of a split view → abort and preserve the evidence). No submission
-  // happens (verify is a read command that does not require the master
-  // key). The floor head's advance happens inside reconcileGossip after
-  // every check passes, same as attachProject
   const verified = yield* reconcileGossip(
     projectId,
     checked,
@@ -163,7 +147,6 @@ const projectVerify = Effect.fn("project-command.projectVerify")(function* (
   );
   yield* io.log(`Chain verification OK (head seq=${verified.state.headSeq})`);
   yield* io.log(`head: ${verified.state.headHashHex}`);
-  // The scope column (2026-09-15 ES K4 — ruling M). The same row format as `maruhi member list`
   yield* io.log(`Members (${verified.state.members.size}):`);
   for (const row of memberListRows(verified)) {
     yield* io.log(`  ${formatMemberListRow(row)}`);
@@ -175,12 +158,7 @@ const projectVerify = Effect.fn("project-command.projectVerify")(function* (
       `Environment ${environmentId}: epoch=${environment.currentEpoch} (created at seq=${environment.createdAtSeq}${deleted})`,
     );
   }
-  // The disclosing server grants (§9's constant display — the grant
-  // fingerprints `server revoke --fingerprint` takes; chain-derived)
   yield* reportServerDisclosures(verified);
-  // The unconverged rotation duties (§7 — chain-derived, chain-deleted
-  // environments excluded) are also part of verify (the always-on warning
-  // — rotation-sweep.ts — detail display; no request)
   const pending = resolveUnconvergedMandates({ verified });
   if (pending.length === 0) {
     yield* io.log("Rotation mandates: none unconverged (CRYPTO_SPEC §7)");
@@ -193,7 +171,6 @@ const projectVerify = Effect.fn("project-command.projectVerify")(function* (
   }
 });
 
-/** `project verify`'s server-grant lines (CRYPTO_SPEC §9 — "none" is said too: verify prints the whole state). */
 const reportServerDisclosures = Effect.fn("project-command.reportServerDisclosures")(function* (
   verified: VerifiedProject,
 ): Effect.fn.Return<void, CliError, CliIo> {
@@ -213,7 +190,6 @@ const reportServerDisclosures = Effect.fn("project-command.reportServerDisclosur
   }
 });
 
-/** Parsing `--ops a,b` (a closed set — a typo is a usage error. Ascending, no duplicates). */
 function parsePolicyOps(
   text: string | undefined,
 ): Effect.Effect<readonly ApprovalTargetOp[], CliError> {
@@ -237,11 +213,6 @@ function parsePolicyOps(
   return Effect.succeed(ops.toSorted());
 }
 
-/**
- * `--required N` / `--off` → the policy request (neither = null = display
- * only). `--off` with `--required` / `--ops` and `--ops` without
- * `--required` were already refused by the command's validate rules.
- */
 const parsePolicyRequest = Effect.fn("project-command.parsePolicyRequest")(function* (flags: {
   readonly required?: string | undefined;
   readonly ops?: string | undefined;
@@ -263,13 +234,6 @@ const parsePolicyRequest = Effect.fn("project-command.parsePolicyRequest")(funct
   return { kind: "on", requiredApprovals: required, ops } as const;
 });
 
-/**
- * `maruhi project policy approvals [--required N [--ops …]] [--off]`
- * (approval item 17 / K6-H): no flags = display the current policy
- * (keyless). Enable / change / off are an owner's signature. While the
- * policy is enabled, set_approval_policy itself is a four-eyes target, so
- * it becomes a proposal (CRYPTO_SPEC §6.2).
- */
 const projectPolicyApprovalsCommand = Effect.fn("project-command.projectPolicyApprovalsCommand")(
   function* (
     flags: CommonFlags & {
@@ -330,11 +294,6 @@ const projectPolicyApprovalsCommand = Effect.fn("project-command.projectPolicyAp
   },
 );
 
-/**
- * The guidance of the enablement's operational prerequisites (the owner
- * selection (i) of approval item 17 — kept as guidance, never a prompt):
- * owner ≥ required + 1, and every owner's recovery registration.
- */
 const warnPolicyAvailability = Effect.fn("project-command.warnPolicyAvailability")(function* (
   verified: Parameters<typeof proposalViews>[0],
   request: PolicyRequest,
@@ -395,8 +354,6 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
           usageError("project export requires --out <file> (the snapshot file to write)"),
         );
       }
-      // The same keyless prologue as verify (chain sync + the floor
-      // check): the export is cross-checked against this verified view
       const context = yield* openSession(values.server);
       const projectId = yield* resolveProjectId(values.project, context.config);
       const synced = yield* syncProject(context.client, projectId);
@@ -435,16 +392,10 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
     projectAnchorConfig,
     Effect.fn("project-command.projectAnchor")(function* (values) {
       const io = yield* CliIo;
-      // The prologue is the same keyless class as verify (chain sync +
-      // §6.3 checks + floor + the invite anchor's mechanical matching) —
-      // the anchor is built only from the verified view
       const context = yield* openMetadataProject({
         server: values.server,
         project: values.project,
       });
-      // stdout is only the command's output (the anchor JSON) (decision
-      // 9): a redirect can commit it into a repository as-is. The content
-      // is non-secret (hashes, serials, epoch numbers only — anchor.ts)
       yield* io.log(formatRepositoryAnchor(buildRepositoryAnchor(context.verified)).trimEnd());
     }),
   ).pipe(
@@ -516,13 +467,7 @@ export function makeProjectCommands(onExitCode: (code: number) => void) {
       );
 
       const io = yield* CliIo;
-      // Issuance accompanies a chain append (an Ed25519 signature), so it
-      // requires the master key. Building the verified view (the verified
-      // pull of every environment) is the checkpoint's material itself —
-      // the value fetches are correctly recorded as var.read (an explicit
-      // operation)
       const context = yield* openProject({ server: values.server, project: values.project });
-      // The environment-floor handle is resolved ahead (keeps issueCheckpoint's R at CliIo)
       const floors = new Map<string, FloorHandle>();
       for (const environmentId of chainEnvironmentIds(context.verified)) {
         floors.set(environmentId, yield* floorHandleFor(context, environmentId));

@@ -1,38 +1,3 @@
-// Integration tests for mirrors (PF2 — AUTH_SPEC §11-7,
-// docs/notes/pf2-design.md). The HttpApi and the DO via SELF on
-// @cloudflare/vitest-plugin (the real workerd environment). One deployment
-// plays both roles: the project is seeded and exported (the source's
-// replica), restored to an older state, marked, and replicated forward.
-//
-// What this suite pins:
-// - the mark is owner-only; a marked project refuses every write with
-//   Forbidden `mirror-read-only` and serves reads and leases; the mint
-//   is refused after authorization in the proposal vocabulary
-// - the pages stage in sequence, the trailer's page commits, the mirror
-//   then serves the replica (chain head, variables, audit log), keeps its
-//   own lease windows and its own audit rows (re-appended after the
-//   replica's), and leaves no staging behind
-// - a replica that does not extend the live chain, an out-of-sequence
-//   page, and every malformed shape are refused with the static reasons,
-//   and a refusal discards the staging in progress
-// - a replica whose projections regress against the live state (an
-//   older manifest paired with the newer chain and audit segments), do
-//   not bind to its chain (a checkpoint row the chain's tuples do not
-//   carry), or rewrite a held statement row is refused the same way,
-//   and the legitimate replica still commits
-// - the same refusal covers the remaining snapshot tables: a manifest
-//   behind its staged statement set (the statement-count binding), DEK
-//   wraps dropped / rewritten / resurrected against the live rows, a
-//   head attestation dropped, forged at an equal seq, or declaring a
-//   head the chain does not carry, a schema-policy flip the staged
-//   audit log does not fold to, a rotation proposal no staged
-//   `rotation.proposed` row mints, and an extra checkpoint snapshot row
-//   at an equal values digest; the legitimate flows those bindings must
-//   not refuse — a variable deletion, an epoch rotation, an environment
-//   deletion cascade, and a bootstrap into a fully empty mirror —
-//   commit
-// - unmarking promotes the mirror (writes accepted again)
-
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -107,7 +72,6 @@ function parsedLine(line: string | undefined): Record<string, unknown> {
   return JSON.parse(line ?? "{}") as Record<string, unknown>;
 }
 
-/** Pages the whole export as the CLI does. */
 async function exportAll(): Promise<string[]> {
   const lines: string[] = [];
   let cursor: string | undefined;
@@ -127,18 +91,12 @@ async function exportAll(): Promise<string[]> {
   }
 }
 
-/** Restores an exported replica into the emptied DO (the mirror's bootstrap = the §11-6 import). */
 async function restoreLines(lines: readonly string[]): Promise<void> {
   await resetProjectDo(projectId);
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   const text = `${lines.join("\n")}\n`;
   await runInDurableObject(stub, async (_instance, state) => {
-    // A mirror bootstrap restores into a fresh destination (§11-6). The DO is
-    // materialized at import time in production (opsRestore); materialize here
-    // too, since the reset left no tables (Sc-7 / A-4).
     ensureProjectDoTables(state.storage);
-    // The stream is created inside the DO's context (an I/O object of
-    // the test context cannot be read on behalf of the DO)
     await Effect.runPromise(
       restoreSnapshot({
         storage: state.storage,
@@ -152,14 +110,11 @@ async function restoreLines(lines: readonly string[]): Promise<void> {
   await evictProjectDo(projectId);
 }
 
-/** Restores like restoreLines but answers the refusal's code (null = the import committed). */
 async function restoreLinesRefusal(lines: readonly string[]): Promise<RestoreFailureCode | null> {
   await resetProjectDo(projectId);
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
   const text = `${lines.join("\n")}\n`;
   const code = await runInDurableObject(stub, async (_instance, state) => {
-    // Materialize the fresh destination before restoring (Sc-7 / A-4 — the
-    // reset left no tables; opsRestore does this in production).
     ensureProjectDoTables(state.storage);
     return Effect.runPromise(
       restoreSnapshot({
@@ -182,7 +137,6 @@ const status = (userId = READER) => requestJson("GET", "/mirror", token(userId))
 const mark = (userId: string, sourceOrigin = SOURCE) =>
   requestJson("PUT", "/mirror", token(userId), { sourceOrigin });
 const unmark = (userId: string) => requestJson("DELETE", "/mirror", token(userId));
-/** The source's mutation counter every page carries (the trailer page's is recorded with the replica). */
 const SOURCE_MUTATION_SEQ = 7;
 const page = (userId: string, sequence: number, lines: readonly string[]) =>
   requestJson("PUT", "/mirror/pages", token(userId), {
@@ -197,7 +151,6 @@ async function statusOk(userId = READER): Promise<WireStatus> {
   return (await response.json()) as WireStatus;
 }
 
-/** Uploads a replica in pages of `size` lines (as the owner); returns the last page's answer. */
 async function upload(lines: readonly string[], size: number): Promise<Response> {
   let sequence = 0;
   for (let start = 0; start < lines.length; start += size) {
@@ -229,7 +182,6 @@ async function count(query: string): Promise<number> {
   return Number((await queryProjectDo(projectId, query))[0]?.["n"] ?? -1);
 }
 
-/** A chain append the fixture does not expect to succeed (the raw request). */
 async function rawAppend(actorUserId: string): Promise<Response> {
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 1,
@@ -243,7 +195,6 @@ async function rawAppend(actorUserId: string): Promise<Response> {
   });
 }
 
-/** Rewrites one field of the lines' trailer. */
 function withTrailer(lines: readonly string[], patch: Record<string, unknown>): string[] {
   const trailer = parsedLine(lines[lines.length - 1]);
   return [...lines.slice(0, -1), JSON.stringify({ ...trailer, ...patch })];
@@ -251,8 +202,6 @@ function withTrailer(lines: readonly string[], patch: Record<string, unknown>): 
 
 describe("mirrors (AUTH_SPEC §11-7)", () => {
   it("marks, refuses writes, serves reads, replicates forward, keeps its own windows and audit rows, and promotes", async () => {
-    // The source's history: an older replica (R1) and a newer one (R2)
-    // whose chain extends R1's
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const older = await exportAll();
@@ -260,8 +209,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     await appendOperation(fixture, OWNER, changeRoleOperation(READER, "member"));
     await createVariableOk(dek, "var-second", "SECOND", "two");
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
-    // The source's first-come bindings travel with the export (merged into
-    // the mirror's own at commit, never replacing one — ruling D revision)
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_bindings (binding_key_hex, ephemeral_pub_hex, expires_at) VALUES ('ab', 'zz', 9999999999999), ('source-only', 'ef', 9999999999999), ('source-expired', 'ee', 1)",
@@ -270,7 +217,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     const newerTrailer = parsedLine(newer[newer.length - 1]);
     expect(Number(newerTrailer["chainHeadSeq"])).toBe(Number(olderTrailer["chainHeadSeq"]) + 1);
 
-    // The mirror's bootstrap: the older replica restored, then the mark
     await restoreLines(older);
     expect((await mark(READER)).status).toBe(403);
     expect((await mark(MEMBER)).status).toBe(403);
@@ -287,10 +233,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       _tag: "MirrorState",
       reason: "already-mirror",
     });
-    // A mark naming another source re-points the mirror without a writable
-    // window (ruling C revision, round 4); the same source is still a
-    // second mark. The replicated positions stay (the chain head below
-    // still bootstraps the replication)
     const repointed = await mark(OWNER, "https://other.maruhi.app");
     expect(repointed.status).toBe(200);
     expect(await repointed.json()).toMatchObject({
@@ -301,8 +243,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect((await mark(OWNER)).status).toBe(200);
     expect((await statusOk()).sourceOrigin).toBe(SOURCE);
 
-    // Writes are refused after the membership check (a non-member keeps
-    // the uniform 404 — the mark is not an oracle), before any state change
     expect(
       (await requestJson("PUT", "/schema-policy", token(STRANGER), { schemaPolicy: "enabled" }))
         .status,
@@ -318,7 +258,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     });
     expect(policy.status).toBe(403);
     expect((await requestJson("GET", "/schema-policy", token(READER))).status).toBe(200);
-    // … reads are served (and the pull leaves the mirror's own audit rows)
     const pulled = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pulled.status).toBe(200);
     expect(((await pulled.json()) as { variables: unknown[] }).variables).toHaveLength(1);
@@ -327,7 +266,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       `SELECT COUNT(*) AS n FROM audit_events WHERE seq > ${Number(olderTrailer["auditMaxSeq"])}`,
     );
     expect(ownRows).toBeGreaterThan(0);
-    // … and the mirror's own rate-limit and first-come state (every kept table)
     await queryProjectDo(
       projectId,
       "INSERT INTO lease_windows (kind, window_start, count) VALUES ('issued', 1, 7)",
@@ -342,7 +280,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       OWNER,
     );
 
-    // The replication (admin or above): pages in sequence, the status shows the progress
     expect((await page(MEMBER, 0, newer.slice(0, 3))).status).toBe(403);
     const last = await upload(newer, 7);
     expect(last.status).toBe(200);
@@ -356,7 +293,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         auditMaxSeq: newerTrailer["auditMaxSeq"],
         attestationMark: 0,
         mutationSeq: SOURCE_MUTATION_SEQ,
-        // The rows the mirror appended while serving (the pull above)
         ownAuditRows: ownRows,
       },
     });
@@ -369,14 +305,11 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(synced.nextSequence).toBeUndefined();
     expect(synced.head.chainHeadHashHex).toBe(newerTrailer["chainHeadHashHex"]);
     expect(synced.head.auditMaxSeq).toBeGreaterThanOrEqual(Number(newerTrailer["auditMaxSeq"]));
-    // A reader sees the mark, the source and the chain head — never the
-    // audit seq or the replication history (AUDIT_SPEC §7 C1)
     const readerView = await statusOk(READER);
     expect(readerView.sourceOrigin).toBe(SOURCE);
     expect(readerView.head.chainHeadHashHex).toBe(newerTrailer["chainHeadHashHex"]);
     expect(readerView.head.auditMaxSeq).toBeUndefined();
     expect(readerView.lastSync).toBeUndefined();
-    // The mirror serves the replica now
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(chain.status).toBe(200);
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(
@@ -385,12 +318,9 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     const pulledAgain = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pulledAgain.status).toBe(200);
     expect(((await pulledAgain.json()) as { variables: unknown[] }).variables).toHaveLength(2);
-    // The kept table, the re-appended own rows, the derived column, no staging
     expect(
       await queryProjectDo(projectId, "SELECT count FROM lease_windows WHERE kind = 'issued'"),
     ).toEqual([{ count: 7 }]);
-    // The mirror's own binding stays ('ab' → 'cd', not the source's 'zz'); the
-    // source's other live one is merged; expired ones of either side are gone
     expect(
       await queryProjectDo(
         projectId,
@@ -404,10 +334,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       { count: 3 },
     ]);
     const replicaAudit = Number(newerTrailer["auditMaxSeq"]);
-    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(
-      // the second pull above added rows after the sync too
-      replicaAudit + ownRows + 1,
-    );
+    expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(replicaAudit + ownRows + 1);
     const carried = await queryProjectDo(
       projectId,
       `SELECT event FROM audit_events WHERE seq > ${replicaAudit} ORDER BY seq`,
@@ -416,12 +343,8 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       ...Array.from({ length: ownRows }, () => "var.read"),
       "var.read",
     ]);
-    // The derived audit-head column was extended to the end at the commit
-    // (the pull after it extends lazily, as always)
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(replicaAudit + ownRows);
     expect(await stagingTables()).toEqual([]);
-    // A second replication of the same replica re-appends the own rows
-    // (now one more — the pull after the first sync) after the replica's again
     const again = await upload(newer, 7);
     expect(again.status).toBe(200);
     expect(((await again.json()) as WirePageOutcome).committed).toBeDefined();
@@ -437,9 +360,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
       replicaAudit + ownRows + 1,
     );
-    // A replica of the same length whose audit log is not the replicated
-    // one (the cumulative hash at the position differs) is refused — the
-    // rows the mirror served are never rewritten (ruling J revision, round 6)
     const headLineIndex = newer.findIndex((line) => {
       const parsed = parsedLine(line);
       return (
@@ -456,10 +376,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await expectRejected(await upload(otherLog, 50), "audit-not-extension");
     expect(await stagingTables()).toEqual([]);
-    // … and one whose column differs BELOW the position: the served heads
-    // are the mirror's own derivation, so the uploaded column is a claim
-    // checked against them in full, never installed (ruling J revision,
-    // round 8)
     const firstHeadIndex = newer.findIndex((line) => {
       const parsed = parsedLine(line);
       return (
@@ -480,8 +396,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await expectRejected(await upload(earlyTamper, 50), "audit-not-extension");
     expect(await stagingTables()).toEqual([]);
-    // A legitimate replica leaves the heads up to the position untouched and
-    // derives the rest (the whole column reaches the end again)
     expect((await upload(newer, 7)).status).toBe(200);
     expect(
       await queryProjectDo(
@@ -492,9 +406,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
       replicaAudit + ownRows + 1,
     );
-    // The prefix checks join the staged log on an index, never a scan of it
-    // (ruling J revision, round 8): the staging tables carry the live
-    // tables' column affinities and an index on seq
     const stagedOnly = newer.slice(0, -1);
     expect((await page(OWNER, 0, stagedOnly)).status).toBe(200);
     const plan = (
@@ -509,9 +420,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(plan).not.toContain("SCAN theirs");
     expect((await page(OWNER, 0, newer)).status).toBe(200);
     expect(await stagingTables()).toEqual([]);
-    // … and so is one that rewrites a row at or below the replicated
-    // position while carrying the column untouched: the prefix is compared
-    // row for row, not by an uploaded hash (ruling J revision, round 7)
     const firstRowIndex = newer.findIndex((line) => {
       const parsed = parsedLine(line);
       return parsed["kind"] === "row" && parsed["table"] === "audit_events";
@@ -527,11 +435,9 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     });
     await expectRejected(await upload(rewrittenPrefix, 50), "audit-not-extension");
     expect(await stagingTables()).toEqual([]);
-    // An older replica never replaces a newer one
     await expectRejected(await upload(older, 50), "chain-not-extension");
     expect((await statusOk()).nextSequence).toBeUndefined();
 
-    // The promotion: writes accepted again
     expect((await unmark(MEMBER)).status).toBe(403);
     const promoted = await unmark(OWNER);
     expect(promoted.status).toBe(200);
@@ -552,10 +458,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
   });
 
   it("a frozen former primary syncs back from the destination: the rows its export carried are not re-appended (ruling J revision, round 4)", async () => {
-    // The switch-over order of §11-6: the source is marked (frozen) first,
-    // then exported. Its audit rows between the mark and the export's own
-    // row travel in the file and come back in the destination's replica;
-    // only the rows the replica does not carry are the mirror's own
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     expect((await mark(OWNER, "https://destination.maruhi.app")).status).toBe(200);
@@ -565,7 +467,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     const trailer = parsedLine(exported[exported.length - 1]);
     const exportedAudit = Number(trailer["auditMaxSeq"]);
     expect(exportedAudit).toBeGreaterThan(markedAudit + 1);
-    // A read after the export: the one row the replica does not carry
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     const last = await upload(exported, 50);
     expect(last.status).toBe(200);
@@ -580,16 +481,9 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     expect(await count("SELECT MAX(seq) AS n FROM audit_events")).toBe(exportedAudit + 1);
     expect(await stagingTables()).toEqual([]);
-    // A re-point resets the audit floor (ruling C revision, round 5): every
-    // row of the log is the mirror's own against the new source — and
-    // clears the replication record (ruling H revision, round 9: what the
-    // status reports as the last replication is one from the current source)
     expect((await statusOk(OWNER)).lastSync).toBeDefined();
     expect((await mark(OWNER, "https://successor.maruhi.app")).status).toBe(200);
     expect((await statusOk(OWNER)).lastSync).toBeUndefined();
-    // A carried row is the mirror's own row byte for byte: a replica that
-    // carries one of its row ids with other content cannot rewrite the
-    // evidence the mirror witnessed (ruling J revision, round 5)
     const auditLineIndex = exported.findIndex((line) => {
       const parsed = parsedLine(line);
       return parsed["kind"] === "row" && parsed["table"] === "audit_events";
@@ -606,8 +500,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     });
     await expectRejected(await upload(rewritten, 50), "malformed");
     expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(exportedAudit + 1);
-    // The first replica from the new source commits whatever its audit seq,
-    // and the rows it does not carry (the two reads) follow it
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     const shorter = await upload(exported, 50);
     expect(shorter.status).toBe(200);
@@ -641,7 +533,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         );
       });
     const liveRows = await count("SELECT COUNT(*) AS n FROM audit_events");
-    // A gap: row 2 missing (the trailer agrees on the count)
     const second = auditRowAt(2);
     expect(second).toBeGreaterThan(-1);
     const gapped = withTrailer(
@@ -651,7 +542,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     await expectRejected(await upload(gapped, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
     expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(liveRows);
-    // A seq at 0 (the live primary key accepts it; the log would not be hashable)
     const first = auditRowAt(1);
     const zeroed = lines.map((line, index) => {
       if (index !== first) {
@@ -663,9 +553,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       return JSON.stringify({ ...row, values });
     });
     await expectRejected(await upload(zeroed, 50), "malformed");
-    // A head column longer than the log (no audit rows, the full column):
-    // the first replica after a mark installs the column, so phantom heads
-    // would be served from nothing
     const headsOnly = withTrailer(
       lines.filter((line) => {
         const parsed = parsedLine(line);
@@ -674,7 +561,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       { rows: { ...(trailer["rows"] as object), audit_events: 0 } },
     );
     await expectRejected(await upload(headsOnly, 50), "malformed");
-    // A column shorter than the log is the normal lazy state: accepted and extended
     const lastHead = lines.findIndex((line) => {
       const parsed = parsedLine(line);
       return (
@@ -697,7 +583,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
       await count("SELECT MAX(seq) AS n FROM audit_events"),
     );
-    // … and the mirror still syncs (nothing was bricked)
     expect((await upload(lines, 50)).status).toBe(200);
     expect((await unmark(OWNER)).status).toBe(200);
   });
@@ -739,7 +624,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       projectId,
       "SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq",
     );
-    // A server_ts the canonical form refuses (the schema accepts it)
     const negative = rewrite(rowIndex("audit_events", 2), "server_ts", -1, "audit_events");
     await expectRejected(await upload(negative, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
@@ -749,9 +633,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         "SELECT seq, head_hash_hex FROM audit_head_hashes ORDER BY seq",
       ),
     ).toEqual(liveHeads);
-    // A first replica whose uploaded column's tail is no head hash (with
-    // the column reaching the log's end, nothing would have derived from it
-    // until the mirror's first own row)
     const headCount = Number(
       (parsedLine(lines[lines.length - 1])["rows"] as Record<string, number>)["audit_head_hashes"],
     );
@@ -763,14 +644,10 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await expectRejected(await upload(bogusTail, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // The intact replica commits, its heads derived past the uploaded
-    // column; the column reaches the end at the commit
     expect((await upload(lines, 50)).status).toBe(200);
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
       await count("SELECT MAX(seq) AS n FROM audit_events"),
     );
-    // Past a replicated position the same row is refused the same way (the
-    // derivation starts from the mirror's own head at the position)
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     const later = await exportAll();
     const laterSeq =
@@ -821,16 +698,10 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         }),
         { rows: { ...(trailer["rows"] as object), audit_head_hashes: 0 } },
       );
-    // No column at all: derived from seq 1 before the swap, so the commit
-    // installs a column reaching the log's end
     expect((await upload(withoutHeads(lines), 50)).status).toBe(200);
     expect(await count("SELECT MAX(seq) AS n FROM audit_head_hashes")).toBe(
       await count("SELECT MAX(seq) AS n FROM audit_events"),
     );
-    // … and a bad row in such a replica is refused before anything live is
-    // touched (every row is derived over). A re-point makes the next
-    // replica a first one again (position 0), with the mirror's rows now
-    // its own (a foreign row id never matches the carried-row rule)
     expect((await mark(OWNER, "https://successor.maruhi.app")).status).toBe(200);
     const seqIndex = columnsOf("audit_events").indexOf("seq");
     const tsIndex = columnsOf("audit_events").indexOf("server_ts");
@@ -852,11 +723,8 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     await expectRejected(await upload(withoutHeads(foreign(lines, 2)), 50), "malformed");
     expect(await stagingTables()).toEqual([]);
     expect(await count("SELECT COUNT(*) AS n FROM audit_events")).toBe(liveRows);
-    // Under an intact column that reaches the log's end nothing is derived
-    // over the row: its shape refuses it all the same (round 11)
     await expectRejected(await upload(foreign(lines, 2), 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // The same replica with the row intact commits (a first replica after the re-point)
     expect((await upload(foreign(lines, null), 50)).status).toBe(200);
     expect((await unmark(OWNER)).status).toBe(200);
   });
@@ -876,12 +744,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     )["columns"] as string[];
     const seqIndex = columns.indexOf("seq");
     const rowIdIndex = columns.indexOf("row_id");
-    // Foreign row ids (the carried-row rule never matches), and one
-    // column of one row rewritten; the uploaded head column is dropped so
-    // every row is derived over as well as shape-checked. A tag never
-    // equals the leading byte of an exported row id (random hex): the
-    // tagged id would then be that live row's own id, and with the
-    // rewritten column a carried row with other content
     const takenPrefixes = new Set(
       lines
         .map(parsedLine)
@@ -899,8 +761,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
               return line;
             }
             const values = [...(parsed["values"] as unknown[])];
-            // A row id set of its own per variant: a carried row id with
-            // other content is a rewrite, refused for its own reason
             values[rowIdIndex] = `${tag.toString(16)}${String(values[rowIdIndex]).slice(2)}`;
             if (values[seqIndex] === seq) {
               values[columns.indexOf(column)] = value;
@@ -914,7 +774,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
           },
         },
       );
-    // Each accepted replica commits at position 0 (a re-point before each)
     let repoint = 0;
     const repointed = async () => {
       repoint += 1;
@@ -923,19 +782,16 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       } while (takenPrefixes.has(tag.toString(16)));
       expect((await mark(OWNER, `https://successor-${repoint}.maruhi.app`)).status).toBe(200);
     };
-    // Accepted by both (the affinity converts the text and the real)
     for (const value of [9007199254740991, 2, "5"]) {
       await repointed();
       const response = await upload(variant(1, "server_ts", value), 50);
       expect(response.status, String(value)).toBe(200);
     }
-    // Refused by both, or by the SQL alone in the fail-closed direction
     for (const value of [9007199254740992, -1, 1.5, "", "0x10", null]) {
       await repointed();
       await expectRejected(await upload(variant(1, "server_ts", value), 50), "malformed");
       expect(await stagingTables()).toEqual([]);
     }
-    // A fractional seq is refused at the trailer, not at the swap's rowid
     await repointed();
     await expectRejected(await upload(variant(2, "seq", 1.5), 50), "malformed");
     expect((await unmark(OWNER)).status).toBe(200);
@@ -978,7 +834,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       ]),
       "malformed",
     );
-    // A page past the row bound
     const tableLine = JSON.stringify({
       kind: "table",
       table: "lease_windows",
@@ -991,7 +846,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       await page(OWNER, 0, [lines[0] ?? "", tableLine, ...rows]),
       "page-too-large",
     );
-    // A page past the byte bound (one line over the export's bound plus the slack)
     const hugeRow = JSON.stringify({
       kind: "row",
       table: "lease_windows",
@@ -1001,17 +855,14 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       await page(OWNER, 0, [lines[0] ?? "", tableLine, hugeRow]),
       "page-too-large",
     );
-    // Staged pages, then a refusal: the staging is discarded (sequence 0 restarts)
     expect((await page(OWNER, 0, lines.slice(0, 4))).status).toBe(200);
     expect(await stagedHead()).toBe(1);
     expect((await stagingTables()).length).toBeGreaterThan(0);
     await expectRejected(await page(OWNER, 5, lines.slice(4, 6)), "sequence-mismatch");
-    // … the sequence refusal keeps it
     expect(await stagedHead()).toBe(1);
     await expectRejected(await page(OWNER, 1, ["not json"]), "malformed");
     expect(await stagedHead()).toBeUndefined();
     expect(await stagingTables()).toEqual([]);
-    // The trailer's counts
     await expectRejected(
       await upload(
         withTrailer(lines, {
@@ -1021,7 +872,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       ),
       "row-count-mismatch",
     );
-    // A forked chain (one entry hash rewritten)
     const forked = lines.map((line) => {
       const parsed = parsedLine(line);
       if (parsed["kind"] !== "row" || parsed["table"] !== "chain_entries") {
@@ -1036,8 +886,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       });
     });
     await expectRejected(await upload(forked, 50), "chain-not-extension");
-    // A chain whose hashes match but whose entries do not verify never
-    // replaces the live one (the replica's content, not only its hashes)
     const chainColumns = lines
       .map((line) => parsedLine(line))
       .find((parsed) => parsed["kind"] === "table" && parsed["table"] === "chain_entries")?.[
@@ -1068,7 +916,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       ),
       "malformed",
     );
-    // An entry that decodes but whose hash column lies about it
     await expectRejected(
       await upload(
         withChainEntries((json) => {
@@ -1079,7 +926,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       ),
       "chain-invalid",
     );
-    // The live table refuses a staged row (a duplicate audit seq): refused, never a defect
     const firstAudit = lines.find((line) => {
       const parsed = parsedLine(line);
       return parsed["kind"] === "row" && parsed["table"] === "audit_events";
@@ -1100,11 +946,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     );
     await expectRejected(await upload(duplicated, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // The project still serves (the live tables were untouched)
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
-    // An audit log behind the last replicated position (contiguous — a
-    // log that is not 1..N is malformed before any position is compared,
-    // ruling J revision, round 9): the first row and the first head only
     const seqOf = (line: string): number => Number((parsedLine(line)["values"] as unknown[])[0]);
     const withoutAudit = withTrailer(
       lines.filter((line) => {
@@ -1122,9 +964,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
         },
       },
     );
-    // The same replica (no change) commits — and sets the audit position:
-    // the mark itself starts the position at 0 (ruling C revision, round
-    // 5), so only a replica behind a replicated position regresses
     const same = await upload(lines, 50);
     expect(same.status).toBe(200);
     expect(((await same.json()) as WirePageOutcome).committed).toBeDefined();
@@ -1139,18 +978,12 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     const header = parsedLine(lines[0]);
     const rows = parsedLine(lines[lines.length - 1])["rows"] as Record<string, unknown>;
     expect((await mark(OWNER)).status).toBe(200);
-    // A string count in the trailer's rows: refused at decode, before
-    // the count check (a well-typed wrong count is row-count-mismatch, above)
     const wrongCount = withTrailer(lines, { rows: { ...rows, variables: "5" } });
     await expectRejected(await upload(wrongCount, 50), "malformed");
-    // A string schemaVersion: refused at decode (a numeric mismatch is
-    // schema-mismatch, above)
     await expectRejected(
       await page(OWNER, 0, [JSON.stringify({ ...header, schemaVersion: "3" })]),
       "malformed",
     );
-    // The restore's reader decodes the same wire union: the same forged
-    // trailer is malformed on the import too
     await expect(restoreLinesRefusal(wrongCount)).resolves.toBe("malformed");
   });
 
@@ -1199,7 +1032,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       _tag: "RotationProposalRejected",
       reason: "mirror-read-only",
     });
-    // An unauthorized workload still gets the uniform 404 (the mark is judged after authorization)
     const stranger = await mint(
       await makeOidcToken({ subject: "repo:someone-else/demo:ref:refs/heads/main" }),
     );
@@ -1207,16 +1039,11 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
   });
 
   it("refuses a replica whose projections regress against the live state or do not bind to its chain, and still commits the legitimate one", async () => {
-    // The source's history, as in the main test: an older replica and a
-    // newer one (a second variable — a new manifest version, new
-    // statement and version rows, the same boundary checkpoint)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const older = await exportAll();
     await createVariableOk(dek, "var-second", "SECOND", "two");
     const newer = await exportAll();
-    // The mirror's bootstrap is the older replica; the first replication
-    // of it commits and sets the live projection state
     await restoreLines(older);
     expect((await mark(OWNER)).status).toBe(200);
     expect((await upload(older, 50)).status).toBe(200);
@@ -1268,13 +1095,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       return ((await pulled.json()) as { variables: unknown[] }).variables.length;
     };
 
-    // A manifest from the older export paired with the newer chain and
-    // audit segments. Against the live mirror state this is an equal
-    // version with an equal signed-bytes hash, so the regression check
-    // passes it, and no checkpoint tuple notarizes that version either;
-    // the refusal is the statement-count binding (verifyStagedManifests):
-    // the staged statement set (environment 1 + variables 2) counts 3
-    // manifest reissues, the spliced manifest names version 2
     const olderManifest = parsedLine(older[rowIndexOf(older, "environment_manifests", () => true)])[
       "values"
     ] as unknown[];
@@ -1292,8 +1112,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await stagingTables()).toEqual([]);
     expect(await pulledCount()).toBe(1);
 
-    // A checkpoint row the staged chain does not carry: its values
-    // digest is not the tuple the boundary checkpoint entry notarized
     const forgedCheckpoint = rewriteRow(
       newer,
       "environment_checkpoints",
@@ -1306,8 +1124,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await stagingTables()).toEqual([]);
     expect(await pulledCount()).toBe(1);
 
-    // A statement row the mirror already holds, rewritten: the
-    // append-only rows are preserved row for row, as the audit log's are
     const varIdColumn = columnsOf(newer, "variable_meta_statements").indexOf("variable_id");
     const rewrittenStatement = rewriteRow(
       newer,
@@ -1320,14 +1136,12 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     await expectRejected(await upload(rewrittenStatement, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
 
-    // The legitimate replica still commits and is served
     expect((await upload(newer, 50)).status).toBe(200);
     expect(await pulledCount()).toBe(2);
     expect((await unmark(OWNER)).status).toBe(200);
   });
 
   it("bootstraps into a fully empty mirror and replicates a variable deletion, an epoch rotation and an environment deletion cascade", async () => {
-    // The empty bootstrap: the export before any environment exists
     const genesisOnly = await exportAll();
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -1348,22 +1162,14 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       expect(pulled.status).toBe(200);
       return ((await pulled.json()) as { variables: unknown[] }).variables.length;
     };
-    // Into the empty mirror: the creation composite's wraps, manifest
-    // (version = the statement count) and checkpoint all bind
     expect((await upload(withVars, 50)).status).toBe(200);
     expect(await pulledCount()).toBe(2);
     expect(await count("SELECT COUNT(*) AS n FROM dek_wraps")).toBe(3);
-    // A variable deletion: the version rows go (the tombstone excuses
-    // them), the statement rows stay, the manifest advances by the count
     expect((await upload(afterVarDelete, 50)).status).toBe(200);
     expect(await pulledCount()).toBe(1);
-    // A rotation: the new epoch's wrap set is admitted, the old epoch's
-    // rows are preserved, the manifest count takes the rotation
     expect((await upload(afterRotate, 50)).status).toBe(200);
     expect(await count("SELECT COUNT(*) AS n FROM dek_wraps")).toBe(6);
     expect(await pulledCount()).toBe(1);
-    // The deletion cascade: every subordinate row of the environment
-    // goes, excused by the chain's delete_environment; the tombstone stays
     expect((await upload(afterEnvDelete, 50)).status).toBe(200);
     expect(await count("SELECT COUNT(*) AS n FROM dek_wraps")).toBe(0);
     expect(await count("SELECT COUNT(*) AS n FROM variables")).toBe(0);
@@ -1381,10 +1187,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
   it("refuses replicas that drop, rewrite or resurrect wraps or attestations, flip the policy, or carry unanchored proposals or snapshot rows", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // A locked policy and a head attestation on the source, so the live
-    // mirror state holds both (the attestation row is inserted directly,
-    // as the main test inserts lease bindings; its declared head is the
-    // current head, so it resolves against the staged chain)
     await setSchemaPolicyOk("locked");
     await queryProjectDo(
       projectId,
@@ -1396,8 +1198,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       "ab".repeat(64),
     );
     const older = await exportAll();
-    // Under the locked policy a creation must carry a varType (the
-    // one-time schema check at creation, §12-11): the v3 typed path
     const secondCreate = await createVariableV3Request({
       variableId: "var-second",
       name: "SECOND",
@@ -1469,30 +1269,20 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       return ((await pulled.json()) as { variables: unknown[] }).variables.length;
     };
 
-    // Wholesale wrap deletion: staging zero wrap rows fires no epoch
-    // check, but every live wrap must be preserved — refused
     await expectRejected(await upload(withoutRows(newer, "dek_wraps"), 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // A same-primary-key wrap rewrite (ciphertext swap): preservation is
-    // row for row, not key for key — refused
     const rewrittenWrap = rewriteRow(newer, "dek_wraps", (values, columns) => {
       values[columns.indexOf("ciphertext_hex")] = "ff".repeat(48);
     });
     await expectRejected(await upload(rewrittenWrap, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // A dropped attestation: no remove_member / revoke_device in the
-    // delta excuses it — refused
     await expectRejected(await upload(withoutRows(newer, "head_attestations"), 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // An attestation mark forged at an equal seq (accepted_at is part of
-    // the row's identity there; the commit reads MAX(accepted_at) back)
     const forgedMark = rewriteRow(newer, "head_attestations", (values, columns) => {
       values[columns.indexOf("accepted_at")] = 9999999999999;
     });
     await expectRejected(await upload(forgedMark, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // A new attestation whose declared head the staged chain does not
-    // carry at that seq — refused by the head resolution
     const unresolvedHead = insertRow(newer, "head_attestations", [
       READER,
       "cd".repeat(16),
@@ -1504,16 +1294,11 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     ]);
     await expectRejected(await upload(unresolvedHead, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // A schema-policy flip the staged audit log does not fold to (the
-    // log's only policy row folds to locked) — refused
     const flippedPolicy = rewriteRow(newer, "project_settings", (values, columns) => {
       values[columns.indexOf("schema_policy")] = "enabled";
     });
     await expectRejected(await upload(flippedPolicy, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // A rotation proposal no staged rotation.proposed row mints (a
-    // resurrection carries its closing row in the log the same way) —
-    // refused
     const unanchoredProposal = insertRow(newer, "rotation_proposals", [
       "00112233445566778899aabbccddeeff",
       ENV,
@@ -1526,8 +1311,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     ]);
     await expectRejected(await upload(unanchoredProposal, 50), "malformed");
     expect(await stagingTables()).toEqual([]);
-    // An extra checkpoint snapshot row at an equal values digest: the
-    // enumeration is exact in both directions — refused
     const extraSnapshot = insertRow(newer, "checkpoint_snapshot_values", [
       ENV,
       "var-extra",
@@ -1538,7 +1321,6 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     expect(await stagingTables()).toEqual([]);
     expect(await pulledCount()).toBe(1);
 
-    // The legitimate replica still commits and is served
     expect((await upload(newer, 50)).status).toBe(200);
     expect(await pulledCount()).toBe(2);
     expect((await unmark(OWNER)).status).toBe(200);

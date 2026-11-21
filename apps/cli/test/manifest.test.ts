@@ -1,14 +1,3 @@
-// CLI wiring tests for the environment manifest (CRYPTO_SPEC §4.3 / §6.3,
-// AUTH_SPEC §12 — the manifest clause of session-27 §13-5).
-//
-// Pillars of verification:
-//  1. Distribution-time verification: absence = uniform refusal · digest
-//     recomputation (missing variable / tombstone) · epoch consistency ·
-//     issuer role insufficiency (wiring into crypto's shared implementation)
-//  2. Manifest extension of the floor: rules (a) regression, (b) same-version
-//     difference, (c) old-epoch burn-in on an advancing version
-//     (persistent detection across sessions)
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -46,15 +35,11 @@ import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 const ENV_ID = "prod";
 
 let owner: TestUser;
-/** A member with role reader (for the issuer-role-insufficiency negative). */
 let reader: TestUser;
-/** A second member with role member (for same-version difference = equivocation's different issuer). */
 let member2: TestUser;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
-/** [genesis, add reader, add member2, create ENV] (epoch 1). */
 let chain1: BuiltChain;
-/** chain1 + rotate_epoch(2) (a strict extension of chain1). */
 let chain2: BuiltChain;
 let wrap1: WireRecipientDek;
 let wrap2: WireRecipientDek;
@@ -152,9 +137,7 @@ interface PullJson {
   }[];
   readonly deletedVariables?: readonly WireDistributedVariableStatement[];
   readonly deks: readonly WireRecipientDek[];
-  /** undefined = do not distribute a manifest (for the absence negative). */
   readonly manifest?: WireDistributedManifest;
-  /** A fixture that stacks a baseline checkpoint on the chain bundles the corresponding enumeration (§12-7). */
   readonly checkpointSnapshot?: WireCheckpointSnapshot;
 }
 
@@ -190,7 +173,6 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
   return env;
 }
 
-/** Phase switch into the same TestEnv (= the same floor) — same style as floor-detection. */
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<void> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -204,7 +186,6 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
 
 const alphaEntry = () => ({ variableId: "va", statement: alphaStatement, value: alphaValue1 });
 
-/** The honest manifest (epoch 1 · chain1 head · [ALPHA]). Overrides build the negatives. */
 function manifestV1(
   overrides: {
     readonly statements?: readonly WireDistributedVariableStatement[];
@@ -212,7 +193,6 @@ function manifestV1(
     readonly head?: { readonly seq: number; readonly hashHex: string };
     readonly issuer?: TestUser;
     readonly manifestVersion?: number;
-    /** prev for version > 1 (for fixtures satisfying the adjacent prev check — M1-A1). */
     readonly prevManifestSigHashHex?: string;
   } = {},
 ): Promise<WireDistributedManifest> {
@@ -232,11 +212,6 @@ function manifestV1(
 
 describe("manifest distribution-time verification (§6.3 — wiring into crypto's shared implementation)", () => {
   it("absence is uniformly refused", async () => {
-    // The omission fails the wire schema's decode before verification
-    // — the same verdict as a dropped environment statement (§6.3;
-    // required on the wire since AUTH_SPEC 0.28-draft). The renderer
-    // dedicated to it (failure.ts) pins the verdict wording, without
-    // the generic "check the values / versions" guidance
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({ currentEpoch: 1, variables: [alphaEntry()], deks: [wrap1] }),
@@ -248,9 +223,6 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
   });
 
   it("refuses a missing variable (distributing a variable that is not in the digest = the carriage form of an omission in reverse)", async () => {
-    // The manifest is signed with the digest of the empty set → the
-    // distribution contains ALPHA = recomputation mismatch. The reverse
-    // direction (omitting from the distribution) is covered by the same single check
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({
@@ -275,7 +247,6 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
       status: "deleted",
       metaVersion: 2,
     });
-    // The manifest's digest is signed over actives only (without the tombstone)
     const env = await startEnv([
       chainHandler(chain1),
       pullHandler({
@@ -291,7 +262,6 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
   });
 
   it("refuses an epoch mismatch (not the current epoch at the declared head)", async () => {
-    // A manifest that burns epoch 1 into the post-rotate head (seq 5 = epoch 2)
     const env = await startEnv([
       chainHandler(chain2),
       pullHandler({
@@ -341,7 +311,6 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
 describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to manifests)", () => {
   it("refuses a manifestVersion regression (rule (a))", async () => {
     const env = await makeTestEnv();
-    // Phase 1: establish the floor with the v2 manifest
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -353,7 +322,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // Phase 2: v1 over the same set (an old valid manifest that passes every check standalone)
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -371,16 +339,7 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
   });
 
   it("the chain's checkpoint baseline (F3) does not substitute for the floor's rule (a) (F2) — a distribution at-or-above the baseline but below the floor is refused by the floor (PR-F4 cross-layer)", async () => {
-    // The latest checkpoint on the chain notarizes mv1 (the boundary-checkpoint
-    // shape). The floor knows v3 from the pull. A v2 distribution passes the
-    // §4.3 (4) baseline (mv1 or above) so checkpoint-regressed does not fire,
-    // but the floor's rule (a) (below v3) rejects it — pinning that the coarse
-    // shared criterion (the chain, which lags the floor because meta operations
-    // do not issue checkpoints) never short-circuits the fine local criterion (the floor)
     const v1 = await manifestV1();
-    // The baseline checkpoint's values_digest is the actual computed value of
-    // the distributed set ([ALPHA v1]) — the corresponding enumeration
-    // (checkpointSnapshot) is bundled into the pull (rule 2 — PR-M3)
     const snapshotValues = await checkpointSnapshotValuesOf([alphaValue1]);
     const valuesDigest = await computeEnvValuesDigest(
       SUITE_ID,
@@ -418,7 +377,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
       values: snapshotValues,
     };
     const env = await makeTestEnv();
-    // Phase 1: establish the floor with v3 (a different version from the mv1 tuple — verified on the strict path)
     await startPhase(env, [
       chainHandler(checkpointChain),
       pullHandler({
@@ -431,7 +389,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // Phase 2: v2 (at-or-above the chain baseline mv1, below the floor's v3)
     await startPhase(env, [
       chainHandler(checkpointChain),
       pullHandler({
@@ -461,7 +418,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // Same version, same set, but a different issuer = valid signatures over different signed bytes
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -477,7 +433,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
 
   it("refuses an advancing manifestVersion that burns in an old epoch (applying rule (c) to manifests)", async () => {
     const env = await makeTestEnv();
-    // Phase 1: establish an epoch-2 floor (pull-time epoch criterion = 2)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
@@ -493,14 +448,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // Phase 2: the version advances (4 — a gap of ≥2 from the floor's v2 means
-    // the adjacent-prev check [M1-A1] does not apply, and the actual-equality
-    // of an intermediate predecessor is uncheckable per the known latest-only
-    // constraint), but the manifest burns in epoch 1 (declaring membership
-    // head seq 4 from the old epoch is cryptographically valid). Rejecting
-    // this gap-shaped advancing injection is exactly the floor's rule (c)
-    // applied to manifests (the adjacent shape is rejected earlier by the
-    // shared verifier's predecessor-epoch-non-decrease check — the test below)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
@@ -517,11 +464,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
   });
 
   it("rule (c)'s criterion also covers the floor manifest's own epoch (the window where pullEpoch lags)", async () => {
-    // In the bounded-resync shape, pullEpoch stays at the pre-response view
-    // (= the old epoch), while the floor manifest already knows epoch 2 as
-    // verified. If the criterion were pullEpoch alone, an advancing
-    // manifestVersion burning in the old epoch (cryptographically valid via a
-    // declaration of the old membership head) would slip through
     const env = await makeTestEnv();
     let chainCalls = 0;
     const progressiveChain: MockHandler = onRequest("GET", `/projects/${projectId}/chain`, () => {
@@ -538,9 +480,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
         },
       };
     });
-    // Phase 1: starting from the old view (chain1), the epoch-2 value + v2
-    // manifest (head seq 5 = future) is accepted by bounded resync → floor:
-    // pullEpoch 1, manifest {v2, epoch 2}
     await startPhase(env, [
       progressiveChain,
       pullHandler({
@@ -556,11 +495,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
 
-    // Phase 2: the version advances (4 — gap ≥2 = outside the adjacent-prev
-    // check), but the manifest burns in epoch 1. It would slip through on the
-    // pullEpoch (1) criterion, but is rejected because the floor manifest's
-    // epoch (2) joins the criterion (the transitive form of epoch
-    // non-decrease across the manifest chain)
     await startPhase(env, [
       chainHandler(chain2),
       pullHandler({
@@ -578,7 +512,6 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
 });
 
 describe("prev-chain verification of adjacent manifestVersions (§4.3 verification rule (1) — session-31 M1-A1)", () => {
-  /** The response of a metadata-only pull (§12-7) — for pinning push's name-resolution path = the metadata path. */
   function metadataHandler(manifest: WireDistributedManifest): MockHandler {
     return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
       status: 200,
@@ -594,7 +527,6 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
     }));
   }
 
-  /** Phase 1: establish the floor with a v1 manifest and return its signed-bytes hash. */
   async function establishV1Floor(env: TestEnv): Promise<string> {
     await startPhase(env, [
       chainHandler(chain1),
@@ -627,7 +559,6 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
   it("floor v1 → v2 with a different prev: refused as evidence of branching (even with a valid signature and correct digest)", async () => {
     const env = await makeTestEnv();
     const v1Hash = await establishV1Floor(env);
-    // Holds a valid signature, correct digest, and correct epoch, but prev is an arbitrary 64-hex
     const forged = await manifestV1({
       manifestVersion: 2,
       prevManifestSigHashHex: "ab".repeat(32),
@@ -644,7 +575,6 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("declares a prev that does not match the verified predecessor");
-    // Evidence: the floor-side hash, the distributed prev, issuer, declared head (M1-A1 amendment 3)
     expect(errors).toContain(v1Hash);
     expect(errors).toContain("ab".repeat(32));
     expect(errors).toContain(`issuer=${owner.userId}`);
@@ -654,9 +584,6 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
   it("floor v1 → v3 (version gap ≥ 2): accepted per the known latest-only constraint (§14.3)", async () => {
     const env = await makeTestEnv();
     await establishV1Floor(env);
-    // Intermediate versions (v2) are never distributed by design, so prev's
-    // actual-equality is uncheckable — do not pretend it is checkable (prev
-    // stays a fixture dummy)
     await startPhase(env, [
       chainHandler(chain1),
       pullHandler({
@@ -685,9 +612,6 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
   });
 
   it("an adjacent v2 that chains prev correctly but regresses the epoch is refused as epoch-regressed", async () => {
-    // The floor's predecessor carries both hash and epoch (the shared
-    // verifier's §4.1 isomorphic check). An old-epoch burn-in in adjacent
-    // advance is rejected here (the gap shape is the floor's rule (c))
     const env = await makeTestEnv();
     await startPhase(env, [
       chainHandler(chain2),
@@ -722,20 +646,9 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
   });
 });
 
-/* -------------------------------------------------------------------------- */
-/* A rotate-accepting stub server (the rotate path's in-test peer)          */
-/* -------------------------------------------------------------------------- */
-
-/**
- * A stub server that accepts the rotate composite and then distributes
- * the accepted manifest (the manifest is always bundled — required on
- * the wire since 0.28-draft).
- */
 function makeRotateAcceptingServer(input: {
   readonly serveManifestAfterAccept?: boolean;
-  /** The initially distributed manifest. */
   readonly initialManifest: WireDistributedManifest;
-  /** The initial chain (default = chain1). */
   readonly built?: BuiltChain;
   readonly currentEpoch?: number;
   readonly variables?: {
@@ -758,8 +671,6 @@ function makeRotateAcceptingServer(input: {
   const pushes: string[] = [];
   let currentEpoch = input.currentEpoch ?? 1;
   let manifest: WireDistributedManifest = input.initialManifest;
-  // The stored checkpoint snapshot (§16-2 — saved when a boundary checkpoint
-  // is accepted and bundled into later value-bearing pulls. Material for rule 2 — PR-M3)
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
   const handlers: MockHandler[] = [
     onRequest("GET", `/projects/${projectId}/chain`, () => ({
@@ -821,14 +732,11 @@ function makeRotateAcceptingServer(input: {
       }
       const body = request.body as WireRotateBody;
       rotateBodies.push(body);
-      // Accepts the 2 entries rotate + boundary checkpoint (§12-4)
       entries.push(body.entry, body.checkpoint);
       hashes.push(
         await computeChainEntryHash(body.entry),
         await computeChainEntryHash(body.checkpoint),
       );
-      // Snapshot save in the same transaction as acceptance (§16-2 — the
-      // enumeration of the distributed set at acceptance time)
       checkpointSnapshot = {
         chainSeq: entries.length,
         entryHashHex: hashes[hashes.length - 1] ?? "",
@@ -873,38 +781,24 @@ function makeRotateAcceptingServer(input: {
 
 describe("rollback detection after rotate acceptance (§6.3 / §4.3 (4))", () => {
   it("a server that keeps distributing an old manifestVersion after acceptance is detected by the same run's rescan", async () => {
-    // rotate promotes the next manifestVersion it signed into the floor right
-    // after acceptance. Because the boundary checkpoint (PR-F3b) also pins the
-    // accepted-version baseline on the chain, a server that keeps distributing
-    // the old manifest (swallowing the accepted v2) is rejected by §4.3
-    // verification rule (4) (checkpoint-regressed) before the floor check
-    // (rule (a)) — one more detection layer, but the fixed point that the
-    // swallow is rejected within the same run is unchanged
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeRotateAcceptingServer({
       initialManifest: staleManifest,
-      // Keeps distributing v1 without storing the accepted v2 (models a rollback server)
       serveManifestAfterAccept: false,
     });
     const env = await startEnv(state.handlers);
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "swallow"], env.layer)).toBe(1);
-    // The composite itself was accepted (the refusal is the verification of the post-acceptance rescan pull)
     expect(state.rotateBodies).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("checkpoint-regressed");
   });
 
   it("even when the floor write fails, the accepted-version detection criterion still works via the same run's rescan", async () => {
-    // Even if commitManifest's disk write fails, the accepted rotate's boundary
-    // checkpoint remains the baseline on the chain — a server that keeps
-    // distributing the old version after acceptance is rejected as
-    // checkpoint-regressed within the same run (the missing floor persistence is disclosed via a warning)
     const staleManifest = await manifestV1({ statements: [] });
     const state = makeRotateAcceptingServer({
       initialManifest: staleManifest,
       serveManifestAfterAccept: false,
     });
     const env = await startEnv(state.handlers);
-    // Establish the floor via a prior pull (only the write during rotate fails)
     expect(await runCli(["pull"], env.layer)).toBe(0);
     env.failFloorPushCommits();
     expect(await runCli(["env", "rotate", ENV_ID, "--reason", "floor failure"], env.layer)).toBe(1);

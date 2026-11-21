@@ -1,7 +1,3 @@
-// proxy.package's public surface: only the symbols other src files import.
-// The `maruhi proxy` command pieces live in command.ts, imported directly by
-// commands/index.ts — re-exporting them here would close an import cycle
-// (index → command → commands/pull-run → index).
 export {
   acceptedProxyConfigsPathOf,
   ensurePlainRunOfBrokeredProjectAllowed,

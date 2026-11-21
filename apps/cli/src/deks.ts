@@ -1,21 +1,3 @@
-// Verifying and decrypting distributed wrapped DEKs (CRYPTO_SPEC §5.1 /
-// §5.2 / §12-7).
-//
-// The verification coordinates are assembled independently without
-// trusting declared values: projectId = the verified genesis hash,
-// environmentId = the ID used in the request, recipient = my user_id +
-// my enc public key. The signer's key is "the sig key bound to
-// signerUserId in the verified chain history whose FP matches" (a removed
-// member's key of the time also works — the chain is append-only). A
-// wrap's epoch is a declared value, but because it is bound into both the
-// registration signature (§5.1) and HPKE info (§5), transplanting to
-// another epoch fails verification / decryption.
-//
-// §5.2: an unwrapped DEK is not used in any cryptographic operation
-// (decryption, encryption) until it is matched against the chain-derived
-// (environment, epoch) commitment. A mismatch is a poisoned wrap (blocks
-// a colluding server injecting a false DEK — §14.2-1).
-
 import type { RecipientDek } from "@maruhi/api-schema";
 import { cryptoEffect, type EnvironmentId, type UserId } from "@maruhi/core";
 import type { EncryptionKeyPair, EnvironmentChainState } from "@maruhi/crypto";
@@ -39,7 +21,6 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { deletedEnvironmentMessage, describeScope, outOfScopeMessage } from "./scope.ts";
 
-/** The caller as a DEK recipient (own coordinates for §5.1 verification). */
 export interface DekRecipient {
   readonly userId: UserId;
   readonly encPubHex: string;
@@ -54,13 +35,11 @@ function signerKeyFor(verified: VerifiedProject, wrap: RecipientDek): Uint8Array
   return match === undefined ? null : decodeHex(match.sigPubHex);
 }
 
-/** Verifies one wrap's registration signature and unwraps it (§5.1), with the §5.2 commitment check before the DEK leaves. */
 function verifyAndUnwrapOne(input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly wrap: RecipientDek;
-  /** The chain-derived commitment for that (environment, epoch) (§5.2). */
   readonly expectedCommitmentHex: string;
 }): Effect.Effect<Uint8Array, CliError> {
   const { verified, environmentId, recipient, wrap } = input;
@@ -122,9 +101,6 @@ function verifyAndUnwrapOne(input: {
         ),
       ),
     );
-    // §5.2 / §6.3: do not use the DEK until the commitment check succeeds.
-    // The coordinates are assembled from our own verified values (the
-    // genesis hash, the request's environment ID)
     yield* cryptoEffect(() =>
       verifyDekCommitment({
         context: {
@@ -147,12 +123,6 @@ function verifyAndUnwrapOne(input: {
   });
 }
 
-/**
- * The environments deleted on the verified chain (`delete_environment` —
- * CRYPTO_SPEC §6.2). The chain is the only authority for deletion: no
- * server listing or statement is consulted, so this needs no request and
- * cannot be withheld.
- */
 export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet<EnvironmentId> {
   const deleted = new Set<EnvironmentId>();
   for (const [key, environment] of verified.state.environments) {
@@ -163,20 +133,10 @@ export function chainDeletedEnvironments(verified: VerifiedProject): ReadonlySet
   return deleted;
 }
 
-/**
- * The chain-verified environment ids in `createdAtSeq` insertion order's
- * map-key view (the keys are minted EnvironmentId at the verified
- * state's seal — chain-verify.ts's sealChainState).
- */
 export function chainEnvironmentIds(verified: VerifiedProject): readonly EnvironmentId[] {
   return [...verified.state.environments.keys()];
 }
 
-/**
- * Chain-derived environment state (§6.2) of a live environment. Distributing
- * a not-yet-created environment contradicts the chain in the server
- * response; a deleted one is never read, written or rotated (§6.3).
- */
 export function requireChainEnvironment(
   verified: VerifiedProject,
   environmentId: EnvironmentId,
@@ -197,41 +157,18 @@ export function requireChainEnvironment(
   return Effect.succeed(environment);
 }
 
-/**
- * Verifies every distributed wrap (§5.1) and unwraps it, indexing DEKs by
- * epoch (§12-7: latest versions may span epochs, so all epochs are needed).
- * Any failure aborts — silently skipping a wrap would hide tampering.
- *
- * Phantom-epoch defense: a wrap's epoch must be at or below the
- * chain-derived current epoch. §12-6's "1 through the current epoch" is
- * server-enforced; under a distrusted server this client check is the
- * main line (accepting a DEK for an epoch with no rotate_epoch on the
- * chain lets a colluding server inject false values via an attacker DEK
- * signed by a regular member).
- */
 const verifyAndUnwrapDeks = Effect.fn("deks.verifyAndUnwrapDeks")(function* (input: {
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
   readonly deks: readonly RecipientDek[];
 }): Effect.fn.Return<ReadonlyMap<number, Redacted.Redacted<Uint8Array>>, CliError> {
-  // An environment's existence itself is chain-derived (§6.2):
-  // distribution of an environment absent from the chain is refused
-  // wholesale as a phantom environment
   const environment = yield* requireChainEnvironment(input.verified, input.environmentId);
   const chainEpoch = environment.currentEpoch;
   const byEpoch = new Map<number, Redacted.Redacted<Uint8Array>>();
-  // Open only the rows addressed to my devices (AUTH_SPEC §12-6's
-  // device axis — one response carries all devices of the same person.
-  // DK K4-16: read → verify signature → unwrap. Rows for other devices
-  // are not poisoned wraps)
   const mine = input.deks.filter((wrap) => wrap.recipientEncPubHex === input.recipient.encPubHex);
   for (const wrap of mine) {
     if (wrap.suite !== SUITE_ID) {
-      // Currently unreachable because of the Schema Literal pin, but
-      // since the verification coordinates use the declared suite, pin
-      // it explicitly on the CLI side too (defense against a future
-      // union)
       return yield* Effect.fail(cliError(`The DEK wrap uses an unknown suite (${wrap.suite})`));
     }
     if (wrap.epoch > chainEpoch) {
@@ -246,9 +183,6 @@ const verifyAndUnwrapDeks = Effect.fn("deks.verifyAndUnwrapDeks")(function* (inp
         cliError(`Duplicate DEK wraps for the same epoch (epoch=${wrap.epoch})`),
       );
     }
-    // The chain-derived commitment (§5.2). For every epoch in
-    // 1 ≤ epoch ≤ current, a create / rotate entry already published
-    // the commitment (§6.2 consensus rules)
     const expectedCommitmentHex = environment.dekCommitments.get(wrap.epoch);
     if (expectedCommitmentHex === undefined) {
       return yield* Effect.fail(
@@ -264,72 +198,30 @@ const verifyAndUnwrapDeks = Effect.fn("deks.verifyAndUnwrapDeks")(function* (inp
       wrap,
       expectedCommitmentHex,
     });
-    // The unwrapped DEK is wrapped here (only after the §5.2 commitment
-    // check passes — a DEK before the check never leaves the inside of
-    // verifyAndUnwrapOne)
     byEpoch.set(wrap.epoch, Redacted.make(dek, { label: "dek" }));
   }
   return byEpoch;
 });
 
-/**
- * The set of environment keys derived from a verified view: the pair of
- * the chain-derived current epoch and the my-addressed DEKs verified and
- * unwrapped under the same view.
- */
 export interface EnvironmentKeys {
   readonly currentEpoch: number;
   readonly deksByEpoch: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
 }
 
-/**
- * Among 1 through the current epoch, the epochs with no verified and
- * unwrapped my-addressed DEK (the difference from CRYPTO_SPEC §7's
- * all-epochs distribution). The warning of a pull with values and the
- * reachability check of `device add` (DK K12-2) judge with the same
- * function — the structure removes inputs where an ahead-of-time report
- * and a later warning could disagree.
- */
 export function missingEpochsOf(keys: EnvironmentKeys): readonly number[] {
   return Array.from({ length: keys.currentEpoch }, (_, index) => index + 1).filter(
     (epoch) => !keys.deksByEpoch.has(epoch),
   );
 }
 
-/**
- * Derives the environment keys — the chain-derived current epoch and the
- * caller's verified, unwrapped DEKs — from one verified view, so that "the
- * epoch and the DEK set come from the same verified view" is enforced by
- * construction instead of by convention.
- *
- * Fetch-path precedence: if cached (the known set already verified in
- * this session) has the current epoch, do not refetch → else if
- * prefetched (the wraps bundled with a pull of values — removes the
- * §12-7 double fetch) exists, verify and unwrap it → else fetch listMine
- * and verify and unwrap. Verification (§5.1 registration signature +
- * §5.2 commitment check) is mandatory on every path.
- *
- * **Receiver-side scope rule (CRYPTO_SPEC §6.3 — 2026-09-15 ES K4,
- * design record K4-F)**: among wraps addressed to me, one whose
- * environment ∉ my scope is not used. Because this is the only
- * acquisition point of my-addressed DEKs, placing the check here makes
- * "not used" hold by structure. The with-values path stops earlier at
- * the pre-flight check (K4-C), so arrival is limited to a race (scope
- * shrank during the sync) or a caller error; abort with a fail-closed
- * typed error (the wrap is neither fetched nor unwrapped, and its
- * content never appears in the message).
- */
 export const environmentKeysFor = Effect.fn("deks.environmentKeysFor")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly environmentId: EnvironmentId;
   readonly recipient: DekRecipient;
-  /** Wraps bundled with a pull of values (raw wire shape, assumed verified under the same view as verified). */
   readonly prefetched?: readonly RecipientDek[] | null | undefined;
-  /** The known set already verified and unwrapped in this session (no refetch when it has the current epoch). */
   readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>> | undefined;
 }): Effect.fn.Return<EnvironmentKeys, CliError> {
-  // The current epoch is a chain-derived value (§6.2 — a not-yet-created environment stops here)
   const currentEpoch = (yield* requireChainEnvironment(input.verified, input.environmentId))
     .currentEpoch;
   const self = input.verified.state.members.get(input.recipient.userId);
@@ -338,10 +230,6 @@ export const environmentKeysFor = Effect.fn("deks.environmentKeysFor")(function*
       cliError("You are not a chain-derived member of this project (no DEK is addressed to you)"),
     );
   }
-  // The unwrapping device = my valid device matching the enc key at
-  // hand (DK K4-16). A DEK for an environment outside the effective
-  // scope (person ∩ device — K4-17) is not used even when addressed to
-  // me
   const device = yield* ownDeviceOrFail(input.verified, self, {
     encPubHex: input.recipient.encPubHex,
   });

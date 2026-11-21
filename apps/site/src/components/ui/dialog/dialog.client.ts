@@ -8,8 +8,6 @@ mount("[data-dialog]", (root) => {
   const observer = new MutationObserver(sync);
   observer.observe(dialog, { attributes: true, attributeFilter: ["open"] });
 
-  // Close on a backdrop click only when the press started there too: a text
-  // selection dragged out of the dialog ends with a click on the backdrop.
   let pressedOn: EventTarget | null = null;
   const onPress = (e: PointerEvent) => {
     pressedOn = e.target;
@@ -25,7 +23,6 @@ mount("[data-dialog]", (root) => {
     observer.disconnect();
     dialog.removeEventListener("pointerdown", onPress);
     dialog.removeEventListener("click", onBackdrop);
-    // A swap while open never fires `close`; balance the scroll lock.
     if (dialog.open) unlockScroll();
   };
 });

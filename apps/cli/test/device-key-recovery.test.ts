@@ -1,8 +1,3 @@
-// Integration tests for `maruhi device add / approve / list / revoke` and the
-// first-sync device registration (CRYPTO_SPEC §3 / §6.2 / §7, AUTH_SPEC §13-11
-// — 2026-09-19 DK K4. Design doc dk-design.md §9).
-// Device ops are signed / verified with real crypto; the server is a wire-level mock.
-
 import { encodeHex, wrapMasterSecret } from "@maruhi/crypto";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -37,15 +32,9 @@ import type { TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";
 import { type MockHandler, onRequest } from "./support/server.ts";
 
-/**
- * Scaffolding for reserve-key rotate: the state where the previous run
- * interrupted at the ledger swap (the ledger holds N1 = reserve; the original
- * reserve key O = dev2 is marked revoked in the record; both O and N1 are on the chain).
- */
 async function reserveRotateFixture(options: {
   readonly withEnvironment: boolean;
   readonly dekRegisterStatus?: number;
-  /** Whether to put the old reserve key (dev2 / reserve) on the chain (default true. false = neither revocation nor cleanup happens). */
   readonly retiringOnChain?: boolean;
 }): Promise<{
   readonly env: TestEnv;
@@ -126,16 +115,11 @@ async function reserveRotateFixture(options: {
 
 describe("maruhi key reserve rotate (re-run — a Bugbot find)", () => {
   it("even if the previous run interrupted at the ledger swap, it revokes the record's old reserve keys together", async () => {
-    // The previous interruption: the ledger was swapped to N1 (= reserve) and
-    // the original reserve key O (= dev2) was marked revoked in the record,
-    // but the chain still carries both O and N1 (no environment — the
-    // post-revocation cleanup [rotate] is not examined here)
     const { env, state, origin, ledgerPuts } = await reserveRotateFixture({
       withEnvironment: false,
     });
     expect(await runCli(["key", "reserve", "rotate"], env.layer), env.errors.join("\n")).toBe(0);
     expect(ledgerPuts).toHaveLength(1);
-    // revoke_device targets both O and N1 (not N1 alone)
     const revoke = state.appended.find((entry) => entry.op === "revoke_device");
     expect(revoke?.payload).toEqual({
       targetUserId: owner.userId,
@@ -146,23 +130,18 @@ describe("maruhi key reserve rotate (re-run — a Bugbot find)", () => {
     expect(env.logs.join("\n")).toContain(
       `revoking the previous reserve keys ${[dev2.fingerprintHex, reserve.fingerprintHex].toSorted().join(", ")} on the 1 project the server lists for you`,
     );
-    // Local record: O and N1 revoked; only the new key is a valid reserve key
     const recorded = await readOwnDevices(env, origin);
     const active = recorded.filter((row) => row.source === "reserve" && row.revokedAtMs === null);
     expect(active).toHaveLength(1);
     expect([dev2.fingerprintHex, reserve.fingerprintHex]).not.toContain(
       active[0]?.keyFingerprintHex,
     );
-    // The reserve key's secret never remains in the keychain
     const keychain = [...env.keychain.values()].join("\n");
     expect(keychain).not.toContain(reserve.encSkHex);
     expect(keychain).toContain(owner.encPubHex);
   });
 
   it("reports a backfill failure to the new reserve key and names the pull path specifically (DK K11's G9)", async () => {
-    // Never putting the old reserve key on the chain = neither revocation nor
-    // the post-revocation cleanup (rotate) happens. The exit code is decided
-    // by the backfill failure alone (1, same as approval / recovery — the K11-14 ownership ruling)
     const { env, built } = await reserveRotateFixture({
       withEnvironment: true,
       dekRegisterStatus: 500,
@@ -181,7 +160,6 @@ describe("maruhi key reserve rotate (re-run — a Bugbot find)", () => {
 
 describe("maruhi key recovery --replace (replace without opening the ledger — K4-38)", () => {
   it("revokes the old reserve key in the record on every project and registers the new reserve key", async () => {
-    // The chain: owner's device + the old reserve key (reserve). The ledger cannot be opened (the code is lost)
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(reserve) },
@@ -221,16 +199,13 @@ describe("maruhi key recovery --replace (replace without opening the ledger — 
     expect(await runCli(["key", "recovery", "--replace"], env.layer), env.errors.join("\n")).toBe(
       0,
     );
-    // The ledger is replaced without being read
     expect(state.paths()).not.toContain("GET /auth/recovery");
     expect(ledgerPuts).toHaveLength(1);
-    // The new reserve key's add_device and the old reserve key's revoke_device
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device", "revoke_device"]);
     expect(state.appended[1]?.payload).toEqual({
       targetUserId: owner.userId,
       deviceFingerprintsHex: [reserve.fingerprintHex],
     });
-    // The record: the old reserve key revoked, only the new reserve key valid
     const recorded = await readOwnDevices(env, server.origin);
     expect(
       recorded.find((row) => row.keyFingerprintHex === reserve.fingerprintHex)?.revokedAtMs,
@@ -238,7 +213,6 @@ describe("maruhi key recovery --replace (replace without opening the ledger — 
     const active = recorded.filter((row) => row.source === "reserve" && row.revokedAtMs === null);
     expect(active).toHaveLength(1);
     expect(active[0]?.keyFingerprintHex).not.toBe(reserve.fingerprintHex);
-    // The reserve key's secret never remains in the keychain
     const keychain = [...env.keychain.values()].join("\n");
     expect(keychain).not.toContain(reserve.encSkHex);
     expect(keychain).toContain(owner.encPubHex);
@@ -248,7 +222,6 @@ describe("maruhi key recovery --replace (replace without opening the ledger — 
 describe("maruhi key recover / key recovery — the on-chain judgment of the ledger key (DK K14)", () => {
   const CODE_PROMPT = "Enter your recovery code: ";
 
-  /** The scene of typing `key recover` on a keyless device (the ledger = `ledgerKey`). `answers` are responses after the code. */
   async function recoverFixture(input: {
     readonly ledgerKey: TestUser;
     readonly built: BuiltChain;
@@ -278,7 +251,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
     return { env, state, origin: server.origin };
   }
 
-  /** The scene of typing `key recovery` on a device that has device key `device` (the ledger = `ledgerKey`, already registered). */
   async function recoveryFixture(input: {
     readonly device: TestUser;
     readonly ledgerKey: TestUser;
@@ -289,9 +261,7 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       readonly mode: "unavailable";
     }[];
     readonly unlistedProjects?: readonly BuiltChain[];
-    /** The project-list GET's response status (default 200). */
     readonly projectsStatus?: number;
-    /** Extra handlers (e.g. the invite-create issuance used for the pre-hiding sync). */
     readonly extra?: readonly MockHandler[];
   }): Promise<{ env: TestEnv; state: ServerState; origin: string; ledgerPuts: unknown[] }> {
     const ledger = await ledgerHandlerFor(
@@ -313,7 +283,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
           ledgerPuts.push(request.body);
           return { status: 204 };
         }),
-        // The ledger rows read by rotate's tail (the old reserve key's passkey / guardian — none)
         onRequest("GET", "/auth/key-wraps", () => ({
           status: 200,
           json: {
@@ -341,11 +310,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
     return { env, state, origin: server.origin, ledgerPuts };
   }
 
-  /**
-   * The record sealed into the ledger: the test's `reserve` is a reserve key
-   * the CLI generated (marked — DK K16); the others (`owner` etc.) are
-   * replicas of pre-DK device keys (unmarked).
-   */
   function ledgerRecordOf(ledgerKey: TestUser) {
     return ledgerKey === reserve ? storedReserveRecord(reserve) : storedMasterRecord(ledgerKey);
   }
@@ -368,15 +332,11 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       `Note: recorded ${reserve.fingerprintHex} on this machine as your reserve key`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([reserve.fingerprintHex]);
-    // Registration is already done before the judgment (the reserve key signs the new device key's add_device)
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
     expect(state.appended[0]?.actor.keyFingerprintHex).toBe(reserve.fingerprintHex);
   });
 
   it("a key without the reserve-key mark is not recorded as a reserve key, even if add_device-issued everywhere (DK K16-6)", async () => {
-    // The ledger = dev2's key (unmarked — not a key this CLI generated as a
-    // reserve key). On the chain it is add_device-issued everywhere (the scene
-    // where K14's inference would have asked "might be a reserve key")
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -388,7 +348,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       `Warning: the opened key ${dev2.fingerprintHex} was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one), so it is not used as your reserve key, and it was not recorded as one. Run \`maruhi key recovery\`: it seals a reserve key in its place`,
     );
     expect(await reserveRowsOf(env, origin)).toEqual([]);
-    // Registration happens regardless of the mark (recovery's purpose is registering a new device key — K4-10)
     expect(state.appended.map((entry) => entry.op)).toEqual(["add_device"]);
   });
 
@@ -505,7 +464,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       `The recovery ledger holds key ${reserve.fingerprintHex}, which is revoked on 1 project (${built.projectId}), so it cannot serve as your reserve key. Creating a new reserve key and sealing it instead`,
     );
     const errors = env.errors.join("\n");
-    // With nowhere still valid, it never says 'still registered'
     expect(errors).not.toContain("is still registered on");
     expect(errors).not.toContain("reissued the recovery code for your reserve key");
     const reserves = await reserveRowsOf(env, origin);
@@ -514,9 +472,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
   });
 
   it("key recovery: a ledger key revoked on only some projects is segregated, and it guides toward revoking where still valid", async () => {
-    // p1: the reserve key is already revoked. p3: dev2 created it and
-    // add_device'd the reserve key (on neither is it the first key — the
-    // judgment is revoked)
     const p1 = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addDeviceOp(dev2) },
@@ -575,10 +530,8 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       built,
       brokenProjects: [{ built: broken, mode: "unavailable" }],
     });
-    // Registration / revocation on unsyncable projects is reported as a failure (exit code 1 — a re-run continues)
     expect(await runCli(["key", "reserve", "rotate"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).not.toContain("Refused to change anything");
-    // Instead of stopping, it names the range it could not check
     expect(env.errors.join("\n")).toContain(
       `Note: 1 project (${broken.projectId}) could not be synced, so whether the key ${reserve.fingerprintHex} is revoked there was not checked`,
     );
@@ -652,7 +605,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
     expect(env.errors.join("\n")).toContain(
       `The recovery ledger holds key ${dev2.fingerprintHex}, which was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one), so it is not used as your reserve key. Run \`maruhi key recovery\` first: it creates a reserve key, seals it with a new recovery code and replaces the ledger. Then re-run \`maruhi key reserve rotate\``,
     );
-    // Neither ledger, chain, nor record changes
     expect(ledgerPuts).toEqual([]);
     expect(state.appendedTo).toEqual([]);
     expect(await reserveRowsOf(env, origin)).toEqual([]);
@@ -756,7 +708,6 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       `The recovery ledger holds key ${dev2.fingerprintHex}, which was not created as a reserve key (its ledger record does not carry the mark maruhi writes when it creates one), so it is not used as your reserve key. Creating a reserve key and sealing it instead`,
     );
     expect(ledgerPuts).toHaveLength(1);
-    // Only the newly generated reserve key is recorded (not the opened dev2 key)
     const reserves = await reserveRowsOf(env, origin);
     expect(reserves).toHaveLength(1);
     expect(reserves).not.toContain(dev2.fingerprintHex);

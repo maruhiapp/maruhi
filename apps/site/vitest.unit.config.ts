@@ -1,11 +1,5 @@
 import { defineConfig } from "vite-plus/test/config";
 
-// Unit tests for the apex site (Nimbus): that the generated theme artifacts
-// (src/styles/brand.css / tokens.ts / logo-dark.svg / duplicated assets)
-// match a regeneration from apps/web/theme/maruhi.css (drift detection
-// for ruling B).
-// Runs without a build, so it is on the root vitest.config.ts projects
-// (quality gate 7).
 export default defineConfig({
   test: {
     name: "site-unit",

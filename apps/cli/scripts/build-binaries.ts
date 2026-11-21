@@ -1,17 +1,3 @@
-// Builds the 5 compiled release binaries and checksums.txt into dist/.
-// Both the release workflow (.github/workflows/release.yml) and local
-// verification call this, keeping the target list, archive format, and
-// checksum format defined in one place.
-//
-// Output (apps/cli/dist/):
-//   maruhi-<target>.tar.gz × 5 (one binary each; the `mh` alias is not bundled —
-//   the installer creates the link. ADR-0015)
-//   checksums.txt (`sha256sum -c` compatible: "<64-hex><space><space><filename>")
-//
-// The Bun runtime inside each binary is the official release zip verified
-// against the SHA-256 pinned in bun-runtimes.ts, for every target including
-// the host one.
-
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,15 +10,12 @@ import { run, TARGETS } from "./shared.ts";
 const cliRoot = fileURLToPath(new URL("..", import.meta.url));
 const distDir = join(cliRoot, "dist");
 
-// The running bun bundles the code that goes next to the pinned runtime
 if (process.versions.bun !== BUN_RUNTIME_VERSION) {
   throw new Error(
     `running bun ${process.versions.bun}, but bun-runtimes.ts pins the ${BUN_RUNTIME_VERSION} runtimes`,
   );
 }
 
-// The strict-mode probe below runs on this host, so the host has to be a
-// release target. Checked before dist/ is cleared or anything is downloaded
 const hostTarget = `bun-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
 if (!TARGETS.some((target) => target.bunTarget === hostTarget)) {
   throw new Error(
@@ -44,9 +27,6 @@ await rm(distDir, { recursive: true, force: true });
 await mkdir(distDir, { recursive: true });
 
 const runtimesDir = await mkdtemp(join(tmpdir(), "maruhi-bun-runtimes-"));
-// bun silently ignores an unknown flag, so a renamed --compile-executable-path
-// would fall back to fetching the runtime from npm. An empty install cache
-// and an unreachable proxy turn that fallback into a failed build
 const unreachable = "http://127.0.0.1:9";
 const compileEnv = {
   ...process.env,
@@ -59,22 +39,8 @@ const compileEnv = {
   no_proxy: "",
 };
 
-// Each binary runs only the code compiled into it: eval(), new Function(),
-// node:vm, import() of JavaScript from a data: URL, and JavaScript or
-// TypeScript files on disk, including a --preload in BUN_OPTIONS, throw
-// EvalError (JSON, TOML and YAML files still load). BUN_OPTIONS can raise
-// this level but not lower it. The exception is BUN_BE_BUN=1 in the process
-// environment, which makes any Bun executable act as the bun CLI, without
-// this flag
 const COMPILE_EXEC_ARGV = "--disallow-code-generation-from-strings=strict";
 
-// The one `bun build --compile` call, so the probe below is compiled exactly
-// like the release binaries. By default a compiled executable loads the .env
-// files and reads the bunfig.toml of the directory it runs in. A .env there
-// could hand the CLI variables such as NODE_TLS_REJECT_UNAUTHORIZED or
-// MARUHI_AGENT_SOCK, and a strict executable exits with EvalError when that
-// bunfig.toml has a preload, so --no-compile-autoload-dotenv and
-// --no-compile-autoload-bunfig turn both off
 const compile = (
   target: (typeof TARGETS)[number],
   executable: string,
@@ -100,12 +66,6 @@ const compile = (
   );
 };
 
-// bun also ignores a misspelled flag, which would ship binaries that still
-// run code from strings or read the working directory's .env or bunfig.toml.
-// So before the host's own target is built, a probe compiled for it runs in a
-// directory whose .env sets MARUHI_STRICT_PROBE_DOTENV and whose bunfig.toml
-// preloads a file that exits 1. The probe exits 0 only when neither file is
-// read and new Function throws
 const STRICT_PROBE = `if (process.env.MARUHI_STRICT_PROBE_DOTENV !== undefined) process.exit(1);
 try {
   new Function("");
@@ -114,10 +74,6 @@ try {
 }
 process.exit(1);
 `;
-// The probe runs without this environment's BUN_* variables: BUN_OPTIONS
-// could switch strict mode on by itself, and BUN_BE_BUN would run the bun CLI
-// instead of the probe (its help exits 0). MARUHI_STRICT_PROBE_DOTENV is left
-// out too, so only the probe's .env can set it
 const probeEnv = Object.fromEntries(
   Object.entries(process.env).filter(
     ([name]) => !name.toUpperCase().startsWith("BUN_") && name !== "MARUHI_STRICT_PROBE_DOTENV",
@@ -159,9 +115,6 @@ try {
     compile(target, executable, "src/bin.ts", join(workDir, target.bin));
 
     const archiveName = `maruhi-${target.name}.tar.gz`;
-    // Windows uses tar.gz too (the stock tar on Windows 10+ can extract it).
-    // If a distribution path that needs zip appears (scoop etc.), revisit the
-    // whole release workflow
     run("tar", ["-czf", join(distDir, archiveName), "-C", workDir, target.bin], cliRoot);
     await rm(workDir, { recursive: true, force: true });
 

@@ -1,14 +1,3 @@
-// The `postgres` and `mysql` connectors (the connector overview lives in
-// connector.ts): a new password, set with ALTER ROLE / ALTER USER over the
-// admin connection (the SqlRunner service) on the alternated role not in
-// use, or on the URL's own role in place, then a connection test of the
-// new URL. Finalize gives the previous role a random password nobody holds
-// or discards MySQL's secondary password; a Postgres role changed in place
-// leaves nothing to finalize.
-//
-// The SqlRunner service and the password generation, with the byte source
-// it draws from (ConnectorCrypto), live here: no other connector uses them.
-
 import { Context, Effect } from "effect";
 
 import {
@@ -25,22 +14,13 @@ import type { RotateRule } from "./rotate-config.ts";
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-/** Runs statements on a database (production: Bun's SQL client — live.ts; tests: a recorder). */
 export interface SqlRunnerShape {
-  /** Connects with `url`, runs the statements in order on one connection, disconnects. */
   readonly execute: (url: string, statements: readonly string[]) => Promise<void>;
-  /** Connects with `url` and runs a trivial query (the connection test of a new credential). */
   readonly probe: (url: string) => Promise<void>;
 }
 
 export class SqlRunner extends Context.Service<SqlRunner, SqlRunnerShape>()("cli/SqlRunner") {}
 
-/**
- * The byte source the connectors' password generation draws from
- * (production: WebCrypto's CSPRNG; tests: a deterministic filler). Effect's
- * own `Random` is deliberately not the answer — it is not cryptographically
- * secure, and the generated strings are credentials.
- */
 interface ConnectorCryptoShape {
   readonly nextBytes: (length: number) => Uint8Array;
 }
@@ -57,7 +37,6 @@ export class ConnectorCrypto extends Context.Reference<ConnectorCryptoShape>(
 const PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const PASSWORD_LENGTH = 32;
 
-/** 32 alphanumerics drawn without modulo bias (rejection sampling over 62 symbols). */
 export function generatePassword(randomBytes: (length: number) => Uint8Array): string {
   const limit = 256 - (256 % PASSWORD_ALPHABET.length);
   let out = "";
@@ -79,7 +58,6 @@ interface DbUrl {
 
 const DB_NAME = /^[A-Za-z0-9_.@-]{1,128}$/;
 
-/** Parses a database URL and takes its (decoded) user; refuses one without credentials. */
 function parseDbUrl(
   bytes: Uint8Array,
   scheme: "postgres" | "mysql",
@@ -121,7 +99,6 @@ function withCredentials(base: URL, user: string, password: string): string {
   return url.toString();
 }
 
-/** The role the rotation sets a password on: the other one of an alternated pair, or the URL's own. */
 function nextRole(
   rule: Extract<RotateRule, { connector: "postgres" | "mysql" }>,
   current: string,
@@ -164,8 +141,6 @@ function adminUrlOf(inputs: RotateInputs, current: DbUrl): string {
 
 function describeSqlFailure(stage: string, error: unknown): ConnectorError {
   const reason = reasonOf(error, "unknown failure");
-  // A driver message can echo the connection URL; keep only the first line
-  // and strip anything that looks like a URL with credentials
   const line =
     reason.split("\n")[0]?.replace(/[a-z0-9+.-]+:\/\/[^\s]+/gi, "<url>") ?? "unknown failure";
   return new ConnectorError({ message: `${stage}: ${line}` });
@@ -194,7 +169,6 @@ export const dbPlan = Effect.fn("connector-sql.dbPlan")(function* (
       };
 });
 
-/** Runs the statements against the admin connection (the SqlRunner service — Bun's SQL client or a test recorder). */
 const sqlExecute = Effect.fn("connector-sql.sqlExecute")(function* (
   url: string,
   statements: readonly string[],
@@ -276,7 +250,6 @@ export const rotateMysql = Effect.fn("connector-sql.rotateMysql")(function* (
   };
 });
 
-/** The connection test of a new credential: a failure is a warning, never a refusal (the issuer accepted the change). */
 const probe = Effect.fn("connector-sql.probe")(function* (
   url: string,
   what: string,

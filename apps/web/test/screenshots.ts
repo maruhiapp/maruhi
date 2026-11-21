@@ -1,22 +1,3 @@
-// Screenshot capture for the authenticated screens (S3-S9, S11)
-// (DP3 ruling F — docs/notes/web-design-pass.md §5).
-//
-// No preview routes or mock data are mixed into the shipped app: only
-// the API is swapped via the same page.route as e2e, and the real
-// serving (cf dev) is rendered by Chromium. Shot in 3 modes —
-// light / dark / mobile (390px) — and fails on any CSP violation. The
-// empty state (`empty`) of each collection is also shot — every
-// fixture is non-empty, so the empty states are never rendered unless
-// flagged here (the heading hierarchy changes).
-//
-//   bun run --filter @maruhi/web build
-//   bun run --filter @maruhi/web preview   # separate terminal (port 8788)
-//   bun run --filter @maruhi/web screenshots [--only <name fragment>]
-//
-// Output goes to SCREENSHOT_DIR (default apps/web/screenshots/ —
-// .gitignore'd).
-// PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is handled the same way as e2e
-// (Playwright's default when unset).
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -52,14 +33,6 @@ function before(route: Route): string | null {
   return new URL(route.request().url()).searchParams.get("before");
 }
 
-/**
- * Mocks every consumed surface. admin=false makes the audit invites
- * axis / S8 return 403 (role wording).
- * empty=true returns each collection empty (the empty state — the
- * heading hierarchy differs from when a collection exists, so it is
- * part of the axe / visual review target. The empty states are never
- * drawn by fixtures alone).
- */
 async function mockApi(
   page: Page,
   opts: { signedIn: boolean; admin: boolean; empty: boolean },
@@ -90,17 +63,12 @@ async function mockApi(
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/environments/production/pull/metadata`,
-    // Never emptied even in empty mode: the variable names are fetched
-    // only when an environment row is opened, and with no environments
-    // there is no row to open (the empty state of variable names
-    // cannot be drawn in empty mode — see the SHOTS note)
     (r) => json(r, 200, metadataPullFixture),
   );
   await page.route(
     (u) => u.pathname === `/projects/${PROJECT_1}/audit/events`,
     (r) => {
       if (opts.empty || before(r) !== null) return json(r, 200, { events: [] });
-      // A response below admin carries no seq (AUDIT_SPEC §7)
       const events = opts.admin
         ? projectAuditEvents.events
         : projectAuditEvents.events.map(({ seq: _seq, ...event }) => event);
@@ -147,7 +115,6 @@ interface Shot {
   act?: (page: Page) => Promise<void>;
   signedIn?: boolean;
   admin?: boolean;
-  /** Draws the collection empty (for checking the empty state's heading hierarchy and wording). */
   empty?: boolean;
 }
 
@@ -168,8 +135,6 @@ const SHOTS: ReadonlyArray<Shot> = [
     act: async (page) => {
       await page.getByText("Variable names", { exact: true }).click();
       await page.locator("[data-testid=variable-list]").waitFor();
-      // Return the table's horizontal scroll position before clicking
-      // (the click scrolls to the 4th column)
       await page.locator("[data-testid=env-table]").evaluate((table) => {
         table.parentElement?.scrollTo({ left: 0 });
       });
@@ -215,10 +180,6 @@ const SHOTS: ReadonlyArray<Shot> = [
     ready: "[data-testid=member-table]",
     act: async (page) => {
       await openTab(page, "Invites", "[data-testid=invite-table]");
-      // Capture the revocation confirmation modal (AlertDialog —
-      // amendment 4). Wait for the dialog to appear so it does not
-      // race the mount / animation (without the wait it would silently
-      // capture the bare table)
       await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
       await page.getByRole("alertdialog").waitFor();
     },
@@ -235,11 +196,6 @@ const SHOTS: ReadonlyArray<Shot> = [
   },
   { name: "s9-tokens", path: "/dashboard/tokens", ready: "[data-testid=token-table]" },
   { name: "s11-devices", path: "/dashboard/devices", ready: "[data-testid=device-table]" },
-  // Empty states (in a box without a heading the empty state's
-  // heading is h2 — resource-states.tsx's EmptyNotice).
-  // The empty state of variable names (an environment exists but has
-  // no variables) cannot be drawn in empty mode (environments become
-  // empty too)
   {
     name: "s4-projects-empty",
     path: "/dashboard",
@@ -329,7 +285,6 @@ try {
       await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle" });
       await page.locator(shot.ready).first().waitFor();
       if (shot.act) await shot.act(page);
-      // Let the focus ring and transition animations settle
       await page.waitForTimeout(300);
       const file = join(OUT, `${shot.name}-${mode.name}.png`);
       await page.screenshot({ path: file, fullPage: true });

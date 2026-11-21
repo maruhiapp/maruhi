@@ -1,8 +1,3 @@
-// Decision logic of the four-eyes admission policy (AUTH_SPEC §12-8 /
-// CRYPTO_SPEC §6.4 — pure functions in quotas.ts). Wiring into the admission
-// path is covered by approval-accept.test.ts (over HTTP, via the DO's
-// appendProgram).
-
 import type { PendingProposal } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
@@ -48,8 +43,6 @@ describe("proposalLifetimeExceeded (upper bound of expires_at_ms = now + 30 days
     expect(MAX_PROPOSAL_LIFETIME_MS).toBe(30 * 24 * 60 * 60 * 1000);
     expect(proposalLifetimeExceeded(NOW + MAX_PROPOSAL_LIFETIME_MS, NOW)).toBe(false);
     expect(proposalLifetimeExceeded(NOW + MAX_PROPOSAL_LIFETIME_MS + 1, NOW)).toBe(true);
-    // A past expiry does not hit the upper bound (expired proposals are
-    // admitted — design record §11 K5-C)
     expect(proposalLifetimeExceeded(0, NOW)).toBe(false);
   });
 });

@@ -1,7 +1,3 @@
-// `maruhi member remove`: the pre-append checks -> remove_member append ->
-// forced rotation of every environment (§7 — the group's overview lives in
-// member.ts).
-
 import type { UserId } from "@maruhi/core";
 import {
   type ChainEntry,
@@ -33,21 +29,11 @@ import {
   targetedOpRejection,
 } from "./member.ts";
 
-// ---------------------------------------------------------------------------
-// member remove
-// ---------------------------------------------------------------------------
-
 interface MemberRemoveSummary extends MemberSweepOutcome {
-  /** Whether it was appended to the chain (false = already deleted — resumes from mid-rotation). */
   readonly appended: boolean;
   readonly targetUserId: UserId;
 }
 
-/**
- * remove's pre-append checks (re-run after a CAS retry's resync as well).
- * `proposing` = the proposal path (the self-remove refusal is dropped
- * because the fulfiller moves to the approver — design record K6-N).
- */
 const ensureRemovable = Effect.fn("member-remove.ensureRemovable")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
@@ -76,13 +62,6 @@ const ensureRemovable = Effect.fn("member-remove.ensureRemovable")(function* (in
   return rejection === null ? { alreadyRemoved: false } : yield* Effect.fail(cliError(rejection));
 });
 
-/**
- * The conditions for resuming from deleted (interruption recovery): a
- * remove of that user_id exists on the chain (never create a shape where
- * the sweep runs on a mistyped user_id. A remove applied via a proposal —
- * four-eyes K6 — also lands on the same list: design record K6-C), and the
- * resuming actor is member or above.
- */
 function removalResumeRejection(
   verified: VerifiedProject,
   actor: ActorAuthority,
@@ -100,7 +79,6 @@ function removalResumeRejection(
     : null;
 }
 
-/** The pre-judgment of remove_member's §6.2 rules (role → scope-not-contained → last-owner). */
 function removeRuleRejection(
   verified: VerifiedProject,
   actor: ActorAuthority,
@@ -110,9 +88,6 @@ function removeRuleRejection(
   if (rejection !== null) {
     return rejection;
   }
-  // Principle 1 (§6.2 scope-not-contained): remove's permission-change
-  // environment set = the target's current scope ("can remove = can
-  // fulfill rotate" — ruling D). The same pre-judgment as change-role
   if (!scopeContains(actor.scope, target.scope)) {
     return `Your environment scope (${describeScope(actor.scope)}) does not contain the target's scope (${describeScope(target.scope)}), so you could not run the post-removal rotation — CRYPTO_SPEC §6.2 scope-not-contained. Ask an owner or an admin whose scope covers them`;
   }
@@ -121,7 +96,6 @@ function removeRuleRejection(
     : null;
 }
 
-/** Signs a remove_member entry right after the current head (the shared core = chain-append.ts). */
 function signRemoveEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
@@ -161,10 +135,6 @@ export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function
     });
   const first = yield* recheck(input.verified);
 
-  // Four-eyes (K6-A): if the policy targets remove_member, propose and
-  // finish (the rotate duty is fulfilled by the approver's sweep after
-  // the application — rulings P7 / P8). A resume (already deleted) is
-  // never proposed
   if (!first.alreadyRemoved && proposing) {
     const proposal = yield* proposeOperation(
       input,
@@ -200,7 +170,6 @@ export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function
     appended = outcome.appended;
   }
 
-  // The post-acceptance resync confirms the deletion's listing (the server's claim is never the source of truth)
   verified = yield* resyncExtended(input.resync, verified);
   if (verified.state.members.has(input.targetUserId)) {
     return yield* Effect.fail(
@@ -210,11 +179,6 @@ export const memberRemoveOp = Effect.fn("member-remove.memberRemoveOp")(function
     );
   }
 
-  // The target's duty entry (this remove's append or a historical one —
-  // past narrowings / demotions included) becomes the baseline. No remove
-  // at all means "a deletion was confirmed yet no duty entry exists" = an
-  // internal contradiction of the derivation. The duty's environment set
-  // is the target's current scope (§7 — listed{} means empty)
   const mandates = memberMandatesFor(verified, input.targetUserId);
   if (!mandates.some((mandate) => mandate.kind === "member-removed")) {
     return yield* Effect.fail(

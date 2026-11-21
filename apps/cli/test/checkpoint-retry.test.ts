@@ -1,8 +1,3 @@
-// Tests for the AuditHeadNotReady (503) retry of fetchAuditHead
-// (checkpoint.ts): the exponential-backoff waits between attempts, the
-// unchanged 10-attempt budget, and the exhaustion message. Time is
-// driven by TestClock — no real time passes.
-
 import { AuditHeadNotReadyError } from "@maruhi/api-schema";
 import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
@@ -18,11 +13,6 @@ type Step = "ready" | "not-ready";
 
 const READY_HASH = "cd".repeat(32);
 
-/**
- * Runs fetchAuditHead against a scripted client under TestClock and
- * returns the exit, the timestamp of every auditHead call, and the
- * retry lines logged between attempts.
- */
 async function run(script: readonly Step[]): Promise<{
   readonly exit: Exit.Exit<string, CliError>;
   readonly calls: number[];
@@ -84,8 +74,6 @@ function messageOf(exit: Exit.Exit<string, CliError>): string {
 describe("fetchAuditHead AuditHeadNotReady retry", () => {
   it("waits an exponential backoff between attempts and stops at the 10-attempt budget with the exhaustion guidance", async () => {
     const { exit, calls, lines } = await run(Array.from({ length: 10 }, () => "not-ready"));
-    // Waits of 5, 10, 20, ..., 1280 ms between calls (total ~2.5 s over
-    // the whole budget — the acceptance path's retry shares the same base)
     expect(calls).toEqual([0, 5, 15, 35, 75, 155, 315, 635, 1275, 2555]);
     expect(lines).toEqual(
       Array.from(

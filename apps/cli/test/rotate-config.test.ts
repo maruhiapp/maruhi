@@ -1,8 +1,3 @@
-// Tests for the rotation config parser (rotate-config.ts — PF6 ruling R1):
-// strict shape (unknown keys refused, the header shared with the other
-// repository configs), per-connector rules and inputs, the AWS key id
-// companion's uniqueness, and the rule lookup by companion.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { parseRotateConfig, ruleFor } from "../src/connector.package/rotate-config.ts";
@@ -143,9 +138,6 @@ describe("parseRotateConfig", () => {
     );
   });
 
-  // A value of a type no member of an optional / nullable key accepts
-  // (number, boolean, array, object, null) reports the key's own wording —
-  // never the union's default "Expected X | undefined"
   it.each([
     [
       "user",
@@ -262,7 +254,6 @@ describe("parseRotateConfig", () => {
       companions: {},
       inputs: {},
     });
-    // A companion resolves the rule, like the AWS key id
     expect(ruleFor(parsed, "STRIPE_KEY_ID")?.primary).toBe("STRIPE_SECRET_KEY");
   });
 
@@ -307,8 +298,6 @@ describe("parseRotateConfig", () => {
         inputs: { ID: "ADMIN" },
       }),
     ).toContain("variables.KEY.companions.ID is also an input name");
-    // The credential is injected under the rule's own name, so that name
-    // must be one a script may carry
     expect(
       parse({
         version: 1,
@@ -325,11 +314,9 @@ describe("parseRotateConfig", () => {
     ).toContain(
       "variables.MH_ROTATE_KEY: the exec connector injects the credential under the variable's own name, which starts with MH_ROTATE_",
     );
-    // A companion under the rule's own name would overwrite the credential
     expect(exec({ rotate: ["./r.sh"], output: "json", companions: { KEY: "OTHER" } })).toContain(
       "variables.KEY.companions.KEY collides with the rule's own variable",
     );
-    // Collisions are judged case-insensitively (a script may run where names are)
     expect(exec({ rotate: ["./r.sh"], inputs: { key: "ADMIN" } })).toContain(
       "variables.KEY.inputs.key collides with the rule's own variable",
     );
@@ -347,7 +334,6 @@ describe("parseRotateConfig", () => {
         inputs: { ADMIN: "A" },
       }),
     ).toContain("variables.KEY.companions.Admin is also an input name");
-    // The working directory stays inside the config's directory
     expect(exec({ rotate: ["./r.sh"], cwd: "../elsewhere" })).toContain(
       "variables.KEY.cwd must stay inside the rotation config's directory (../elsewhere climbs out of it)",
     );
@@ -362,7 +348,6 @@ describe("parseRotateConfig", () => {
       variables: { KEY: { connector: "exec", rotate: ["./r.sh"], cwd: "ops/../ops" } },
     });
     expect(typeof inside).not.toBe("string");
-    // A companion is a variable of exactly one rule and carries no rule of its own
     expect(
       parse({
         version: 1,

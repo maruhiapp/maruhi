@@ -1,27 +1,3 @@
-// ES K3 — scope authorization for environment-targeted ops
-// (AUTH_SPEC §9-2 / §12-3 / §12-7 = the acceptance surface of the
-// scope derived by CRYPTO_SPEC §6.2's verification state. Design
-// record docs/notes/es-design.md §9 K3-A / K3-B / K3-C / K3-G).
-// Verifies the HttpApi via SELF on @cloudflare/vitest-plugin (real
-// workerd environment).
-//
-// Rules pinned (each row of the §12-3 table, one at a time):
-//   1. pull with values / fetch DEKs addressed to self = environment ∈
-//      scope (403 insufficient-scope)
-//   2. metadata-only pull / environment list = unrestricted (all
-//      environments; no advisory scope field is returned — §12-7)
-//   3. variable create / push / rename / delete, environment rename,
-//      DEK-wrap registration = environment ∈ scope
-//   4. environment creation = scope = all
-//   5. environment deletion / DEK-wrap deletion = environment ∈ scope
-//      (admin)
-//   - judgment order: role 403 → scope 403 → existence 404 (for a
-//     listed principal a nonexistent environment is also 403)
-//   - rotate / checkpoint 403s precede the consensus rule
-//     environment-out-of-scope (422)
-//   - the scope axis (3′) of the dual judgment at authorization time
-//     folds into chain-head-state-mismatch (K3-B)
-
 import type { ChainOperation } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { SELF } from "cloudflare:test";
@@ -81,7 +57,6 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** A listed member (vector key — vectorKeyOf in data-crypto.ts). */
 const DEV = testUserId("user-devmember-0010");
 const DEVADMIN = testUserId("user-devadmin-0011");
 const OTHER = "env-other-0002";
@@ -95,13 +70,6 @@ async function expectForbidden(response: Response, reason: string): Promise<void
 const expectScopeForbidden = (response: Response): Promise<void> =>
   expectForbidden(response, "insufficient-scope");
 
-/**
- * Create two environments (ENV / OTHER) and add DEV as member,
- * listed{ENV}. Since a listed scope can only enumerate created
- * environments (the consensus rule unknown-environment), environment
- * creation comes first. The existing environments' wrap-complete set
- * stays the pre-addition R(E) (= ALL_MEMBERS).
- */
 async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array }> {
   const envDek = await createEnvironmentOk(fixture, ENV, "App");
   const otherDek = await createEnvironmentOk(fixture, OTHER, "Other");
@@ -110,7 +78,6 @@ async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array
   return { envDek, otherDek };
 }
 
-/** Any principal creates a variable in any environment (value v1 + statement + manifest). */
 async function createVariableAs(input: {
   readonly writer: string;
   readonly environmentId: string;
@@ -159,7 +126,6 @@ async function createVariableAs(input: {
   return { value, statement };
 }
 
-/** Call generic append raw (appendOperation asserts 200, so this is for negatives). */
 async function appendRaw(actorUserId: string, operation: ChainOperation): Promise<Response> {
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 1,
@@ -174,7 +140,6 @@ async function appendRaw(actorUserId: string, operation: ChainOperation): Promis
   });
 }
 
-/** A standalone checkpoint notarizing the environment's current state (recorded manifest + value enumeration). */
 async function checkpointFor(environmentId: string, epoch: number): Promise<ChainOperation> {
   const last = fixture.manifests.get(environmentId);
   if (last === undefined) {
@@ -193,7 +158,6 @@ async function checkpointFor(environmentId: string, epoch: number): Promise<Chai
   });
 }
 
-/** An environment meta-statement (unsigned dummy — the 403 settles before signature verification). */
 function unsignedEnvStatement(environmentId: string, name: string, status: "active") {
   return {
     suite: "maruhi/v1",
@@ -215,9 +179,6 @@ describe("scope authorization — reads (§12-3 rows 1-2 / §12-7)", () => {
     await expectScopeForbidden(await requestJson("GET", `/environments/${OTHER}/pull`, token(DEV)));
     expect((await requestJson("GET", `/environments/${ENV}/deks`, token(DEV))).status).toBe(200);
     await expectScopeForbidden(await requestJson("GET", `/environments/${OTHER}/deks`, token(DEV)));
-    // fail-closed: a rejected pull records no var.read (§12-7's
-    // recording condition = having returned ciphertext; outside scope
-    // returns nothing)
     const reads = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM audit_events WHERE event = 'var.read' AND actor_user_id = ? AND environment_id = ?",
@@ -238,9 +199,6 @@ describe("scope authorization — reads (§12-3 rows 1-2 / §12-7)", () => {
       [ENV, OTHER].toSorted(),
     );
     for (const environment of body.environments) {
-      // The client derives its own scope from the verified chain —
-      // the server-declared "inside scope" is not an input to the
-      // verification rules (§12-7)
       expect(Object.keys(environment).toSorted()).toEqual(
         ["currentEpoch", "environmentId", "statement"].toSorted(),
       );
@@ -253,7 +211,6 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
     const { envDek } = await setupListed();
     const otherAad = (version: number, variableId: string = VAR) =>
       aadFor(1, version, { environmentId: OTHER, variableId: testVariableId(variableId) });
-    // Create (same path whether declared / active)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/variables`, token(DEV), {
         statement: { ...unsignedVariableStatement("var-x", "X"), environmentId: OTHER },
@@ -261,13 +218,11 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // push (scope precedes regardless of the variable's existence)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/variables/${VAR}/versions`, token(DEV), {
         value: unsignedPayload(otherAad(2)),
       }),
     );
-    // Rename / schema re-issuance
     await expectScopeForbidden(
       await requestJson("PATCH", `/environments/${OTHER}/variables/${VAR}`, token(DEV), {
         statement: {
@@ -279,7 +234,6 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // Delete
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/variables/${VAR}`, token(DEV), {
         statement: {
@@ -292,16 +246,12 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // Environment rename
     await expectScopeForbidden(
       await requestJson("PATCH", `/environments/${OTHER}`, token(DEV), {
         statement: unsignedEnvStatement(OTHER, "Renamed", "active"),
         manifest: unsignedManifest(OTHER),
       }),
     );
-    // DEK-wrap registration (registrar = signer = the calling
-    // principal's scope — §12-6's end = the same judgment as §12-3 →
-    // 403. Before the recipient-axis 422)
     await expectScopeForbidden(
       await requestJson("POST", `/environments/${OTHER}/deks`, token(DEV), {
         deks: [
@@ -316,7 +266,6 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
         ],
       }),
     );
-    // A write inside scope is accepted (the listed member's positive case)
     await createVariableAs({
       writer: DEV,
       environmentId: ENV,
@@ -330,8 +279,6 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
     await setupListed();
     await seedMemberToken(fixture, DEVADMIN, 9011);
     await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [ENV]));
-    // The deletion composite judges scope after the CAS (§12-4), so the
-    // entry is signed at the real head
     await expectScopeForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEVADMIN));
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/deks`, token(DEVADMIN), {
@@ -345,15 +292,12 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
         ],
       }),
     );
-    // Environment deletion inside scope is accepted (the admin's positive case)
     expect((await deleteEnvironmentRequest(fixture, ENV, DEVADMIN)).status).toBe(204);
   });
 
   it("judgment order: role 403 → scope 403 → existence 404 (a nonexistent environment is also 403 for a listed principal; 404 for an `all` principal)", async () => {
     await setupListed();
-    // role first: member DEV performs an admin operation (environment deletion) on something out of scope
     await expectForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEV), "insufficient-role");
-    // scope precedes existence: an uncreated environment id cannot be in a listed scope
     await expectScopeForbidden(await requestJson("GET", `/environments/${GHOST}/pull`, token(DEV)));
     const ghostRotate = await rotateEnvironmentComposite(fixture, {
       environmentId: GHOST,
@@ -363,7 +307,6 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
       actorUserId: DEV,
     });
     await expectScopeForbidden(ghostRotate);
-    // An `all` principal still gets existence 404 (invariance on a K3-only deployment)
     expect((await requestJson("GET", `/environments/${GHOST}/pull`, token(MEMBER))).status).toBe(
       404,
     );
@@ -396,7 +339,6 @@ describe("scope authorization — paths involving a chain op (§9-2 / §12-3 row
       actorUserId: DEV,
     });
     await expectScopeForbidden(otherRotate);
-    // A rotate inside scope is accepted. The complete set is R(ENV) = all `all`-scope members + DEV
     const dek = makeDek();
     const rotated = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -432,13 +374,9 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       variableId: "var-o",
       name: "OTHER_SECRET",
     });
-    // The head before the widening (DEV's scope is {ENV})
     const oldHead = { ...fixture.head };
     await appendOperation(fixture, OWNER, changeRoleOperation(DEV, "member", [ENV, OTHER]));
 
-    // Value: at acceptance time (the current head) OTHER ∈ scope so
-    // it passes the 403, but at the declared head (pre-widening) it is
-    // outside scope → rejected by 3′
     const stale = await encryptValue(
       otherDek,
       {
@@ -466,7 +404,6 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       "chain-head-state-mismatch",
     );
 
-    // Meta: the rename statement's declared head is pre-widening
     const staleStatement = await signMetaStatementAs(DEV, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: OTHER,
@@ -499,7 +436,6 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       "chain-head-state-mismatch",
     );
 
-    // Manifest: the statement is at the current head while only the manifest declares the pre-widening head
     const freshStatement = await signMetaStatementAs(DEV, projectId, {
       ...staleStatement,
       chainHeadHashHex: fixture.head.hashHex,
@@ -532,9 +468,6 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       "chain-head-state-mismatch",
     );
 
-    // The same write declaring the current head is accepted (inside
-    // scope both at acceptance and at the declared head — confirming
-    // that only 3′ was dropping it)
     const fresh = await encryptValue(
       otherDek,
       {
@@ -569,7 +502,6 @@ describe("a request signed over the view from before a delete_environment is sta
     expect((await deleteEnvironmentRequest(fixture, ENV, OWNER)).status).toBe(204);
   }
 
-  /** Runs `send` against the head from before ENV's deletion, then restores the fixture head. */
   async function sendOverPreDeletionHead(send: () => Promise<Response>): Promise<Response> {
     const current = fixture.head;
     fixture.head = preDeletionHead;

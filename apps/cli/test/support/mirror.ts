@@ -79,7 +79,6 @@ export async function start(handlers: readonly MockHandler[]): Promise<MockServe
   return server;
 }
 
-/** An origin nothing listens on (the connection is refused at once). */
 export async function deadOrigin(): Promise<string> {
   const server = await MockServer.start([]);
   const origin = server.origin;
@@ -93,10 +92,8 @@ export const headOfChain = () => ({
   auditMaxSeq: 4,
 });
 
-/** The source's mutation counter the export's head reports (every page carries it to the mirror). */
 export const SOURCE_MUTATION_SEQ = 5;
 
-/** An export page's head: the chain head plus the source's mutation counter. */
 export const exportHeadOfChain = () => ({ ...headOfChain(), mutationSeq: SOURCE_MUTATION_SEQ });
 
 export interface MirrorState {
@@ -107,11 +104,9 @@ export interface MirrorState {
   }[];
   readonly bearers: string[];
   status: Record<string, unknown>;
-  /** An injected answer for the page carrying the trailer. */
   lastPage: { readonly status: number; readonly json: unknown } | null;
 }
 
-/** The mirror: the status, the pages (committing when the trailer arrives), the mark and the promotion. */
 export function mirrorHandlers(state: MirrorState): MockHandler[] {
   const path = `/projects/${built.projectId}/mirror`;
   return [
@@ -119,7 +114,6 @@ export function mirrorHandlers(state: MirrorState): MockHandler[] {
       state.bearers.push(String(request.headers["authorization"] ?? ""));
       return null;
     },
-    // The mirror serves the chain like any server (the mark's check reads it)
     chainHandlerOf(built),
     onRequest("GET", path, () => ({ status: 200, json: state.status })),
     onRequest("PUT", path, (request) => {

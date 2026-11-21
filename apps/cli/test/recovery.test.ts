@@ -1,8 +1,3 @@
-// Tests for recovery-code issuance, save verification, restore, and re-issuance
-// (the client side of CRYPTO_SPEC §8 / AUTH_SPEC §13 — 2026-09-19 DK: what is
-// sealed into the ledger is not the device key but a **reserve key**). Wrapping and decryption use real crypto; the server is a wire-level mock
-// (support/server.ts).
-
 import { unwrapMasterSecret, wrapMasterSecret } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -74,12 +69,10 @@ function putHandler(record: (body: PutBody) => void): MockHandler {
   });
 }
 
-/** `GET /projects` (AUTH_SPEC §11-5): the project list (empty) the restore's later stage scans. */
 function noProjectsHandler(): MockHandler {
   return onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } }));
 }
 
-/** The reserve-key row recorded in own-devices.json (not revoked; public side only). */
 async function recordedReservesOf(
   env: TestEnv,
   origin: string,
@@ -96,7 +89,6 @@ async function recordedReservesOf(
   );
 }
 
-/** The device key record in the keychain (fails if absent). */
 function storedDeviceRecord(env: TestEnv, origin: string, userId: string): StoredMasterKey {
   const record = parseStoredMasterKey(
     env.keychain.get(masterKeyEntryName(origin, testUserId(userId))) ?? "",
@@ -105,7 +97,6 @@ function storedDeviceRecord(env: TestEnv, origin: string, userId: string): Store
   return record;
 }
 
-// The code is key material, so it is shown only on stderr (the same channel as the prompt)
 function displayedCode(env: TestEnv): string {
   const line = env.errors.find((entry) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/.test(entry));
   if (line === undefined) {
@@ -121,7 +112,6 @@ function lastGroupOf(env: TestEnv): () => string {
   };
 }
 
-/** Helper that unwraps the parse result for byte-level comparison (null passes through). */
 function unwrapParsed(parsed: Redacted.Redacted<Uint8Array> | null): Uint8Array | null {
   return parsed === null ? null : Redacted.value(parsed);
 }
@@ -130,7 +120,6 @@ describe("recovery-code notation (Base32)", () => {
   it("roundtrip: 32 bytes → 13 groups → restore (absorbs case / whitespace / hyphen differences)", () => {
     for (let round = 0; round < 8; round += 1) {
       const secret = crypto.getRandomValues(new Uint8Array(32));
-      // Raw-value comparison is always done unwrapped (toEqual on wrapped values does not inspect the contents)
       const code = Redacted.value(formatRecoveryCode(Redacted.make(secret)));
       expect(code).toMatch(/^[A-Z2-7]{4}(-[A-Z2-7]{4}){12}$/);
       expect(unwrapParsed(parseRecoveryCode(code))).toEqual(secret);
@@ -143,25 +132,16 @@ describe("recovery-code notation (Base32)", () => {
   it("rejects off-alphabet characters, wrong lengths, and non-zero padding", () => {
     const secret = new Uint8Array(32).fill(7);
     const code = Redacted.value(formatRecoveryCode(Redacted.make(secret)));
-    // 0 / 1 are outside the Base32 alphabet (no guessed substitution into O / I)
     expect(parseRecoveryCode(code.replace(/^./, "0"))).toBeNull();
     expect(parseRecoveryCode(code.replace(/^./, "1"))).toBeNull();
     expect(parseRecoveryCode(code.slice(0, -1))).toBeNull();
     expect(parseRecoveryCode(`${code}A`)).toBeNull();
-    // Corrupting the last symbol's low bits (the zero-padded region) is rejected
     const symbols = code.replaceAll("-", "");
-    const tampered = `${symbols.slice(0, -1)}H`; // H = 7 → non-zero low bits
+    const tampered = `${symbols.slice(0, -1)}H`;
     expect(parseRecoveryCode(tampered)).toBeNull();
   });
 });
 
-/**
- * Open the registered wrap with the displayed code and return the key record
- *
- * inside (the reserve key). Compare via `serializeStoredMasterKey`:
- * `JSON.stringify(record)` redacts the secret side, so comparing records
- * directly degenerates into a vacuous "any key matches" comparison.
- */
 async function unwrapWithDisplayedCode(
   env: TestEnv,
   body: PutBody | null,
@@ -242,19 +222,14 @@ describe("maruhi key generate recovery issuance", () => {
     const body = put as PutBody | null;
     expect(body?.suite).toBe("maruhi/v1");
     expect(body?.nonceHex).toMatch(/^[0-9a-f]{24}$/);
-    // The registered wrap decrypts with the displayed code and contains a
-    // well-formed key record (= the reserve key) — a shape where a broken wrap is detectable before the code is lost
     const reserve = await unwrapWithDisplayedCode(env, body, "user-0001");
     expect(reserve.suite).toBe("maruhi/v1");
     expect(reserve.encPubHex).toMatch(/^[0-9a-f]{64}$/);
-    // The generated reserve key carries the mark (CRYPTO_SPEC §8 — DK K16); the keychain device key does not
     expect(reserve.kind).toBe("reserve");
-    // DK: the ledger's content is a **different** reserve key, not the device key (a device-key copy is never sealed)
     const device = storedDeviceRecord(env, maruhi.origin, "user-0001");
     expect(device.kind).toBeUndefined();
     expect(reserve.encPubHex).not.toBe(device.encPubHex);
     expect(serializeStoredMasterKey(reserve)).not.toBe(serializeStoredMasterKey(device));
-    // The reserve key's public side is recorded in own-devices.json with origin "reserve" (K4-3)
     const reserves = await recordedReservesOf(env, maruhi.origin, "user-0001");
     expect(reserves).toHaveLength(1);
     expect(reserves[0]?.encPubHex).toBe(reserve.encPubHex);
@@ -263,14 +238,11 @@ describe("maruhi key generate recovery issuance", () => {
       `created your reserve key (fingerprint ${reserves[0]?.keyFingerprintHex})`,
     );
     expect(env.errors.join("\n")).toContain("Save confirmation complete");
-    // Key material (the code) never goes to stdout, which may be redirected
     expect(env.logs.join("\n")).not.toContain(displayedCode(env));
-    // The reserve key's secret is never written to the keychain
     expect([...env.keychain.values()].join("\n")).not.toContain(Redacted.value(reserve.encSkHex));
   });
 
   it("does not generate fail-closed when the ledger state cannot be read (--new-identity excepted)", async () => {
-    // Initially status is unanswered (404) = the server cannot report the ledger state
     let statusAnswers = false;
     const status: MockHandler = (request) =>
       statusAnswers ? null : request.path === "/auth/recovery/status" ? { status: 404 } : null;
@@ -283,8 +255,6 @@ describe("maruhi key generate recovery issuance", () => {
     expect(
       env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
     ).toBeUndefined();
-    // An explicit naming generates regardless of a ledger's presence (it does
-    // not refuse even when a ledger exists; let the status read by the later sealing answer = it is issued as a replacement)
     statusAnswers = true;
     env.setPromptResponses([lastGroupOf(env)]);
     expect(await runCli(["key", "generate", "--new-identity"], env.layer)).toBe(0);
@@ -319,7 +289,6 @@ describe("maruhi key generate recovery issuance", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("Save confirmation failed");
     expect(errors).toContain("`maruhi key recovery`");
-    // The key generation itself succeeded
     expect(
       env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
     ).toBeDefined();
@@ -343,7 +312,6 @@ describe("maruhi key generate recovery issuance", () => {
     expect(
       env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
     ).toBeDefined();
-    // No reserve key was created (and none recorded)
     expect(await recordedReservesOf(env, maruhi.origin, "user-0001")).toHaveLength(0);
   });
 
@@ -360,7 +328,6 @@ describe("maruhi key generate recovery issuance", () => {
     expect(
       env.keychain.get(masterKeyEntryName(maruhi.origin, testUserId("user-0001"))),
     ).toBeDefined();
-    // A reserve key that failed to seal is not recorded (seal → record ordering — K4-1)
     expect(await recordedReservesOf(env, maruhi.origin, "user-0001")).toHaveLength(0);
   });
 });
@@ -384,13 +351,11 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     expect(reserve.encPubHex).not.toBe(user.encPubHex);
     const reserves = await recordedReservesOf(env, maruhi.origin, user.userId);
     expect(reserves.map((entry) => entry.encPubHex)).toEqual([reserve.encPubHex]);
-    // The device key is left as-is
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).toBe(user.encPubHex);
   });
 
   it("when already registered (reserve key), opens the ledger first and re-issues with explicit notice that it is a replacement", async () => {
     const user = await makeTestUser("user-0001");
-    // The ledger's content is a key different from the device key = the reserve key (the re-issue path)
     const reserveUser = await makeTestUser("user-0001-reserve");
     const { handler, code } = await ledgerHandlerFor(
       storedReserveRecord(reserveUser),
@@ -404,7 +369,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
       putHandler((body) => {
         put = body;
       }),
-      // The project list (empty = on none) scanned by the on-chain check for the ledger key (DK K14-4)
       noProjectsHandler(),
     ]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
@@ -418,15 +382,12 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     expect(errors).toContain(
       `reissued the recovery code for your reserve key (fingerprint ${reserveUser.fingerprintHex}); the previous code no longer works`,
     );
-    // Opening with the new code reveals the **same** reserve key (only the code is re-issued; the key is unchanged)
     const reserve = await unwrapWithDisplayedCode(env, put as PutBody | null, user.userId);
     expect(serializeStoredMasterKey(reserve)).toBe(
       serializeStoredMasterKey(storedReserveRecord(reserveUser)),
     );
-    // The record is restored (K4-2 counterexample 2)
     const reserves = await recordedReservesOf(env, maruhi.origin, user.userId);
     expect(reserves.map((entry) => entry.keyFingerprintHex)).toEqual([reserveUser.fingerprintHex]);
-    // The device key is left as-is. The reserve key's secret is never written to the keychain
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).toBe(user.encPubHex);
     expect([...env.keychain.values()].join("\n")).not.toContain(reserveUser.encSkHex);
   });
@@ -462,15 +423,12 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     expect(put).not.toBeNull();
     const errors = env.errors.join("\n");
     expect(errors).toContain("replacing the recovery ledger without opening it");
-    // Warns that the old reserve key cannot be revoked without its record (revocation depends on the record — K4-38)
     expect(errors).toContain(
       "no previous reserve key is recorded on this machine, so none was revoked",
     );
-    // If the ledger has no rows (passkey / guardian), deleting a nonexistent row is impossible either — and no --passkey guidance is shown
     expect(errors).not.toContain("seal the current reserve key are deleted");
     expect(errors).not.toContain("run `maruhi key recovery --passkey` instead");
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
-    // --passkey is incompatible with --replace (the ledger is never opened) — a usage error with nothing written
     const before = env.errors.length;
     expect(await runCli(["key", "recovery", "--passkey", "--replace"], env.layer)).toBe(2);
     expect(env.errors.slice(before).join("\n")).toContain(
@@ -521,7 +479,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     expect(errors).toContain(
       "1 passkey wrap and 0 guardian groups that seal the current reserve key are deleted. If you still have that passkey, stop here and run `maruhi key recovery --passkey` instead",
     );
-    // The warning precedes the write (the display of the issued code)
     expect(errors.indexOf("replacing the recovery ledger")).toBeLessThan(
       errors.indexOf("Issued your recovery code"),
     );
@@ -543,7 +500,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
     env.setPromptResponses([lastGroupOf(env)]);
-    // Deleting the trailing ledger row depends on the same list, so it is skipped (Note) and the command ends successfully
     expect(await runCli(["key", "recovery", "--replace"], env.layer), env.errors.join("\n")).toBe(
       0,
     );
@@ -578,7 +534,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
       const user = await makeTestUser("user-0001");
       let putSeen = false;
       const maruhi = await start([
-        // The ledger-existence check (which carries no key material) runs before the gate
         statusHandler(false),
         putHandler(() => {
           putSeen = true;
@@ -589,7 +544,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
       env.setTerminal(terminal);
       expect(await runCli(["key", "recovery"], env.layer)).toBe(1);
       expect(env.errors.join("\n")).toContain("stdin, stdout, and stderr must all be terminals");
-      // Key material is neither registered nor displayed
       expect(putSeen).toBe(false);
       expect(env.errors.some((line) => /^ {4}[A-Z2-7]{4}-/.test(line))).toBe(false);
       expect(env.prompts).toHaveLength(0);
@@ -599,7 +553,6 @@ describe("maruhi key recovery (issue / re-issue)", () => {
 });
 
 describe("maruhi key recover (restore)", () => {
-  /** Wraps `user`'s key record with a known secret and serves it at GET /auth/recovery (reserve key B). */
   function wrappedBlobHandler(
     user: TestUser,
     secret: Uint8Array,
@@ -608,7 +561,6 @@ describe("maruhi key recover (restore)", () => {
   }
 
   it("opens the reserve key with the correct code, issues a new device key, and discards the reserve key", async () => {
-    // The person restoring (the session) and reserve key B sealed in the ledger are different keys
     const user = await makeTestUser("user-0001");
     const reserveUser = await makeTestUser("user-0001-reserve");
     const secret = crypto.getRandomValues(new Uint8Array(32));
@@ -621,28 +573,22 @@ describe("maruhi key recover (restore)", () => {
     const env = await loggedInEnv(maruhi.origin, user.userId);
     env.setPromptResponses([code.toLowerCase()]);
     expect(await runCli(["key", "recover"], env.layer)).toBe(0);
-    // No projects = on no chain → it is not asked whether it is a reserve key (DK K14-2's nowhere)
     expect(env.prompts).toEqual(["Enter your recovery code: "]);
-    // What enters the keychain is a **new device key**, not the ledger's B (§8.1)
     const device = storedDeviceRecord(env, maruhi.origin, user.userId);
     expect(device.encPubHex).not.toBe(reserveUser.encPubHex);
     expect(device.encPubHex).toMatch(/^[0-9a-f]{64}$/);
     expect(serializeStoredMasterKey(device)).not.toBe(
       serializeStoredMasterKey(storedReserveRecord(reserveUser)),
     );
-    // B's secret is stored nowhere
     const keychainDump = [...env.keychain.values()].join("\n");
     expect(keychainDump).not.toContain(reserveUser.encSkHex);
     expect(keychainDump).not.toContain(reserveUser.sigSkSeedHex);
-    // A key carrying the reserve-key mark is recorded as a reserve key without
-    // asking (DK K16-6 — the check's positive / negative cases live in the DK K14 / K16 describes in device-key-recovery.test.ts)
     expect(await recordedReservesOf(env, maruhi.origin, user.userId)).toHaveLength(1);
     const output = env.logs.join("\n");
     expect(output).toContain("Generated this device's key and stored it in the OS keychain");
     expect(output).toContain(
       `Opened key ${reserveUser.fingerprintHex} from the recovery ledger. It is used only to register this machine's new device key, then discarded`,
     );
-    // The displayed FP belongs to the new device key (not the ledger key's FP)
     const shown = env.logs.find((line) => line.startsWith("key fingerprint: "));
     expect(shown).toBeDefined();
     expect(shown).toMatch(/^key fingerprint: [0-9a-f]{32}$/);
@@ -650,7 +596,6 @@ describe("maruhi key recover (restore)", () => {
     expect(env.errors.join("\n")).toContain(
       "the reserve key was discarded from memory; it stays sealed in the recovery ledger only. This device now signs with its own key",
     );
-    // Secret key material and the code are not displayed
     expect(output).not.toContain(reserveUser.encSkHex);
     expect(output).not.toContain(code);
     expect(env.errors.join("\n")).not.toContain(reserveUser.encSkHex);
@@ -669,14 +614,10 @@ describe("maruhi key recover (restore)", () => {
     expect(env.errors.join("\n")).toContain(
       `Note: recorded ${user.fingerprintHex} on this machine as your reserve key`,
     );
-    // A new device key was issued (the ledger key itself is not stored)
     expect(storedDeviceRecord(env, maruhi.origin, user.userId).encPubHex).not.toBe(user.encPubHex);
   });
 
   it("does not dead-end an unknown-suite blob; guides toward updating and re-registering", async () => {
-    // A blob registered by a newer maruhi on another device. It decrypts but the
-    // key material is unreadable — it is not "corrupt", so show the exits
-    // (update, or re-register from a device that still has the key)
     const user = await makeTestUser("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const future = { ...storedMasterRecord(user), suite: "maruhi/v2" };
@@ -704,17 +645,12 @@ describe("maruhi key recover (restore)", () => {
     expect(errors).toContain("maruhi/v2");
     expect(errors).toContain("update maruhi to the latest");
     expect(errors).toContain("`maruhi key recovery --replace`");
-    // An unknown suite is not "this code cannot be restored" (an update makes it
-    // usable as-is). Mixing in corruption wording would make users discard a usable code
     expect(errors).not.toContain("This code cannot restore");
     expect(errors).toContain("do not discard");
-    // Nothing is written to the keychain
     expect(env.keychain.get(masterKeyEntryName(maruhi.origin, user.userId))).toBeUndefined();
   });
 
   it("distinguishes uninterpretable blobs by shape, and states re-registration belongs to another device", async () => {
-    // Two kinds that decrypt but fail to parse: those with the current shape but
-    // broken contents (re-register) and those with a different shape (possibly a future version = update first)
     const cases = [
       {
         blob: JSON.stringify({
@@ -733,9 +669,6 @@ describe("maruhi key recover (restore)", () => {
         notExpected: "This code cannot restore",
       },
       {
-        // Same current shape with a different encoding = parse passes and hex
-        // interpretation fails. At this fork, "broken" and "future-version encoding"
-        // cannot be told apart by observation, so do not assert and send to re-registration (= revoking the code)
         blob: JSON.stringify({
           suite: "maruhi/v1",
           encPubHex: "aa".repeat(32),
@@ -808,9 +741,6 @@ describe("maruhi key recover (restore)", () => {
       ),
     });
     if (!wrapped.ok) throw new Error("test wrap failed");
-    // One flipped bit in the served ciphertext: the blob does not open
-    // even under the right code, and the user-facing wording cannot
-    // distinguish that from a mistyped code
     const tampered = wrapped.value.ciphertext.slice();
     tampered[0] = (tampered[0] ?? 0) ^ 0x01;
     const maruhi = await start([
@@ -851,7 +781,6 @@ describe("maruhi key recover (restore)", () => {
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["key", "recover"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("Refused to read a recovery code");
-    // The blob fetch (a to-be-monitored event) is never reached either
     expect(fetched).toBe(false);
   });
 

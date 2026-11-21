@@ -1,16 +1,3 @@
-// Test helpers for workload leases (AUTH_SPEC §14).
-//
-// - Building and ES256-signing OIDC tokens (the key is the dummy in
-//   support/oidc-issuer.ts; outboundService serves the JWKS of the same key)
-// - The deployment keypair (actually derived from the SERVER_ENC_KEY_IKM
-//   binding — .dev.vars.example's dummy, injected by vitest.config.ts).
-//   Because tests check as far as "the server can really open a wrap
-//   addressed to itself", they use the real derived key, not a dummy public
-//   key
-//
-// All key material is disposable test-only dummies and is never used in real
-// environments.
-
 import {
   computeServerKeyFingerprint,
   decodeHex,
@@ -24,11 +11,8 @@ import { env } from "cloudflare:test";
 
 import { OIDC_ISSUER, OIDC_KID, OIDC_PRIVATE_JWK } from "./oidc-issuer.ts";
 
-/** The default audience used in lease tests (simulates a deployment's
- * origin). */
 export const LEASE_AUDIENCE = "https://maruhi.test";
 
-/** The default subject (the GitHub Actions `sub` claim form). */
 export const LEASE_SUBJECT = "repo:maruhi-test/demo:ref:refs/heads/main";
 
 export interface DeploymentKey {
@@ -38,16 +22,10 @@ export interface DeploymentKey {
 
 let cachedKey: DeploymentKey | undefined;
 
-/**
- * The public side of the deployment key actually derived from
- * SERVER_ENC_KEY_IKM. Identical to what the server derives in
- * `server-key.ts` (RFC 9180 DeriveKeyPair is deterministic).
- */
 export async function deploymentKey(): Promise<DeploymentKey> {
   if (cachedKey !== undefined) {
     return cachedKey;
   }
-  // The same binding the worker derives its keypair from
   const ikm = decodeHex(env.SERVER_ENC_KEY_IKM ?? "");
   if (ikm === null || ikm.length === 0) {
     throw new Error("SERVER_ENC_KEY_IKM binding is not set to hex");
@@ -82,29 +60,16 @@ export interface TokenOptions {
   readonly issuer?: string;
   readonly subject?: string;
   readonly audience?: string | readonly string[];
-  /** Extra claims (to make claim constraints match or not). */
   readonly claims?: Readonly<Record<string, unknown>>;
   readonly expSeconds?: number;
   readonly iatSeconds?: number;
   readonly alg?: string;
   readonly kid?: string | null;
-  /** If true, tampers with the signature by 1 byte (for the
-   * signature-invalid check). */
   readonly tamperSignature?: boolean;
-  /** Omits exp / iat (for the missing-claim check). */
   readonly omit?: readonly string[];
-  /** Puts `crit` on the JOSE header (for the RFC 7515 §4.1.11 rejection
-   * check). */
   readonly crit?: readonly string[];
 }
 
-/**
- * Builds and signs an ES256 OIDC token. `alg` / `kid` are replaceable so
- * that rejection of a non-allowlisted alg and an unknown kid can be checked
- * on the real path (swapping only the header keeps the same signing key =
- * produces a shape that would pass an implementation that "trusts the
- * header's alg").
- */
 export async function makeOidcToken(options: TokenOptions = {}): Promise<string> {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const header = {

@@ -1,20 +1,3 @@
-// Checks for the four-eyes CLI-side pure functions (approval-rules.ts —
-// design note es-design.md §12 K6-F / G / K).
-//
-// Properties pinned down:
-//  1. The target check and the owner-vote tally are crypto's public
-//     `isApprovalTarget` / `ownerVotersOf` (K6-G — the CLI keeps no copy).
-//     **Differential test**: run
-//     the same chains through the public API's verifyChain and require the
-//     direct-append rejection (approval-required), stale votes (demotion /
-//     key rotation), and completion verdicts to agree with what the CLI
-//     decides before submission
-//  2. Proposal-id prefix resolution (8+ chars, unique; distinguishing
-//     completed / withdrawn / unknown)
-//  3. `--expires` parsing (default 7 days, cap 30 days, 0 not allowed)
-//  4. Displaying the inner op and judging an already-satisfied proposal as
-//     "completes on the next approve" (K5-L)
-
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { approvalSignersOf, isApprovalTarget, ownerVotersOf, verifyChain } from "@maruhi/crypto";
@@ -62,7 +45,6 @@ beforeAll(async () => {
   member = await makeTestUser("user-member-5555");
 });
 
-/** Turns a built chain into the CLI's verified view (same path as chain-sync.ts). */
 function verifiedOf(built: BuiltChain): Promise<VerifiedProject> {
   return Effect.runPromise(
     verifyChainSnapshot({
@@ -74,7 +56,6 @@ function verifiedOf(built: BuiltChain): Promise<VerifiedProject> {
   );
 }
 
-/** Prefix of 4 owners + 1 member + policy (remove_member / required). */
 function prefixWith(required: number, ops: readonly ("remove_member" | "change_role")[]) {
   return [
     { actor: owner, operation: genesisOp(owner) },
@@ -92,7 +73,6 @@ async function hashOfLast(built: BuiltChain): Promise<string> {
   return hash;
 }
 
-/** verifyChain's result (ok / rejection reason). */
 async function verifyResult(entries: readonly ChainEntry[]): Promise<string> {
   const result = await verifyChain(entries);
   if (result.ok) return "ok";
@@ -109,8 +89,6 @@ describe("isApprovalTarget (crypto public API) — agrees with verifyChain (K6-G
     const promote: ChainOperation = changeRoleOp(member, "owner", null);
     expect(isApprovalTarget(innerOf(remove), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(demote), policy)).toBe(false);
-    // A change_role that establishes an owner is always targeted regardless
-    // of the listing (policy monotonicity (a))
     expect(isApprovalTarget(innerOf(promote), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(setApprovalPolicyOp([], 0)), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(remove), null)).toBe(false);
@@ -139,15 +117,11 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
       ...prefix,
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
       { actor: owner2, operation: approveOp(hash) },
-      // Demote owner2 (the required owners are still reachable via the 3:
-      // owner / owner3 / owner4)
       { actor: owner, operation: changeRoleOp(owner2, "admin", null) },
     ];
     const demoted = await verifiedOf(await buildChain(steps));
     const pending = demoted.state.pendingProposals.get(hash);
     if (pending === undefined) throw new Error("proposal should still be pending");
-    // owner2's vote remains in the record, but the recount counts only the
-    // proposer's (owner's) single vote
     expect(pending.approvals.map((vote) => vote.userId)).toEqual([owner2.userId]);
     expect(ownerVotersOf(demoted.state.members, approvalSignersOf(pending)).size).toBe(1);
     const view = proposalViewOf(demoted, pending, 0);
@@ -156,8 +130,6 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
     expect(view.needed).toBe(1);
     expect(view.eligibleApprovers.toSorted()).toEqual([owner3.userId, owner4.userId].toSorted());
 
-    // owner3 votes → 2 votes (still pending). The CLI reports needed=0
-    // (completes on the next approve)
     const two = await verifiedOf(
       await buildChain([...steps, { actor: owner3, operation: approveOp(hash) }]),
     );
@@ -170,8 +142,6 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
       ok: true,
       completes: true,
     });
-    // An already-voted owner (owner3) and the demoted one (owner2) cannot
-    // approve
     expect(voteEligibility(two, owner3.userId, owner3.fingerprintHex, twoView)).toMatchObject({
       ok: false,
       reason: "duplicate-approval",
@@ -181,8 +151,6 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
       reason: "insufficient-role",
     });
 
-    // owner4's approve lets verifyChain complete it (gone from pending,
-    // member removed)
     const done = await verifiedOf(
       await buildChain([
         ...steps,
@@ -192,8 +160,6 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
     );
     expect(done.state.pendingProposals.has(hash)).toBe(false);
     expect(done.state.members.has(member.userId)).toBe(false);
-    // The applied-operations list (K6-C) carries the inner op at the
-    // approve's seq
     const applied = done.applied.at(-1);
     expect(applied?.operation.op).toBe("remove_member");
     expect(applied?.seq).toBe(done.state.headSeq);
@@ -213,8 +179,6 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
         ...prefix,
         { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
         { actor: owner2, operation: approveOp(hash) },
-        // Changing the policy itself is four-eyes (required 3): propose →
-        // signatures from the 3 owners
         { actor: owner, operation: proposeOp(innerOf(setApprovalPolicyOp(["remove_member"], 2))) },
       ]),
     );
@@ -258,8 +222,6 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
       ok: false,
       reason: "proposal-expired",
     });
-    // Change the policy to change_role only (four-eyes: propose + owner2's
-    // approve)
     const policyChange = await buildChain([
       ...prefix,
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member)), 1_000) },
@@ -299,7 +261,6 @@ describe("resolveProposalRef — prefix resolution (K6-F)", () => {
     const hashB = await hashOfLast(second);
     const verified = await verifiedOf(second);
     expect(resolveProposalRef(verified, hashA.slice(0, 8))).toMatchObject({ kind: "pending" });
-    // `#<seq>` (K6-F'): the proposal entry can also be pointed at by its seq
     expect(resolveProposalRef(verified, `#${prefix.length + 1}`)).toMatchObject({
       kind: "pending",
       proposal: { proposalHashHex: hashA },
@@ -310,7 +271,6 @@ describe("resolveProposalRef — prefix resolution (K6-F)", () => {
     expect(resolveProposalRef(verified, "not-hex!")).toEqual({ kind: "malformed" });
     expect(resolveProposalRef(verified, "0".repeat(64))).toEqual({ kind: "unknown" });
 
-    // Ids of completed / withdrawn proposals are not pending — says so
     const closed = await verifiedOf(
       await buildChain([
         ...prefix,

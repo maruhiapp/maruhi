@@ -1,12 +1,3 @@
-// Integration tests for the audit log (AUDIT_SPEC §3.3 data events / §3.4
-// chain mirror / §5.1 schema).
-//
-// - seq is monotonic and gapless (§5.1 / §6)
-// - The chain mirror carries actor (user_id + key FP), chain_seq, and both
-//   client / server timestamps (§3.4)
-// - Identity rule (§1-2): provider info and emails must not appear in any
-//   row
-
 import { decodeKeyFingerprintHex } from "@maruhi/core";
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
@@ -112,7 +103,6 @@ async function createVariableOk(dek: Uint8Array, variableId: string, name: strin
   fixture.manifests.set(ENV, state);
 }
 
-/** Sign the manifest bundled with a variable meta op (rename / delete) (§12-5) and advance the record. */
 async function manifestForNext(
   statement: WireVariableMetaStatement,
   issuerUserId: string,
@@ -131,7 +121,6 @@ async function manifestForNext(
   return manifest;
 }
 
-/** Sign a variable's next statement (rename / delete) from the latest recorded one. */
 async function nextVariableStatement(input: {
   readonly variableId: string;
   readonly name: string;
@@ -155,14 +144,6 @@ async function nextVariableStatement(input: {
   return statement;
 }
 
-/**
- * Check the author key FPs of the last 5 data lifecycle rows (env.renamed
- * → var.renamed → var.deleted → cascade var.deleted → env.deleted — the
- * chain mirror rows are skipped) (AUDIT_SPEC §3.3): ops accompanied by a
- * meta statement copy the author's key FP, and the environment-deletion
- * cascade (var.deleted, env.deleted) copies the actor FP of the
- * delete_environment entry (2026-10-07).
- */
 function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]): void {
   const tail = events.filter((row) => !String(row["event"]).startsWith("chain.")).slice(-5);
   const memberFp = vectorKeyOf(MEMBER).key_fingerprint_hex;
@@ -178,8 +159,6 @@ function expectMetaAuthorFingerprints(events: readonly Record<string, unknown>[]
   expect(JSON.parse(String(tail[1]?.["payload"]))).toMatchObject({ name: "API_KEY_V2" });
 }
 
-/** Minimal event for the numbering-reset check (test input for audit-store.ts's reset-on-failure). */
-/** A valid non-mirror row for the numbering tests (var.deleted carries no payload), told apart by its variable_id. */
 const seqTestEvent = (tag: string): AuditEventInput => ({
   event: "var.deleted",
   serverTs: 1,
@@ -204,7 +183,6 @@ describe("chain mirror (§3.4)", () => {
     expect(genesis["actor_type"]).toBe("user");
     expect(genesis["actor_user_id"]).toBe(OWNER);
     expect(genesis["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-    // §3.4: genesis's target is the creator (the start of the membership interval)
     expect(genesis["target_user_id"]).toBe(OWNER);
     expect(genesis["client_ts"]).toBeTypeOf("number");
     expect(genesis["server_ts"]).toBeTypeOf("number");
@@ -212,7 +190,6 @@ describe("chain mirror (§3.4)", () => {
     const addMember = events[1];
     if (addMember === undefined) throw new Error("missing add_member mirror");
     expect(addMember["target_user_id"]).toBe(MEMBER);
-    // scope is also copied (AUDIT_SPEC §3.4 — 2026-09-14 ES)
     expect(JSON.parse(String(addMember["payload"]))).toEqual({
       role: "member",
       scopeKind: "all",
@@ -221,11 +198,6 @@ describe("chain mirror (§3.4)", () => {
   });
 
   it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4)", async () => {
-    // Both creation and rotation land on the chain via composite requests
-    // (§12-4). The commitment in the mirror payload matches the §5.2
-    // computed value of the bundled DEK (pinning the value, not just the
-    // shape: rejects mutants that copy a different epoch's value or a
-    // constant)
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     const commitment1 = await commitmentOf(projectId, ENV, 1, dek1);
@@ -240,23 +212,17 @@ describe("chain mirror (§3.4)", () => {
     expect(created["chain_seq"]).toBe(4);
     expect(created["actor_user_id"]).toBe(OWNER);
     expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-    // dek_commitment is copied into the payload (AUDIT_SPEC §3.4)
     expect(JSON.parse(String(created["payload"]))).toEqual({ dekCommitmentHex: commitment1 });
 
     expect(rotated["event"]).toBe("chain.epoch_rotated");
     expect(rotated["environment_id"]).toBe(ENV);
     expect(rotated["epoch"]).toBe(2);
-    // The composite appends a boundary checkpoint (H+2) right after create /
-    // rotate (H+1) (§12-4), so the rotate's chain seq is 6
     expect(rotated["chain_seq"]).toBe(6);
     expect(JSON.parse(String(rotated["payload"]))).toEqual({
       reason: "scheduled",
       dekCommitmentHex: commitment2,
     });
 
-    // The boundary checkpoint mirror (chain.checkpointed — AUDIT_SPEC §3.4)
-    // is recorded at the H+2 seq (creation = 5, rotate = 7) and copies the
-    // environment tuple into the payload
     const checkpoints = events.filter((event) => event["event"] === "chain.checkpointed");
     expect(checkpoints.map((event) => event["chain_seq"])).toEqual([5, 7]);
     const rotateCheckpoint = JSON.parse(String(checkpoints[1]?.["payload"])) as {
@@ -302,7 +268,6 @@ describe("chain mirror (§3.4)", () => {
   });
 
   it("mirrors grant_server / revoke_server with the server key fingerprint (the §4.1 Q6 input)", async () => {
-    // FP = SHA-256(enc public key)[:16] (CRYPTO_SPEC §9). Chain verification requires them to match
     const serverEncPubHex = "ab".repeat(32);
     const fpResult = await computeServerKeyFingerprint(hexBytes(serverEncPubHex));
     if (!fpResult.ok) throw new Error("fingerprint failed");
@@ -342,11 +307,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(200);
 
-    // Metadata-only mode (AUTH_SPEC §12-7) does not distribute values, so
-    // it adds no audit rows at all, including var.read ("do not record
-    // reading what was not read" — §3.3; the check is that no row
-    // originating from this request appears in the expected event list
-    // below)
     const metadataPull = await requestJson(
       "GET",
       `/environments/${ENV}/pull/metadata`,
@@ -378,7 +338,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       await (async () => {
         const statement = await nextVariableStatement({
           variableId: VAR,
-          // A deleted statement's name keeps the immediately preceding active name (§4.2)
           name: "API_KEY_V2",
           status: "deleted",
           authorUserId: MEMBER,
@@ -391,16 +350,11 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     expect(removedEnv.status).toBe(204);
 
     const events = await readAuditEvents(projectId);
-    // seq is gapless starting at 1 (a gap = a trace of deletion — §6)
     expect(events.map((event) => event["seq"])).toEqual(events.map((_e, index) => index + 1));
     expect(events.map((event) => event["event"])).toEqual([
       "chain.genesis",
       "chain.member_added",
       "chain.member_added",
-      // A composite environment creation (§12-4) atomically writes the
-      // chain mirror (2 entries: create + boundary checkpoint) +
-      // env.created + the bundled wraps' dek.registered (one row per
-      // recipient — §3.3)
       "chain.environment_created",
       "chain.checkpointed",
       "env.created",
@@ -411,21 +365,14 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       "var.version_pushed",
       "var.created",
       "var.version_pushed",
-      // A bulk pull with values is one row per environment (aggregated
-      // form — §3.3). The enumeration of returned variables is carried by
-      // the payload
       "var.read",
       "env.renamed",
       "var.renamed",
       "var.deleted",
-      // Environment deletion (the delete_environment composite — §12-4)
-      // atomically writes the chain mirror, then var.deleted for the
-      // remaining variables and env.deleted
       "chain.environment_deleted",
       "var.deleted",
       "env.deleted",
     ]);
-    // The mirror row and the cascade rows name the deleted environment
     expect(events.slice(-3).map((event) => event["environment_id"])).toEqual([ENV, ENV, ENV]);
 
     const created = events[9];
@@ -443,20 +390,11 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     expect(created["variable_id"]).toBe(VAR);
     expect(created["environment_id"]).toBe(ENV);
     expect(JSON.parse(String(created["payload"]))).toEqual({ name: "API_KEY" });
-    // var.created / var.version_pushed are ops accompanied by signatures
-    // (CRYPTO_SPEC §4.1 / §4.2), so they copy the chain-derived key FP at
-    // acceptance time (AUDIT_SPEC §3.3 — signatures, signed bytes, hashes,
-    // nonces, and ciphertexts are not put on the audit log). On creation,
-    // the bundled v1's writer FP = the statement's author FP (same subject
-    // — §12-5)
     expect(created["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(pushed["epoch"]).toBe(1);
     expect(pushed["version"]).toBe(1);
     expect(pushed["actor_key_fingerprint"]).toBe(vectorKeyOf(MEMBER).key_fingerprint_hex);
     expect(read["actor_user_id"]).toBe(READER);
-    // Aggregated form (§3.3): a per-environment row where variable-grained
-    // columns are NULL, and the payload holds the enumeration of returned
-    // variables (ascending variableId, with epoch / version)
     expect(read["environment_id"]).toBe(ENV);
     expect(read["variable_id"]).toBeNull();
     expect(read["epoch"]).toBeNull();
@@ -467,7 +405,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
         { variableId: "var-second", epoch: 1, version: 1 },
       ],
     });
-    // var.read is not accompanied by a signature, so it has no FP (the §3.3 semantics)
     expect(read["actor_key_fingerprint"]).toBeNull();
     expect(envRenamedRow["event"]).toBe("env.renamed");
 
@@ -482,7 +419,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       const baseRow = sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0];
       const base = Number(baseRow?.["m"] ?? 0);
       store.appendSync(seqTestEvent("test.one"));
-      // Trigger the failure by directly inserting a colliding row at a seq in the middle of chunk 2 (row 7 onwards)
       sql.exec(
         "INSERT INTO audit_events (seq, row_id, server_ts, event, actor_type) VALUES (?, lower(hex(randomblob(16))), ?, ?, ?)",
         base + 9,
@@ -495,11 +431,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
           Array.from({ length: 12 }, (_e, index) => seqTestEvent(`test.b${index}`)),
         ),
       ).toThrow();
-      // The failure discards the numbering cache, and the next append
-      // continues from the live DB's MAX(seq)+1 (if it had kept advancing,
-      // it would number at base+14 and produce a gap against the
-      // post-rollback DB). Note: in production the task failure rolls back
-      // chunk 1 too — here only the numbering cache's behavior is pinned
       store.appendSync(seqTestEvent("test.after"));
       const last = sql
         .exec("SELECT seq, variable_id FROM audit_events ORDER BY seq DESC LIMIT 1")
@@ -507,7 +438,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       expect(last?.["variable_id"]).toBe("test.after");
       expect(last?.["seq"]).toBe(base + 10);
     });
-    // Restore the DO to its initial state so the directly-inserted row does not survive past this test
     await evictDurableObject(stub);
   });
 
@@ -522,9 +452,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       const invalid: AuditEventInput = { ...seqTestEvent("test.invalid"), chainSeq: 1 };
 
       expect(() => store.appendSync(invalid)).toThrow("chain_seq is reserved for chain.* events");
-      // Even with a violation in the back half, the valid front-half rows
-      // are not partially appended (crossing the APPEND_CHUNK_ROWS=5
-      // boundary, with the violation placed in the second chunk)
       expect(() =>
         store.appendManySync([
           ...Array.from({ length: 6 }, (_e, index) => seqTestEvent(`test.before-invalid${index}`)),
@@ -549,8 +476,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
           sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").toArray()[0]?.["m"] ?? 0,
         );
       const before = maxSeq();
-      // Structural typing lets a wider object through (this compiles); the
-      // store's check refuses it ahead of sequencing and SQL
       const snapshot = { name: "production", login: "octocat" };
       const widened: AuditEventInput = {
         event: "env.renamed",
@@ -611,12 +536,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
 
   it("seq stays gapless across a chunk-split bulk append and a DO restart (§5.1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // Create 8 variables — more than the per-statement row count of a
-    // multi-row INSERT (5 rows in audit-store.ts) — so that the
-    // environment-deletion cascade (8 var.deleted rows + env.deleted —
-    // §12-4) is appended split across multiple chunks (a pull with values
-    // is a single aggregated row — §3.3 — so the bulk-append path is
-    // exercised via the deletion cascade)
     for (let index = 0; index < 8; index += 1) {
       await createVariableOk(dek, `var-batch-${index}`, `BATCH_${index}`);
     }
@@ -625,9 +544,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     const removedEnv = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removedEnv.status).toBe(204);
 
-    // Equivalent to a DO restart: discard the in-instance-memory next seq
-    // and confirm the next append numbers continuing from a MAX(seq)
-    // re-read
     const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName(projectId));
     await evictDurableObject(stub);
     await createEnvironmentOk(fixture, "env-after-restart", "Other");
@@ -651,14 +567,8 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     if (envCreated === undefined) throw new Error("missing env.created");
     expect(envCreated["actor_user_id"]).toBe(OWNER);
     expect(envCreated["actor_api_token_id"]).toBeTypeOf("string");
-    // env.created is an op accompanied by a meta statement (CRYPTO_SPEC
-    // §4.2), so it copies the author's key FP (AUDIT_SPEC §3.3)
     expect(envCreated["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
-    // A data mutation via session auth is rejected with 403 by the §5
-    // capability restriction and leaves no audit row (the session-actor
-    // attribution of the D1-side auth.* / invite.* events is covered by the
-    // audit-d1 / invites tests)
     const session = await loginSession(9002);
     const dek = makeDek();
     const deks = await wrapDekForAll({
@@ -699,7 +609,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
-    // Boundary checkpoint (H+2 — the mandatory bundled item of §12-4)
     const { entry: sessionCheckpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
@@ -736,7 +645,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
 
   it("records dek.registered / dek.deleted per recipient with actor, epoch and target (§3.3)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // The bundled epoch-1 wraps at environment creation: one row per recipient (one row, one target)
     const initial = await readAuditEvents(projectId);
     const epoch1 = initial.filter((event) => event["event"] === "dek.registered");
     expect(epoch1.map((event) => event["target_user_id"])).toEqual([...ALL_MEMBERS]);
@@ -744,17 +652,13 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       expect(event["environment_id"]).toBe(ENV);
       expect(event["epoch"]).toBe(1);
       expect(event["actor_user_id"]).toBe(OWNER);
-      // Copies the signer FP of the registration signature (CRYPTO_SPEC §5.1) (§3.3 — for reconciliation)
       expect(event["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
-      // Registered via a PAT, so it carries the token id (§2 actor attribution)
       expect(event["actor_api_token_id"]).toBeTypeOf("string");
       expect(event["variable_id"]).toBeNull();
     }
 
-    // The bundled wraps of a composite rotation (§12-4) are recorded in the same shape
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
 
-    // Deletion (the §12-6 repair path) records dek.deleted per recipient
     const removed = await requestJson(
       "DELETE",
       `/environments/${ENV}/deks`,
@@ -772,7 +676,6 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     );
     expect(removed.status).toBe(204);
 
-    // Repair re-registration (the path remaining on the registration API — §12-6) is also recorded in the same shape
     const removedEpoch1 = await requestJson(
       "DELETE",
       `/environments/${ENV}/deks`,
@@ -829,25 +732,17 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     expect(deletion["epoch"]).toBe(2);
     expect(deletion["target_user_id"]).toBe(READER);
     expect(deletion["actor_user_id"]).toBe(OWNER);
-    // Deletion is not accompanied by a signature, so it has no FP (AUDIT_SPEC §3.3)
     expect(deletion["actor_key_fingerprint"]).toBeNull();
   });
 
   it("never records provider identifiers or emails (§1-2)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const events = await readAuditEvents(projectId);
-    // The seeded GitHub numeric IDs (provider_user_id), logins, and email
-    // forms must not appear as substrings in any column or payload
-    // (timestamp columns are excluded to avoid accidental numeric matches)
     for (const event of events) {
       for (const [column, value] of Object.entries(event)) {
         if (column === "server_ts" || column === "client_ts" || value === null) {
           continue;
         }
-        // Random hex (DEK commitments, key FPs, etc.) can coincidentally
-        // contain digit runs like "9001", so long hex runs are removed
-        // before scanning (a real provider-ID leak would appear as a short
-        // standalone value, so detection power is not lost)
         const text = String(value).replace(/[0-9a-f]{16,}/g, "");
         for (const forbidden of ["9001", "9002", "9003", "9009", "user900", "@"]) {
           expect(text).not.toContain(forbidden);
@@ -861,9 +756,6 @@ describe("stored-row brand decoders (audit-store-rows.ts)", () => {
   it("brandOrNull reads NULL and a valid fingerprint, and reads a malformed one as null instead of throwing", () => {
     expect(brandOrNull(null, decodeKeyFingerprintHex)).toBeNull();
     expect(brandOrNull("ab".repeat(16), decodeKeyFingerprintHex)).toBe("ab".repeat(16));
-    // A broken row is treated as null (a read is never made a defect);
-    // staged / restored rows carrying this value are refused by
-    // auditRowShapeViolations before derivation or installation
     expect(brandOrNull("not-a-fingerprint", decodeKeyFingerprintHex)).toBeNull();
     expect(brandOrNull("AB".repeat(16), decodeKeyFingerprintHex)).toBeNull();
   });

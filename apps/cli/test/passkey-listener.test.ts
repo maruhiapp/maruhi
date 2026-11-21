@@ -1,16 +1,3 @@
-// Checks for the passkey PRF listener (passkey-listener.ts) and the page
-// assets (passkey-page.ts).
-//
-// Properties pinned down (integration-options.md supplement 20 rulings A /
-// C — human-review points):
-//  1. Token mismatch, Host mismatch, Origin mismatch, malformed body, and
-//     wrong content-type are all the same reason-free 404
-//  2. A correct POST is accepted exactly once (204); afterwards it's 404.
-//     After close the connection is refused
-//  3. The page has no inline script / inline style / event attributes /
-//     third-party URLs, and the HTML response carries a CSP (script-src
-//     'self' baseline)
-
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
@@ -93,8 +80,6 @@ describe("PRF listener authentication (ruling A)", () => {
     const followed = await fetch(listener.url.slice(0, -1));
     expect(followed.status).toBe(200);
     expect(await followed.text()).toBe(PRF_PAGE_HTML);
-    // The redirect only happens for the right token (a different token
-    // stays 404)
     expect(
       (await fetch(`${originOf(listener)}/${"x".repeat(43)}`, { redirect: "manual" })).status,
     ).toBe(404);
@@ -138,8 +123,6 @@ describe("PRF listener authentication (ruling A)", () => {
     expect((await post(listener, JSON.stringify({ code: CODE, error: "made-up" }))).status).toBe(
       404,
     );
-    // Missing / mismatched confirmation code is a 404 (not consumed —
-    // the correct POST below still passes)
     expect(
       (await post(listener, JSON.stringify({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX })))
         .status,
@@ -152,7 +135,6 @@ describe("PRF listener authentication (ruling A)", () => {
         )
       ).status,
     ).toBe(404);
-    // A too-large body is cut unread (no response, or 404)
     await post(
       listener,
       JSON.stringify({
@@ -165,8 +147,6 @@ describe("PRF listener authentication (ruling A)", () => {
       (response) => expect(response.status).toBe(404),
       () => undefined,
     );
-    // A malformed POST doesn't close the listener: a correct POST still
-    // passes
     const accepted = await post(listener, good);
     expect(accepted.status).toBe(204);
     expect(await listener.outcome).toEqual({ credentialIdHex: CREDENTIAL_HEX, prfHex: PRF_HEX });
@@ -200,7 +180,6 @@ describe("PRF listener authentication (ruling A)", () => {
       expect((await post(listener, forged(guess))).status).toBe(404);
     }
     expect(await listener.outcome).toEqual({ error: "too-many-code-attempts" });
-    // After the abort, even the correct code doesn't pass
     expect((await post(listener, forged(CODE))).status).toBe(404);
   });
 });
@@ -221,8 +200,6 @@ describe("parsePrfPost", () => {
     expect(parsePrfPost(withCode({ credentialIdHex: "AB", prfHex: PRF_HEX }))).toBeNull();
     expect(parsePrfPost(withCode({ credentialIdHex: "", prfHex: PRF_HEX }))).toBeNull();
     expect(parsePrfPost(withCode({ credentialIdHex: "ab", prfHex: PRF_HEX.slice(1) }))).toBeNull();
-    // The code is a 6-digit numeric string only (absent, short, or a
-    // numeric type are all null)
     expect(parsePrfPost(JSON.stringify({ credentialIdHex: "ab", prfHex: PRF_HEX }))).toBeNull();
     expect(
       parsePrfPost(JSON.stringify({ code: "12345", credentialIdHex: "ab", prfHex: PRF_HEX })),
@@ -245,8 +222,6 @@ describe("page-asset invariants (ruling C — CSP script-src 'self' baseline)", 
     expect(PRF_PAGE_HTML).not.toMatch(/javascript:/i);
     expect(PRF_PAGE_HTML).not.toMatch(/\sstyle\s*=/i);
     expect(PRF_PAGE_HTML).toContain('<link rel="stylesheet" href="./style.css">');
-    // The confirmation-code input field lives on the page (the value only
-    // rides the POST — no key material enters the DOM)
     expect(PRF_PAGE_HTML).toContain('<input id="code"');
     expect(PRF_PAGE_JS).toContain("code: code");
   });
@@ -259,12 +234,8 @@ describe("page-asset invariants (ruling C — CSP script-src 'self' baseline)", 
     expect(PRF_PAGE_JS).not.toMatch(/\beval\s*\(/);
     expect(PRF_PAGE_JS).not.toMatch(/new\s+Function\b/);
     expect(PRF_PAGE_JS).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
-    // WebAuthn requires UV (on authenticators without UV, PRF silently
-    // goes missing)
     expect(PRF_PAGE_JS.match(/userVerification: "required"/g)).toHaveLength(3);
     expect(PRF_PAGE_JS).not.toMatch(/userVerification: "(preferred|discouraged)"/);
-    // The relative-path fetches are exactly the two same-origin ones
-    // (config.json and prf)
     expect(PRF_PAGE_JS.match(/fetch\(/g)).toHaveLength(2);
   });
 

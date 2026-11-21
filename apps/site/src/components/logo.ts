@@ -1,12 +1,4 @@
-/**
- * The site's logo glyph for the social cards (src/pages/og/_card.ts): the
- * "secret" kanji glyph of the maruhi mark, from apps/web/public/logo.svg
- * (the circle is drawn by the card itself in the accent colour). The
- * header uses the full logo files (Logo.astro: /logo.svg and
- * /logo-dark.svg in public/).
- */
 export const logo = {
-  /** The drawing's box; callers size it by height and keep the ratio. */
   width: 1000,
   height: 1000,
   paths: [

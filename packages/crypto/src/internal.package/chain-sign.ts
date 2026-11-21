@@ -1,16 +1,8 @@
-// CRYPTO_SPEC §6.1: Ed25519 signatures of chain entries.
-// WebCrypto's Ed25519 is the RFC 8032 deterministic signature (matches the test vectors).
-
 import { encodeHex } from "./bytes.ts";
 import { canonicalChainSignedBytes } from "./chain-canonical.ts";
 import type { ChainEntry, UnsignedChainEntry } from "./chain-types.ts";
 import type { CryptoResult } from "./errors.ts";
 
-/**
- * Signs an unsigned chain entry with the actor's Ed25519 private key and
- * returns the complete entry. The signature covers the canonical signed
- * bytes (CRYPTO_SPEC §6.1).
- */
 export async function signChainEntry(input: {
   readonly entry: UnsignedChainEntry;
   readonly signingKey: CryptoKey;

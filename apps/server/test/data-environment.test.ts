@@ -1,13 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — environment
-// management (the §12-4 composite request) and the creation composite's
-// DEK-wrap verification (§12-6).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// The shared fixture and helpers live in support/data-scenario.ts.
-// Epochs/rotation and the in-composite consistency of boundary
-// checkpoints live in data-environment-rotation.test.ts (for the split's
-// motivation see the top of support/membership-scenario.ts).
-
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -65,7 +55,6 @@ describe("environment management (the §12-4 composite request)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // For the positive case, pass the wrapped DEK's own commitment
     const created = await createEnvironmentWith(
       fixture,
       ENV,
@@ -82,18 +71,14 @@ describe("environment management (the §12-4 composite request)", () => {
     };
     expect(body.environmentId).toBe(ENV);
     expect(body.currentEpoch).toBe(1);
-    // The composite appends two entries: create (H+1) + boundary checkpoint (H+2) (§12-4)
     expect(body.headSeq).toBe(headBefore.seq + 2);
 
-    // Two entries, create_environment + checkpoint, have been appended to
-    // the chain (one half of the composite's atomicity)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: { op: string; seq: number }[] };
     expect(chainBody.entries.at(-2)?.op).toBe("create_environment");
     expect(chainBody.entries.at(-1)?.op).toBe("checkpoint");
     expect(chainBody.entries.at(-1)?.seq).toBe(body.headSeq);
 
-    // The environment list returns not a bare name but the latest statement + author info (§12-2)
     const list = await requestJson("GET", "/environments", token(READER));
     expect(list.status).toBe(200);
     const listBody = (await list.json()) as {
@@ -141,7 +126,6 @@ describe("environment management (the §12-4 composite request)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    // ID uniqueness is a consensus rule (CRYPTO_SPEC §6.2)
     const response = await createEnvironmentWith(fixture, ENV, "App2", deks);
     expect(response.status).toBe(422);
     const body = (await response.json()) as { seq: number; reason: string };
@@ -155,9 +139,6 @@ describe("environment management (the §12-4 composite request)", () => {
     const removed = await deleteEnvironmentRequest(fixture, ENV, OWNER);
     expect(removed.status).toBe(204);
 
-    // The deletion is a chain entry at the head (CRYPTO_SPEC §6.2 —
-    // 2026-10-07): the chain is the authority for whether the environment
-    // is deleted
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as {
       headSeq: number;
@@ -169,10 +150,6 @@ describe("environment management (the §12-4 composite request)", () => {
       payload: { environmentId: ENV },
     });
 
-    // Everything of the environment is deleted immediately — variables,
-    // variable and environment statements, versions, wraps, the manifest
-    // and the checkpoint snapshot; the environment row becomes a
-    // chain-derived tombstone (§12-4)
     for (const table of [
       "variables",
       "variable_meta_statements",
@@ -192,9 +169,6 @@ describe("environment management (the §12-4 composite request)", () => {
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(pull.status).toBe(404);
 
-    // A deleted id stays in the chain-derived environment set, so
-    // re-creation is rejected by the consensus rule (uniqueness across the
-    // whole history) (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-4)
     const recreated = await createEnvironmentWith(fixture, ENV, "App3", []);
     expect(recreated.status).toBe(422);
     const body = (await recreated.json()) as { reason: string };
@@ -212,7 +186,6 @@ describe("environment management (the §12-4 composite request)", () => {
       _tag: "PayloadMismatch",
       field: "environmentId",
     });
-    // Neither environment was deleted
     const list = await requestJson("GET", "/environments", token(READER));
     const listBody = (await list.json()) as { environments: { environmentId: string }[] };
     expect(listBody.environments.length).toBe(2);
@@ -222,8 +195,6 @@ describe("environment management (the §12-4 composite request)", () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const current = fixture.head.hashHex;
     const stale = "ab".repeat(32);
-    // A current parent with a stale prev, and a stale parent with a current
-    // prev: both are malformed before the CAS is judged (never a 409)
     for (const options of [
       { entryPrevHashHex: stale },
       { parentHeadHashHex: stale, entryPrevHashHex: current },
@@ -241,8 +212,6 @@ describe("environment management (the §12-4 composite request)", () => {
   });
 
   it("rejects delete_environment on the generic chain append (422 CompositeRequired)", async () => {
-    // AUTH_SPEC §6 / §12-4: an entry without its data deletion would leave
-    // data the chain says no longer exists
     await createEnvironmentOk(fixture, ENV, "App");
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
@@ -261,7 +230,6 @@ describe("environment management (the §12-4 composite request)", () => {
   });
 
   it("rejects create_environment / rotate_epoch on the generic chain append (422 CompositeRequired)", async () => {
-    // AUTH_SPEC §6 / §12-4: do not let the generic path bypass the composite endpoint's atomicity
     const { entry: createEntry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
@@ -301,17 +269,12 @@ describe("environment management (the §12-4 composite request)", () => {
     expect(rotateResponse.status).toBe(422);
     expect((await rotateResponse.json()) as { op: string }).toMatchObject({ op: "rotate_epoch" });
 
-    // Neither was appended to the chain
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { headSeq: number };
     expect(chainBody.headSeq).toBe(fixture.head.seq);
   });
 
   it("retries a composite creation after a head CAS conflict (409 ChainHeadConflict → re-sign → 200)", async () => {
-    // §12-4: a parent-head CAS failure requires re-signing the chain
-    // entry (a changed prev). Sending with a stale parent (genesis-level)
-    // returns a 409 + the current head, and a retry with the correct
-    // parent can proceed
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -327,7 +290,7 @@ describe("environment management (the §12-4 composite request)", () => {
       name: "App",
       deks,
       dekCommitmentHex,
-      parentHeadHashHex: projectId, // the genesis hash = a head two generations stale
+      parentHeadHashHex: projectId,
     });
     expect(stale.status).toBe(409);
     const staleBody = (await stale.json()) as {
@@ -336,11 +299,9 @@ describe("environment management (the §12-4 composite request)", () => {
     };
     expect(staleBody.currentHeadSeq).toBe(fixture.head.seq);
     expect(staleBody.currentHeadHashHex).toBe(fixture.head.hashHex);
-    // Nothing was written (atomicity: a CAS failure leaves no trace on chain or data)
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "enabled" });
 
-    // The retried positive case passes the wrapped DEK's own commitment
     const retried = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
@@ -367,7 +328,6 @@ describe("environment management (the §12-4 composite request)", () => {
     const body = (await duplicate.json()) as { reason: string };
     expect(body.reason).toBe("duplicate-name");
 
-    // For the positive case that proceeds to acceptance (200), pass the wrapped DEK's commitment
     const second = await createEnvironmentWith(
       fixture,
       "env-app-0002",
@@ -418,7 +378,6 @@ describe("environment management (the §12-4 composite request)", () => {
   });
 
   it("rejects a composite whose entry actor differs from the principal (403 actor-mismatch)", async () => {
-    // §12-4: the chain entry's actor must strictly equal the calling principal (the same discipline as §11-1)
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -437,8 +396,6 @@ describe("environment management (the §12-4 composite request)", () => {
         payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
       },
     });
-    // The boundary checkpoint is also signed by the same actor (OWNER) —
-    // to pass Schema and reach the actor-equality check (403)
     const { entry: checkpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
@@ -480,10 +437,6 @@ describe("environment management (the §12-4 composite request)", () => {
       const body = (await response.json()) as { projectId: string };
       expect(body.projectId).toBe(projectId);
     }
-    // Deletion (the delete_environment composite) is also a 404 for
-    // non-members. STRANGER holds no vector key, so it is sent as an
-    // unsigned dummy (existence hiding precedes signature verification —
-    // §12-3)
     const removal = await requestJson(
       "DELETE",
       `/environments/${ENV}`,
@@ -510,18 +463,12 @@ describe("DEK-wrap verification at environment creation (§12-6)", () => {
   });
 
   it("rejects an empty wrap set atomically (§12-4: bundling the epoch-1 complete set is mandatory)", async () => {
-    // An empty set would slip past the per-epoch check and create "an
-    // environment no one can hold a DEK for". Closed by the explicit
-    // check that count = current member count
     const response = await createEnvironmentWith(fixture, ENV, "App", []);
     expect(response.status).toBe(422);
     const body = (await response.json()) as { reason: string };
     expect(body.reason).toBe("recipient-missing");
     const list = await requestJson("GET", "/environments", token(READER));
     await expect(list.json()).resolves.toEqual({ environments: [], schemaPolicy: "enabled" });
-    // Composite atomicity (§12-4): a composite that failed the wrap
-    // check appends no chain entry either (no "commitment exists but
-    // wraps do not" intermediate state)
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { headSeq: number };
     expect(chainBody.headSeq).toBe(fixture.head.seq);
@@ -554,7 +501,6 @@ describe("DEK-wrap verification at environment creation (§12-6)", () => {
       epoch: 1,
       dek: makeDek(),
       recipientUserId: READER,
-      // Wrapped to MEMBER's key instead of READER's on-chain key (equivalent to a ghost member)
       recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
       signerUserId: OWNER,
     });
@@ -571,7 +517,6 @@ describe("DEK-wrap verification at environment creation (§12-6)", () => {
     expect(dupResponse.status).toBe(422);
     expect(((await dupResponse.json()) as { reason: string }).reason).toBe("duplicate-recipient");
 
-    // The current epoch at environment creation is always 1 (§12-4). Epoch 2 is out of range
     const epoch2 = await wrapsFor(ENV, ALL_MEMBERS, 2);
     const epochResponse = await createEnvironmentWith(fixture, ENV, "App", epoch2);
     expect(epochResponse.status).toBe(422);

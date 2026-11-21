@@ -1,14 +1,3 @@
-// The shared core of backfill (CRYPTO_SPEC §7 / AUTH_SPEC §12-6).
-//
-// The structure — "verify and unwrap every epoch's DEK (1 through the
-// current epoch) of one environment from the wraps addressed to me, re-wrap
-// for the target recipient, and register; converge a 409 (an occupied
-// slot) by dropping from bulk to per-epoch" — is identical between the
-// server-directed backfill right after a grant (server-grant) and the
-// new-member-directed backfill after add_member (member). Only the
-// resolution of a per-epoch 409 differs (treat as registered / replace via
-// the repair path), so that is the injection point.
-
 import { type WrappedDek } from "@maruhi/api-schema";
 import { type EnvironmentId, type ProjectId, type UserId } from "@maruhi/core";
 import type { SigningKeyPair, WrapRecipient } from "@maruhi/crypto";
@@ -21,26 +10,18 @@ import { type DekRecipient, environmentKeysFor } from "./deks.ts";
 import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 
-/**
- * Result of a registration attempt (409 = existing slot).
- * `storedRecipientEncPubHex` is the stored recipient enc public key of the
- * occupying wrap carried by the 409 (AUTH_SPEC §12-6).
- */
 export type RegisterOutcome =
   | { readonly kind: "ok" }
   | { readonly kind: "exists"; readonly storedRecipientEncPubHex: string };
 
-/** Resolution of a per-epoch 409 (the caller's semantics). */
 type SlotConflictResolution = "already-registered" | "repaired";
 
 export interface BackfillEnvironmentOutcome {
   readonly registered: number;
   readonly alreadyRegistered: number;
-  /** How many times `onSlotConflict` returned "repaired" (member add's repair path). */
   readonly repaired: number;
 }
 
-/** Aggregate of a multi-environment backfill (one environment's failure does not stop the rest — §7). */
 interface BackfillAggregate {
   readonly registered: number;
   readonly alreadyRegistered: number;
@@ -48,11 +29,6 @@ interface BackfillAggregate {
   readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
 }
 
-/**
- * Runs the backfill per environment and aggregates (the aggregation shape
- * shared by member add / change-role widenings / device addition).
- * Failures are collected per environment and the run continues.
- */
 export const backfillEachEnvironment = Effect.fn("backfill.backfillEachEnvironment")(function* <R>(
   environments: readonly EnvironmentId[],
   run: (environmentId: EnvironmentId) => Effect.Effect<BackfillEnvironmentOutcome, CliError, R>,
@@ -77,44 +53,21 @@ export const backfillEachEnvironment = Effect.fn("backfill.backfillEachEnvironme
   return { registered, alreadyRegistered, repaired, failed };
 });
 
-/**
- * Wraps every epoch's DEK of one environment for the target recipient and
- * registers them. Verify & unwrap the wraps addressed to me (§5.1 + §5.2)
- * → re-wrap + sign the registration (§5.1) → bulk register → on 409 drop
- * to per-epoch (because a batch is accepted atomically, a re-run after a
- * partial registration gets a 409 for the bulk). A per-epoch 409 is
- * resolved by `onSlotConflict` (default = treat as registered).
- */
 export const backfillEnvironmentFor = Effect.fn("backfill.backfillEnvironmentFor")(
   function* (input: {
     readonly client: MaruhiClient;
     readonly verified: VerifiedProject;
     readonly environmentId: EnvironmentId;
-    /** Recipient info of myself (the DEK holder = the one performing the wrap — §7). */
     readonly recipient: DekRecipient;
-    /** The wrap's destination (a server key / a new member). */
     readonly wrapRecipient: WrapRecipient;
-    /** Destination label used in the wrap-generation failure message (e.g. "for the server"). */
     readonly recipientLabel: string;
     readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
-    /**
-     * Resolution of a per-epoch 409 (omitted = treat as registered). member
-     * add's re-add repair performs delete → re-register here (the §12-6
-     * repair path). The second argument is the stored recipient enc public
-     * key of the occupying wrap carried by the 409.
-     */
     readonly onSlotConflict?: (
       wrap: WrappedDek,
       storedRecipientEncPubHex: string,
     ) => Effect.Effect<SlotConflictResolution, CliError>;
-    /**
-     * The epochs to wrap (omitted = all of 1 through the current epoch).
-     * Device gap filling (device-gaps.ts — DK K11-1) passes only the missing
-     * epochs it could open.
-     */
     readonly epochs?: readonly number[];
-    /** My-addressed DEKs already verified and unwrapped in this session (the `cached` of `environmentKeysFor`). */
     readonly cached?: ReadonlyMap<number, Redacted.Redacted<Uint8Array>>;
   }): Effect.fn.Return<BackfillEnvironmentOutcome, CliError> {
     const keys = yield* environmentKeysFor({
@@ -128,11 +81,6 @@ export const backfillEnvironmentFor = Effect.fn("backfill.backfillEnvironmentFor
     for (const epoch of epochsToWrap(input.epochs, keys.currentEpoch)) {
       const dek = keys.deksByEpoch.get(epoch);
       if (dek === undefined) {
-        // §7: every member receives every epoch's DEK. A gap is a sign of a
-        // poisoned wrap or a loss, so it is not silently skipped (guide the
-        // §12-6 repair path). A plain re-run does not fix it (it hits the
-        // same gap every time unless a wrap addressed to me exists), so do
-        // not say "please re-run"
         return yield* Effect.fail(
           cliError(
             `No DEK wrap addressed to you exists for epoch ${epoch} of environment ${input.environmentId} (contradicts the all-epoch distribution of §7). Have another member who holds wraps for every epoch run this operation, or fill the gap via the repair path (re-registering wraps addressed to you) and re-run`,
@@ -163,7 +111,6 @@ export const backfillEnvironmentFor = Effect.fn("backfill.backfillEnvironmentFor
 
     const register = registerWraps(input.client, input.verified.projectId, input.environmentId);
 
-    // Bulk → on 409, drop to per-epoch to converge
     const batch = yield* register(wraps);
     if (batch.kind === "ok") {
       return { registered: wraps.length, alreadyRegistered: 0, repaired: 0 };
@@ -191,7 +138,6 @@ export const backfillEnvironmentFor = Effect.fn("backfill.backfillEnvironmentFor
   },
 );
 
-/** Epochs to wrap: the given ones, or 1 through the current epoch (the backfill default). */
 function epochsToWrap(
   epochs: readonly number[] | undefined,
   currentEpoch: number,
@@ -199,11 +145,6 @@ function epochsToWrap(
   return epochs ?? Array.from({ length: currentEpoch }, (_, index) => index + 1);
 }
 
-/**
- * Attempt to register DEK wraps (409 = DekWrapExists is returned as the
- * value "existing slot" — input to re-run convergence and repair
- * decisions).
- */
 export function registerWraps(
   client: MaruhiClient,
   projectId: ProjectId,

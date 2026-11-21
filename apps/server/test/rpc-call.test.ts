@@ -1,11 +1,3 @@
-// rpcCall (worker-env.ts): a DO RPC's rejection is a typed RpcCallError,
-// not a defect, and the error carries only the rejection's error class name
-// — the rejection's message (DO error text) never reaches any rendering of
-// it. The call sites' outcomes are pinned where a test can make the RPC
-// reject: the project-list isolation and the 500 of the orDie sites (chain
-// get, callProjectData, requireProjectChainAdmin — project-list.test.ts),
-// and the backup sweep's rpc-failed record (ops-backup.test.ts).
-
 import { Cause, Effect, Formatter } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -13,7 +5,6 @@ import { RpcCallError, rpcCall } from "../src/worker-env.ts";
 
 const DO_ERROR_TEXT = "dummy DO error text naming a stored row";
 
-/** The call's RpcCallError (a success or a defect rejects, failing the test). */
 const failureOf = (call: () => PromiseLike<unknown>): Promise<RpcCallError> =>
   Effect.runPromise(Effect.flip(rpcCall<unknown>(call)));
 

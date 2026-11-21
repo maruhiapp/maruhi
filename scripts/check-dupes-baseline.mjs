@@ -1,30 +1,3 @@
-// Shrink-only gate (CI 5b) for the fallow duplication baseline
-// (fallow-baselines/dupes.json). The baseline lists accepted clone debt; it may
-// lose entries but never gain them. Fails when the working-tree baseline holds
-// a clone the baseline at the merge-base with <base-ref> did not.
-//
-//   bun scripts/check-dupes-baseline.mjs [--restore] [<base-ref>]
-//
-//   <base-ref>  defaults to origin/main (CI passes the PR's base branch)
-//   --restore   on growth, write the merge-base version back before failing
-//               (used by `bun run fallow:baseline`, so a re-save can only
-//               shrink the file)
-//
-// Entries are compared by `clone_fingerprints` (`dup:<content hash>:<count>`),
-// which survive line shifts; `clone_groups` carries line ranges and is only
-// used to name an offending entry. A fingerprint passes when the base holds
-// the same hash with at least as many occurrences (removing one copy of a
-// baselined clone is shrinking, adding one is growth).
-//
-// A refactor that trims a baselined clone without removing it changes the
-// clone's content hash. Such an in-place shrink also passes: a new entry is
-// accepted when it replaces a base entry that left the baseline, keeps its
-// copies in that entry's files (per file, no more copies than before), and is
-// no longer per copy. Each base entry covers at most one replacement. The
-// check cannot tell a trim from a different clone that lands in exactly the
-// same files with no more copies and lines; such a swap passes, and review
-// catches it.
-
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -38,14 +11,11 @@ function git(...gitArgs) {
   return execFileSync("git", gitArgs, { encoding: "utf8", maxBuffer: 1 << 26 });
 }
 
-/** The baseline text at `rev`, or null when the file does not exist there. */
 function baselineAt(rev) {
-  // Absent at that revision: every current entry is growth
   if (git("ls-tree", "--name-only", rev, "--", BASELINE).trim() === "") return null;
   return git("show", `${rev}:${BASELINE}`);
 }
 
-/** `a.ts:3-9|b.ts:4-10` → the file list and the longest copy's line count. */
 function shapeOf(group) {
   const ranges = group.split("|").map((instance) => {
     const match = /^(.*):(\d+)-(\d+)$/.exec(instance);
@@ -60,14 +30,12 @@ function shapeOf(group) {
   };
 }
 
-/** File → number of copies in it. */
 function copiesPerFile(files) {
   const counts = new Map();
   for (const file of files) counts.set(file, (counts.get(file) ?? 0) + 1);
   return counts;
 }
 
-/** Whether `entry` is `base` trimmed in place: no file gains a copy, no copy is longer. */
 function shrinksInPlace(entry, base) {
   const next = shapeOf(entry.group);
   const previous = shapeOf(base.group);
@@ -80,7 +48,6 @@ function shrinksInPlace(entry, base) {
   );
 }
 
-/** Fingerprint → { hash, count, group } for one baseline file's text. */
 function entriesOf(text, label) {
   if (text === null) return [];
   const baseline = JSON.parse(text);
@@ -101,7 +68,6 @@ const baseEntries = entriesOf(baseText, `${baseRef} (${mergeBase.slice(0, 12)})`
 const baseCounts = new Map(baseEntries.map((entry) => [entry.hash, entry.count]));
 const currentEntries = entriesOf(readFileSync(BASELINE, "utf8"), BASELINE);
 const currentHashes = new Set(currentEntries.map((entry) => entry.hash));
-// Base entries that left the baseline; each may absorb one in-place shrink
 const departed = baseEntries.filter((entry) => !currentHashes.has(entry.hash));
 const grown = currentEntries.filter((entry) => {
   if ((baseCounts.get(entry.hash) ?? 0) >= entry.count) return false;

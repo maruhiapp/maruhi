@@ -1,21 +1,3 @@
-// Handlers for the variable API (AUTH_SPEC §12-5 / §12-7).
-//
-// Check order (§12-3): authentication (middleware) → preliminary
-// value-size check (413 — resource protection precedes semantic
-// checks) → coordinate match of declared AAD / statement (422 — a
-// self-consistency check depending only on request contents, carrying
-// no existence information) → token scope → DO (membership / role /
-// CAS / signature / quantity). The shared path is callProjectData in
-// data-http.ts. The set of errors returnable as DO rejections is
-// derived from each endpoint's contract declaration (api-schema) — no
-// hand-written enumeration.
-//
-// Creation bundles a version-1 value with a VariableMetaStatement
-// (metaVersion 1) (§12-5). Since variableId and the display name are
-// carried by the statement, the expected variableId of the AAD
-// coordinate check uses the statement's variableId (the only value
-// path without a variableId in the URL).
-
 import type { EnvironmentManifest } from "@maruhi/api-schema";
 import { ForbiddenError, maruhiApi } from "@maruhi/api-schema";
 import type { EnvironmentId, ProjectId, VariableId } from "@maruhi/core";
@@ -49,13 +31,6 @@ import type {
   VariableVersionValuesValue,
 } from "../programs/programs-history.ts";
 
-/**
- * A GET that carries state — the var.read audit record (§12-7 / AUDIT_SPEC
- * §3.3) of the with-values pull and the version value range — requires the
- * CSRF header from session principals: blocks pollution of the audit trail
- * by a third-party site stamping fake var.reads with the victim's session
- * (rationale in the JSDoc of statefulGetCsrfViolated).
- */
 const ensureStatefulGetCsrf = Effect.fn("handlers-variables.ensureStatefulGetCsrf")(function* (
   headers: Parameters<typeof statefulGetCsrfViolated>[1],
 ) {
@@ -65,12 +40,6 @@ const ensureStatefulGetCsrf = Effect.fn("handlers-variables.ensureStatefulGetCsr
   }
 });
 
-/**
- * Rename and remove (§12-5) take the same request — a signed statement and
- * the manifest that reflects it, without a value — and check it the same
- * way, against the URL's coordinates. They differ only in the DO method
- * that applies the statement.
- */
 const applyVariableStatement = Effect.fn("handlers-variables.applyVariableStatement")(function* <
   Endpoint extends HttpApiEndpoint.Top,
 >(
@@ -118,10 +87,6 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     .handle(
       "create",
       Effect.fn("handlers-variables.create")(function* ({ params, payload, endpoint }) {
-        // Union of the 2 create forms (§12-5): active = value bundled
-        // / declared = no value (the wire Schema fixes the coupling of
-        // status and value presence). The value-bearing preliminary
-        // checks (size, AAD coordinates) apply only to the active form
         const value = "value" in payload ? payload.value : undefined;
         if (value !== undefined) {
           yield* checkValueSize(value);
@@ -134,8 +99,6 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
           yield* checkAadCoordinates(value, {
             projectId: params.projectId,
             environmentId: params.environmentId,
-            // The variableId destination is fixed by the statement
-            // (match-checked against the value's AAD)
             variableId: payload.statement.variableId,
           });
         }
@@ -168,14 +131,11 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
               params.environmentId,
               params.variableId,
               toValueInput(payload.value),
-              // The value-lineage declaration (AUTH_SPEC §12-5 — VH)
               payload.sameValueAs,
             ),
         });
       }),
     )
-    // Version history (§12-7 — VH): metadata only, reader, scope-agnostic;
-    // no var.read (same row as pullMetadata)
     .handle("history", ({ params, endpoint }) =>
       callProjectData<VariableVersionHistoryValue>()({
         endpoint,
@@ -193,7 +153,6 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
         endpoint,
         request,
       }) {
-        // A GET that records var.read (§12-7 — VH)
         yield* ensureStatefulGetCsrf(request.headers);
         const range = yield* callProjectData<VariableVersionValuesValue>()({
           endpoint,
@@ -219,9 +178,6 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     .handle(
       "activate",
       Effect.fn("handlers-variables.activate")(function* ({ params, payload, endpoint }) {
-        // The activation composite (§12-5): preliminary checks identical
-        // to create (the value-bundled form), and the variableId is fixed
-        // by the URL
         yield* checkValueSize(payload.value);
         yield* checkStatementCoordinates(payload.statement, params);
         yield* checkManifestCoordinates(payload.manifest, params.environmentId);
@@ -244,8 +200,6 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
     .handle(
       "pull",
       Effect.fn("handlers-variables.pull")(function* ({ params, endpoint, request }) {
-        // The metadata-only mode (pullMetadata) records no audit and is
-        // out of scope
         yield* ensureStatefulGetCsrf(request.headers);
         const pulled = yield* callProjectData<EnvironmentPullValue>()({
           endpoint,
@@ -261,28 +215,18 @@ export const variablesLive = HttpApiBuilder.group(maruhiApi, "variables", (handl
             toWireVariable(params.projectId, params.environmentId, row),
           ),
           deletedVariables: pulled.deletedVariables,
-          // Statements of declared variables (§12-7 — no value; present only when they exist)
           ...(pulled.declaredVariables === undefined
             ? {}
             : { declaredVariables: pulled.declaredVariables }),
           deks: pulled.deks,
-          // The schemaPolicy advisory bundling (§12-7 / §12-11)
           schemaPolicy: pulled.schemaPolicy,
-          // The latest manifest (§12-7 — required since 0.28-draft;
-          // the client uniformly refuses its absence — CRYPTO_SPEC §6.3)
           manifest: pulled.manifest,
-          // The value snapshot at checkpoint time (§12-7 — always
-          // bundled when a stored row of the baseline checkpoint
-          // exists; the material of client rule 2 — CRYPTO_SPEC §6.3)
           ...(pulled.checkpointSnapshot === undefined
             ? {}
             : { checkpointSnapshot: pulled.checkpointSnapshot }),
         };
       }),
     )
-    // Metadata-only mode (§12-7): authorization identical to pull
-    // (read × reader). Returns no values or DEKs; no var.read is
-    // recorded (AUDIT_SPEC §3.3)
     .handle("pullMetadata", ({ params, endpoint }) =>
       callProjectData<EnvironmentMetadataPullValue>()({
         endpoint,

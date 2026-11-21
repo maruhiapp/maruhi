@@ -1,37 +1,3 @@
-// The `effect/cli` argument layer (ADR-0016 decision 1 — stage 1:
-// pull / run / env create, stage 2: env rotate / diff, server, invite,
-// member, stage 3: push, config, key, project, rotation, audit, login,
-// logout). The entry is cli.ts's runCli.
-//
-// `env` / `server` / `invite` / `member` are **true nested subcommands**
-// (ADR-0016 decision 6): since the declaration is split per operation, no
-// hand-rolled mechanism is needed to refuse "an option that does not apply
-// to that operation". The property "a flag the operation lacks is a usage
-// error (exit 2)" is upheld by the declaration + teardown (pinned by
-// env-command.test.ts, server-command.test.ts, invite-command.test.ts and
-// member-command.test.ts).
-//
-// The discipline (ADR-0016's decisions):
-// 1. **Never write a hand-rolled scan for argument checks**. Everything is
-//    expressed by declarations — a duplicated flag = `Flag.atMost(1)`
-//    (**put it on booleans too**), an empty / whitespace-only value =
-//    `Flag.withSchema`, a required run target = `Argument.atLeast(1)` /
-//    `Argument.filter`
-// 2. **Never surface a typed-in value in diagnostics**. The wording is
-//    reassembled by `CliOutput.Formatter` (cli-formatter.ts)
-// 3. **The exit code lives on the error type** (`Runtime.errorExitCode` —
-//    errors.ts). The sole exception `ShowHelp` is re-read as 2 in the
-//    teardown (cli-teardown.ts)
-// 4. **Built-in global flags are narrowed to `--help` / `--version`
-//    only**. By default `--wizard` / `--completions` / `--log-level` grow
-//    onto every command, and `maruhi pull --wizard` **actually launches an
-//    interactive wizard** (measured)
-// 5. **Never read `process.*` directly**. argv and terminal presence go
-//    through the `Stdio` service
-// 6. **stdout is for the command's output only**. The command body's
-//    output is `CliIo.log`; help and diagnostics go to `Console` (=
-//    `CliIo.logError` = stderr)
-
 import { Command, Param } from "effect/cli";
 
 import {
@@ -169,15 +135,6 @@ import {
 } from "./rotation.ts";
 import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.ts";
 
-/**
- * The nesting stage (group) → the subcommand name → the declaration.
- * **This table is the single source** — COMMAND_SPECS (the dispatch keys
- * and the diagnostics' declaration / subcommand lists) is derived from
- * it. Holding the parents' stages as a hand-written copy would leave only
- * the dispatch and diagnostics stale when a subcommand is added.
- * makeRootCommand's `Command.make(name)` uses the same spelling as this
- * key (a disagreement fails command-specs.test.ts's tree walk).
- */
 const GROUP_CONFIGS: Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, Param.Any>>>>>
 > = {
@@ -284,42 +241,14 @@ const GROUP_CONFIGS: Readonly<
   proxy: { run: proxyRunConfig, accept: proxyAcceptConfig },
 };
 
-/**
- * The groups whose parent stage itself carries a declaration (and a
- * handler). Only audit, which keeps bare `maruhi audit` = list — feeding
- * it into COMMAND_SPECS' parent entry so diagnostics (`audit --bogus`'s
- * undeclared flag) can also be assembled from the parent stage's
- * declaration.
- */
 const GROUP_PARENT_CONFIGS: Readonly<Record<string, Readonly<Record<string, Param.Any>>>> = {
   audit: auditListConfig,
   schema: schemaShowConfig,
-  // Bare `maruhi agent -- <cmd>` starts a session. Only `status` is a subcommand
   agent: agentConfig,
 };
 
-/**
- * commandKey → the diagnostics' declaration. Keys are the same as what
- * runCli's dispatch returns. A nested stage holds subcommands, which the
- * unknown-subcommand diagnostic uses to print "the list of possible
- * operations" (cli-formatter.ts).
- */
-/**
- * The diagnostic key of the root (the `maruhi` stage). When
- * `ShowHelp.commandPath` has 1 stage, `commandPath.slice(1).join(" ")`
- * becomes an empty string, so it matches that spelling. Used for an
- * unknown command's (`maruhi bogus`) diagnostic to print "the list of
- * possible commands" (cli-formatter.ts's unknownSubcommandMessage).
- */
 export const ROOT_SPEC_KEY = "";
 
-/**
- * `maruhi push`'s specific fix, attached to its extra positional
- * arguments. `maruhi push API_KEY "$SECRET"` is the most likely
- * misspelling. The refused argument's content is never shown (it may be
- * plaintext), so "the value comes via stdin" is always attached instead —
- * otherwise there is no way to fix it (cli-formatter.ts's strayHint).
- */
 const PUSH_STDIN_HINT =
   '. Values are read from stdin (example: `printf %s "$SECRET" | maruhi push API_KEY`)';
 
@@ -335,13 +264,11 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
       [
         group,
         {
-          // A stage whose parent itself carries a declaration (audit) uses it for diagnostics too
           ...(GROUP_PARENT_CONFIGS[group] === undefined
             ? { flags: [], positionals: [] }
             : specOf(GROUP_PARENT_CONFIGS[group])),
           subcommands: [
             ...Object.keys(subcommands),
-            // A nested group (`key seal`) counts as its parent's (`key`) possible operations
             ...Object.keys(GROUP_CONFIGS)
               .filter((other) => other.startsWith(`${group} `))
               .map((other) => other.slice(group.length + 1)),
@@ -355,7 +282,6 @@ const LEAF_AND_GROUP_SPECS: Readonly<Record<string, CommandSpec>> = {
 
 export const COMMAND_SPECS: Readonly<Record<string, CommandSpec>> = {
   ...LEAF_AND_GROUP_SPECS,
-  // The root stage (the single-stage list). The unknown-command diagnostic prints "the possible commands
   [ROOT_SPEC_KEY]: {
     flags: [],
     positionals: [],
@@ -392,7 +318,6 @@ export function makeRootCommand(onExitCode: (code: number) => void) {
   const proxy = makeProxyCommands(onExitCode);
 
   return Command.make("maruhi").pipe(
-    // The product's one-liner sits at the top of bare `maruhi` / `maruhi --help` (ruling F)
     Command.withDescription(
       "Diskless secrets manager: values are encrypted end-to-end and decrypted only in memory, never written to disk",
     ),

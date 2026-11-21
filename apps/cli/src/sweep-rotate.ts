@@ -1,9 +1,3 @@
-// The per-environment rotation injected into §7's whole-environment
-// sweep (shared by server revoke / member remove / change-role).
-// The consumers are approval.package/command.ts, member.package/command.ts
-// and server.package/command.ts (through commands/lazy.ts),
-// device-revoke.ts, and key-recover.ts.
-
 import { isEnvironmentId, type EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
@@ -14,20 +8,12 @@ import { envRotateOp } from "./env.package/index.ts";
 import { type CliError, usageError } from "./errors.ts";
 import type { SweepRotateMode } from "./rotation-sweep.ts";
 
-/** A guard for when a chain-derived environment ID fails the CLI's format check (normally unreachable). */
 function cliErrorForInvalidChainEnvironmentId(): CliError {
   return usageError(
     "A chain-derived environment ID fails the CLI's format check (the chain contradicts the server's acceptance policy)",
   );
 }
 
-/**
- * The per-environment rotation injected into §7's whole-environment
- * sweep. Since obligation-entry appends and earlier rotates have
- * advanced the chain, each environment starts from a re-synced
- * view. force = §7's force (new epoch required) / verify = the
- * verification pass (resumes an unfinished re-encryption if any).
- */
 export function sweepRotateFor(
   context: ProjectContext,
   reason: string,

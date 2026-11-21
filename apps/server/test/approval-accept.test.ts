@@ -1,22 +1,3 @@
-// ES + PF1 K5 — the four-eyes acceptance surface (CRYPTO_SPEC §6.4
-// "acceptance of scope and four-eyes" / AUTH_SPEC §11-1 / §12-8 /
-// §15-2 / AUDIT_SPEC §3.4. Design record docs/notes/es-design.md
-// §11).
-//
-// Rules pinned:
-//   - acceptance policy (DO — appendProgram): the `expires_at_ms`
-//     upper bound (server clock at acceptance + 30 days) → the
-//     pending cap of 32 (expired ones do not count; withdraw frees a
-//     slot). Typed 422 `ProposalLimit` (reason + limit). Expired
-//     proposals are not rejected (K5-C)
-//   - a completed approve's acceptance side effects are identical to
-//     accepting the inner op directly, in the same acceptance task:
-//     rotation-needed detection (trigger = the inner op,
-//     triggerChainSeq = the approve's seq), attestation-row deletion,
-//     invite completed matching, and membership projection
-//   - an incomplete approve / propose / withdraw /
-//     set_approval_policy carries no side effects
-
 import type { ApprovalTargetOp, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
@@ -50,7 +31,6 @@ import { queryProjectDo, readAuditEvents } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** The second owner (vector key user-owner-0014). Four-eyes enablement requires owner ≥ required. */
 const OWNER2 = "user-owner-0014";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -69,7 +49,6 @@ async function readFlags(): Promise<readonly WireRotationFlag[]> {
   return ((await response.json()) as { flags: readonly WireRotationFlag[] }).flags;
 }
 
-/** Sign + generic append (the variant where the caller judges acceptance). Advances the fixture head on acceptance. */
 async function appendRaw(
   actorUserId: string,
   operation: ChainOperation,
@@ -90,7 +69,6 @@ async function appendRaw(
   return { response, hash };
 }
 
-/** Establish two owners + a policy (ops, required = 2). */
 async function enableFourEyes(ops: readonly ApprovalTargetOp[]): Promise<void> {
   await seedMemberToken(fixture, OWNER2, 9014);
   await appendOperation(fixture, OWNER, addMemberOperation(OWNER2, "owner"));
@@ -110,7 +88,6 @@ const removeMemberOp = (targetUserId: string): ProposableOperation => ({
   payload: { targetUserId: testUserId(targetUserId) },
 });
 
-/** Get a proposal accepted and return the proposal entry's hash (the reference approve / withdraw point at). */
 async function propose(actorUserId: string, inner: ProposableOperation, expiresAtMs: number) {
   const { response, hash } = await appendRaw(actorUserId, proposeOp(inner, expiresAtMs));
   expect(response.status).toBe(200);
@@ -132,14 +109,12 @@ type AuditRow = Record<string, unknown>;
 const payloadOf = (row: AuditRow): Record<string, unknown> =>
   JSON.parse(String(row["payload"])) as Record<string, unknown>;
 
-/** The nth row for a chain_seq (fails if absent). */
 function rowAt(rows: readonly AuditRow[], chainSeq: number, nth = 0): AuditRow {
   const row = rows.filter((candidate) => candidate["chain_seq"] === chainSeq)[nth];
   if (row === undefined) throw new Error(`no audit row #${nth} for chain_seq=${chainSeq}`);
   return row;
 }
 
-/** The audit-row shape among a completed approve's side effects (order: chain.approved + applied row + detection row). */
 function expectAppliedRemoval(
   rows: readonly AuditRow[],
   input: { readonly proposalSeq: number; readonly approveSeq: number },
@@ -158,14 +133,12 @@ function expectAppliedRemoval(
   expect(appliedRow["target_user_id"]).toBe(MEMBER);
   expect(appliedRow["chain_seq"]).toBe(input.approveSeq);
   expect(payloadOf(appliedRow)).toEqual({ viaProposalSeq: input.proposalSeq });
-  // The detection row (rotation.recommended) is written after the mirror row → the applied row (same acceptance task)
   const recommended = rows.find((row) => row["event"] === "rotation.recommended");
   if (recommended === undefined) throw new Error("no rotation.recommended row");
   expect(Number(recommended["seq"])).toBeGreaterThan(Number(appliedRow["seq"]));
   expect(payloadOf(recommended)).toMatchObject({ trigger: "remove_member" });
 }
 
-/** Sign and submit a §6.6 attestation with the attester's key (the same material as attestation.test.ts). */
 async function submitAttestation(attesterUserId: string): Promise<void> {
   const keys = vectorKeys[attesterUserId];
   if (keys === undefined) throw new Error(`no vector keys for ${attesterUserId}`);
@@ -226,11 +199,9 @@ describe("propose's acceptance policy (AUTH_SPEC §12-8 — upper bound → pend
       reason: "proposal-lifetime",
       limit: MAX_PROPOSAL_LIFETIME_MS,
     });
-    // A pre-acceptance rejection — the head does not move and no mirror row is added
     expect(fixture.head).toEqual(head);
     const rows = await readAuditEvents(projectId);
     expect(rows.filter((row) => row["event"] === "chain.proposed")).toHaveLength(0);
-    // Inside the bound it is accepted (the exact-equality boundary is pinned in proposal-policy.test.ts)
     const { response: atBound } = await appendRaw(
       OWNER,
       proposeOp(removeMemberOp(MEMBER), Date.now() + MAX_PROPOSAL_LIFETIME_MS - DAY_MS),
@@ -248,10 +219,6 @@ describe("propose's acceptance policy (AUTH_SPEC §12-8 — upper bound → pend
     );
     expect(rejected.status).toBe(422);
     expect(fixture.head).toEqual(head);
-    // The rejection precedes CAS / verifyChain and leaves no trace in
-    // derived or stored state: the next append on the same parent head
-    // passes, and pending stays at the original 1 (the approve
-    // completes)
     const { response: approved } = await appendRaw(OWNER2, approveOp(live));
     expect(approved.status).toBe(200);
     const chain = (await (await requestJson("GET", "/chain", token(OWNER))).json()) as {
@@ -263,9 +230,6 @@ describe("propose's acceptance policy (AUTH_SPEC §12-8 — upper bound → pend
 
   it("caps live pending proposals at 32 (expired ones do not count; withdraw frees a slot)", async () => {
     await enableFourEyes(["remove_member"]);
-    // A proposal already expired at creation (expires_at_ms in the
-    // past) is accepted (K5-C) but does not count toward the cap —
-    // nobody can approve it and it occupies no slot
     const expired = await propose(OWNER, removeMemberOp(MEMBER), 1);
     for (let index = 0; index < MAX_PENDING_PROPOSALS; index += 1) {
       await propose(OWNER, removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS);
@@ -280,7 +244,6 @@ describe("propose's acceptance policy (AUTH_SPEC §12-8 — upper bound → pend
       reason: "pending-proposals",
       limit: MAX_PENDING_PROPOSALS,
     });
-    // Closing the expired proposal frees no slot (it was never counted)
     const { response: withdrawExpired } = await appendRaw(OWNER, withdrawOp(expired));
     expect(withdrawExpired.status).toBe(200);
     const { response: stillFull } = await appendRaw(
@@ -288,9 +251,6 @@ describe("propose's acceptance policy (AUTH_SPEC §12-8 — upper bound → pend
       proposeOp(removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS),
     );
     expect(stillFull.status).toBe(422);
-    // Withdrawing one in-term proposal frees one slot (the
-    // immediately-preceding acceptance was a withdraw, so the in-term
-    // proposal's hash is resolved from the chain)
     const proposedRows = (await readAuditEvents(projectId)).filter(
       (row) => row["event"] === "chain.proposed",
     );
@@ -322,7 +282,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
   it("applies remove_member at the approve seq: rotation detection, attestation cleanup, projection removal, applied mirror row", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER reads the value (grounds for basis = read) and holds a head attestation
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(MEMBER));
     expect(pull.status).toBe(200);
     await submitAttestation(MEMBER);
@@ -330,19 +289,16 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
     expect(await projectionRowsFor(MEMBER)).toBe(1);
 
     await enableFourEyes(["remove_member"]);
-    // A direct append is rejected with approval-required (a consensus rule) — four-eyes is in effect
     const direct = await appendRaw(OWNER, removeMemberOp(MEMBER));
     expect(direct.response.status).toBe(422);
     await expect(direct.response.json()).resolves.toMatchObject({ reason: "approval-required" });
 
     const proposalHash = await propose(OWNER, removeMemberOp(MEMBER), Date.now() + 7 * DAY_MS);
     const proposalSeq = fixture.head.seq;
-    // Nothing happens at proposal time (pre-application — rulings P7 / P21)
     expect(await readFlags()).toHaveLength(0);
     expect(await attestationRowsFor(MEMBER)).toBe(1);
     expect(await projectionRowsFor(MEMBER)).toBe(1);
 
-    // An owner's proposal = 1 vote. The second owner's approve reaches quorum 2 = application
     const { response: approved } = await appendRaw(OWNER2, approveOp(proposalHash));
     expect(approved.status).toBe(200);
     const approveSeq = fixture.head.seq;
@@ -361,7 +317,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
     ]);
     expect(await attestationRowsFor(MEMBER)).toBe(0);
     expect(await projectionRowsFor(MEMBER)).toBe(0);
-    // The removed member can no longer read (§11-2)
     const denied = await requestJson("GET", "/chain", token(MEMBER));
     expect(denied.status).toBe(404);
 
@@ -387,7 +342,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
       },
     };
     const proposalHash = await propose(OWNER, addStranger, Date.now() + 7 * DAY_MS);
-    // At proposal time neither the match nor the projection happens
     expect((await inviteRow(matched.id))?.status).toBe("accepted");
     expect(await projectionRowsFor(STRANGER)).toBe(0);
 
@@ -395,7 +349,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
     expect(response.status).toBe(200);
     expect((await inviteRow(matched.id))?.status).toBe("completed");
     expect(await projectionRowsFor(STRANGER)).toBe(1);
-    // The new member can read the chain (application = membership starts at the approve's seq)
     const asStranger = await requestJson("GET", "/chain", token(STRANGER));
     expect(asStranger.status).toBe(200);
     const applied = (await readAuditEvents(projectId)).filter(
@@ -413,9 +366,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
   it("cleans the stale-key wraps of a member re-added via a proposal (dek.deleted with triggerChainSeq = approve seq)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER holds the epoch-1 wrap (addressed to the current key).
-    // The removal (a direct append since the policy is off) does not
-    // erase the wrap (§12-6 — kept for a return under the same key)
     await appendOperation(fixture, OWNER, removeMemberOp(MEMBER));
     const wrapsBefore = await queryProjectDo(
       projectId,
@@ -425,7 +375,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
     expect(Number(wrapsBefore[0]?.["n"])).toBe(1);
 
     await enableFourEyes(["add_member"]);
-    // A proposal to re-add MEMBER under a different key (borrowing vector key user-prodreader-0012)
     const rekeyed = vectorKeyOf("user-prodreader-0012");
     const readd: ProposableOperation = {
       op: "add_member",
@@ -439,7 +388,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
       },
     };
     const proposalHash = await propose(OWNER, readd, Date.now() + 7 * DAY_MS);
-    // No sweeping at proposal time
     const wrapsPending = await queryProjectDo(
       projectId,
       "SELECT COUNT(*) AS n FROM dek_wraps WHERE recipient_user_id = ?",
@@ -466,7 +414,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
     expect(row["target_user_id"]).toBe(MEMBER);
     expect(row["environment_id"]).toBe(ENV);
     expect(payloadOf(row)).toEqual({ cause: "member-readded", triggerChainSeq: approveSeq });
-    // The sweep runs after the applied row (chain.member_added) (same acceptance task)
     const applied = rowAt(await readAuditEvents(projectId), approveSeq, 1);
     expect(applied["event"]).toBe("chain.member_added");
     expect(Number(row["seq"])).toBeGreaterThan(Number(applied["seq"]));
@@ -480,7 +427,6 @@ describe("a completed approve's acceptance side effects (CRYPTO_SPEC §6.4 / AUD
     expect(await projectionRowsFor(MEMBER)).toBe(1);
     expect(await readFlags()).toHaveLength(0);
     const rows = await readAuditEvents(projectId);
-    // One row per entry (no applied rows)
     const chainSeqs = rows
       .map((row) => row["chain_seq"])
       .filter((seq): seq is number => typeof seq === "number");

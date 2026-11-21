@@ -1,10 +1,3 @@
-// A preload for test/startup-loads.test.ts: for every import of a file path
-// that Bun resolves from a CLI source file (apps/cli/src), static or
-// dynamic, it appends a line "<importer>\t<specifier>" to the file
-// IMPORT_TRACE names. It only watches: the resolution is left to Bun. Bun
-// does not ask a runtime plugin about package or node: specifiers, and it
-// erases type-only imports before resolving, so neither shows up.
-
 import { appendFileSync } from "node:fs";
 
 const trace = process.env["IMPORT_TRACE"];

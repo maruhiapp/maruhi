@@ -1,24 +1,15 @@
 ---
-/**
- * Switch — an on/off control. A `role="switch"` button whose `aria-checked`
- * holds the state: a click flips it and fires a bubbling `change` event, and a
- * script that owns the state can set `aria-checked` itself. Slotted content is
- * the label, after the track and inside the same button, so clicking the label
- * flips the switch too.
- */
 import { cn } from "@/lib/cn";
 import { variants } from "@/lib/variants";
 import type { HTMLAttributes } from "astro/types";
 
 interface Props extends HTMLAttributes<"button"> {
-  /** Whether the switch starts on. */
   checked?: boolean;
   size?: "sm" | "base" | "lg";
 }
 
 const { checked = false, size, class: className, ...attrs } = Astro.props;
 
-// A squircle where the browser draws one, a rounded rectangle elsewhere.
 const shape = "rounded-[5px] supports-[corner-shape:squircle]:rounded-[10px] [corner-shape:squircle]";
 
 const track = variants({

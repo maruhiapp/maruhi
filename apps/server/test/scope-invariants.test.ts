@@ -1,13 +1,3 @@
-// ES K3 — what scope does not change (design record
-// docs/notes/es-design.md §9 / §1-4):
-//   - The lease path (AUTH_SPEC §14-1): member scopes play no role in
-//     leasing. Environment restriction is carried only by the grant's
-//     scope_environments
-//   - Visibility classes (AUDIT_SPEC §6): class-1 events and
-//     rotation-required flags of out-of-scope environments are visible to
-//     listed members too (the visibility predicate takes no environment
-//     axis)
-
 import { testUserId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -47,8 +37,6 @@ describe("the lease path is unchanged (AUTH_SPEC §14-1)", () => {
   it("a lease is decided by the grant's scope alone even with members in listed{} / listed{OTHER}", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
-    // A member whose scope does not contain ENV (not in the complete set
-    // either)
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [OTHER]));
     await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
@@ -67,10 +55,7 @@ describe("visibility classes are unchanged (AUDIT_SPEC §6)", () => {
     await createEnvironmentOk(fixture, OTHER, "Other");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await seedMemberToken(fixture, DEV, 9010);
-    // DEV has only OTHER — ENV is out of scope
     await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [OTHER]));
-    // Flags against variables of ENV (out of DEV's scope): surfaced by
-    // removing the all member
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
@@ -107,8 +92,6 @@ describe("visibility classes are unchanged (AUDIT_SPEC §6)", () => {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
     });
-    // ENV is out of DEVADMIN's scope, but a dismissal (admin x admin scope)
-    // goes through
     const dismissed = await requestJson("POST", "/rotation/dismissals", token(DEVADMIN), {
       targets: [{ environmentId: ENV, variableId: VAR }],
     });

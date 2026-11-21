@@ -1,10 +1,3 @@
-// The `aws-iam-access-key` connector (the connector overview lives in
-// connector.ts): IAM's Query API, signed with SigV4 (sigv4.ts). A rotation
-// creates a second access key for the key's IAM user, deleting an inactive
-// one first. Finalize deactivates the previous key once an earlier version
-// of the key id variable held its id and STS proves it authenticates with
-// the previous version's secret.
-
 import { Clock, Effect } from "effect";
 import { HttpBody, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -28,19 +21,10 @@ const encoder = new TextEncoder();
 
 const AWS_IAM_BASE = "https://iam.amazonaws.com";
 const AWS_IAM_VERSION = "2010-05-08";
-/** IAM's Query API lives in us-east-1 whatever the caller's region. */
 const AWS_IAM_REGION = "us-east-1";
-/**
- * The Query API body's content type. SigV4 signs it (`SignedHeaders` names
- * content-type), so the request must carry exactly this value: the body
- * declares it, because setting a body rewrites the content-type header
- * from the body's own type.
- */
 const AWS_QUERY_CONTENT_TYPE = "application/x-www-form-urlencoded; charset=utf-8";
-/** The global STS endpoint (`GetCallerIdentity` needs no permission: it only proves the credential pair authenticates). */
 const AWS_STS_BASE = "https://sts.amazonaws.com";
 const AWS_STS_VERSION = "2011-06-15";
-/** STS answers one of these when the key id and the secret are not a pair (or the key is gone / inactive). */
 const AWS_AUTH_FAILURE_CODES = new Set([
   "InvalidClientTokenId",
   "SignatureDoesNotMatch",
@@ -51,7 +35,6 @@ const AWS_AUTH_FAILURE_CODES = new Set([
 
 const ACCESS_KEY_ID = /^[A-Z0-9]{16,128}$/;
 
-/** The companion name every AWS rule carries (the rule's `accessKeyIdVariable` supplies it). */
 const AWS_ACCESS_KEY_ID_COMPANION = "accessKeyId";
 
 interface IamKey {
@@ -60,7 +43,6 @@ interface IamKey {
   readonly createDate: string;
 }
 
-/** The credentials the IAM calls are signed with: the admin pair when named, else the key itself. */
 const awsCallerOf = Effect.fn("connector-aws-iam.awsCallerOf")(function* (
   current: CredentialValues,
   inputs: RotateInputs,
@@ -98,7 +80,6 @@ export function currentKeyId(current: CredentialValues): Effect.Effect<string, C
   return Effect.succeed(id);
 }
 
-/** One XML element's text (IAM responses are flat enough for this; values are never interpolated back). */
 function xmlText(xml: string, tag: string): string | null {
   const match = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
   return match === null ? null : (match[1] ?? "");
@@ -114,7 +95,6 @@ interface AwsQueryService {
   readonly version: string;
 }
 
-/** One SigV4-signed Query API call; the raw response (an error answer is returned, not thrown — the caller classifies it). */
 const awsQueryCall = Effect.fn("connector-aws-iam.awsQueryCall")(function* (
   caller: AwsCredentials,
   service: AwsQueryService,
@@ -197,12 +177,6 @@ const iamCall = Effect.fn("connector-aws-iam.iamCall")(function* (
   return response.text;
 });
 
-/**
- * Whether a key id and a secret are a pair: `sts:GetCallerIdentity` needs
- * no permission, so a success proves the pair and an authentication error
- * refutes it. Any other answer (a network failure, a throttle) is surfaced,
- * never read as "not the pair".
- */
 const awsPairAuthenticates = Effect.fn("connector-aws-iam.awsPairAuthenticates")(function* (
   candidate: AwsCredentials,
 ): Effect.fn.Return<boolean, ConnectorError, HttpClient.HttpClient> {
@@ -259,7 +233,6 @@ function iamListKeys(
   );
 }
 
-/** The IAM user the current key belongs to and its keys (the opening read of a rotation and of a finalize). */
 const iamKeysOf = Effect.fn("connector-aws-iam.iamKeysOf")(function* (
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   current: CredentialValues,
@@ -289,9 +262,6 @@ export const rotateAwsIam = Effect.fn("connector-aws-iam.rotateAwsIam")(function
   const { caller, currentId, user, keys } = yield* iamKeysOf(rule, current, inputs);
   const facts: string[] = [];
   if (keys.length >= 2) {
-    // IAM allows two keys per user. An inactive one that is not the key in
-    // use is a finalized previous rotation — reclaim it (Vault / Infisical
-    // reclaim the oldest; we never delete an active key)
     const reclaimable = keys.find((key) => key.id !== currentId && key.status === "Inactive");
     if (reclaimable === undefined) {
       return yield* new ConnectorError({
@@ -326,7 +296,6 @@ export const rotateAwsIam = Effect.fn("connector-aws-iam.rotateAwsIam")(function
   };
 });
 
-/** The key ids earlier versions of the key id variable held (ill-formed values are ignored, never matched). */
 function storedKeyIds(ancestors: CompanionAncestors): ReadonlySet<string> {
   const ids = new Set<string>();
   for (const value of ancestors[AWS_ACCESS_KEY_ID_COMPANION] ?? []) {
@@ -338,16 +307,6 @@ function storedKeyIds(ancestors: CompanionAncestors): ReadonlySet<string> {
   return ids;
 }
 
-/**
- * Finalize: the key to deactivate is decided against the issuer, not
- * against the server's history metadata. IAM lists the user's keys (at
- * most two); a key other than the current one is deactivated only when (1)
- * an earlier version of the key id variable held its id — lineage-verified,
- * so a key a human created by hand is never touched — and (2) it
- * authenticates with the previous version's secret at STS, which proves it
- * is exactly the credential that version held. Either check failing
- * leaves the key as it is and says so.
- */
 export const finalizeAwsIam = Effect.fn("connector-aws-iam.finalizeAwsIam")(function* (
   rule: Extract<RotateRule, { connector: "aws-iam-access-key" }>,
   previous: CredentialValues,

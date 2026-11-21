@@ -1,9 +1,3 @@
-// Tests for the byte-domain replacer (byte-replace.ts — PF4 and the
-// run-output redaction): exact matching on raw bytes, longest first, the
-// carry-over across chunk boundaries (only a pattern's prefix is held),
-// byte transparency for non-UTF-8 output, and the shared scrub fragment
-// rule.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -21,7 +15,6 @@ const pattern = (from: string, to: string): BytePattern => ({
   to: enc.encode(to),
 });
 
-/** Pushes `text` through the replacer in chunks of `size` bytes and returns the whole output. */
 function stream(patterns: readonly BytePattern[], input: Uint8Array, size: number): Uint8Array {
   const replacer = makeStreamReplacer(patterns);
   const out: Uint8Array[] = [];
@@ -68,13 +61,10 @@ describe("makeStreamReplacer", () => {
 
   it("emits everything that cannot begin a match at once, and holds only a tail that is a pattern's prefix", () => {
     const replacer = makeStreamReplacer([pattern(SECRET, "[redacted]")]);
-    // Nothing here resembles the secret: the whole chunk is out, mid-line included
     const first = replacer.push(enc.encode("line one\nline two with a tail"));
     expect(dec.decode(first)).toBe("line one\nline two with a tail");
-    // A tail that is a prefix of the secret is held …
     const second = replacer.push(enc.encode(" and hunter2-very"));
     expect(dec.decode(second)).toBe(" and ");
-    // … until it diverges (then released as source) or completes (then replaced)
     expect(dec.decode(replacer.push(enc.encode("-long-secret!")))).toBe("[redacted]!");
     expect(replacer.flush().length).toBe(0);
   });
@@ -95,14 +85,11 @@ describe("makeStreamReplacer", () => {
     const first = replacer.push(
       enc.encode("log line one\n-----BEGIN KEY-----\nabcdefghijklmnop\n--"),
     );
-    // The log line is out; the beginning of the value is held — a shorter
-    // line match is never taken while the whole value could still complete
     expect(dec.decode(first)).toBe("log line one\n");
     const rest =
       dec.decode(replacer.push(enc.encode("---END KEY-----\nafter\n"))) +
       dec.decode(replacer.flush());
     expect(rest).toBe("[redacted]\nafter\n");
-    // Divergence: the held beginning is rescanned, its first line matches as a fragment
     const diverging = makeStreamReplacer(patterns);
     const head = dec.decode(diverging.push(enc.encode("-----BEGIN KEY-----\nabc")));
     expect(head).toBe("");
@@ -111,10 +98,9 @@ describe("makeStreamReplacer", () => {
   });
 
   it("never lets a multi-line value made of short lines stream out line by line (§21 R-25)", () => {
-    // Every line is under the 8-byte floor, so only the whole value is a pattern
     const value = "abc\ndef\nghi\njkl";
     const patterns = scrubPatterns([enc.encode(value)], "[redacted]");
-    expect(patterns).toHaveLength(2); // the value and its JSON-escaped form
+    expect(patterns).toHaveLength(2);
     const input = enc.encode(`before\n${value}\nafter`);
     for (let size = 1; size <= input.length; size++) {
       const out = dec.decode(stream(patterns, input, size));
@@ -170,16 +156,13 @@ describe("scrubPatterns", () => {
     expect(scrubPatterns([enc.encode("3000"), enc.encode("true"), enc.encode("1")], "[x]")).toEqual(
       [],
     );
-    // A JSON value: its `{` / `}` lines are dropped, its long lines kept
     const json = '{\n  "key": "sk-0123456789abcdef"\n}';
     const froms = scrubPatterns([enc.encode(json)], "[x]").map((p) => dec.decode(p.from));
     expect(froms).not.toContain("{");
     expect(froms).not.toContain("}");
     expect(froms).toContain('  "key": "sk-0123456789abcdef"');
-    // Output that contains a short value stays byte-identical
     const patterns = scrubPatterns([enc.encode("1")], "[redacted]");
     expect(dec.decode(replaceBytes(enc.encode("v1.0 PORT=1"), patterns))).toBe("v1.0 PORT=1");
-    // Exactly the floor is scrubbed
     expect(scrubPatterns([enc.encode("12345678")], "[x]")).toHaveLength(1);
   });
 

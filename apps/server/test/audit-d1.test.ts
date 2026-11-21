@@ -1,15 +1,3 @@
-// Integration tests for the D1-side audit log (AUDIT_SPEC §3.1 auth
-// events / §3.2 org events / §5.2 plan A).
-//
-// - Recording is triggered via the real path (HttpApi through SELF) and
-//   verified by reading the D1 tables directly (the read API is Phase 2 —
-//   §6 / §7 — so it does not exist in v1)
-// - The append in the same batch as the main data write (§5.2 adoption
-//   reason (2)) is observed as: the operation's success/failure and the
-//   event's presence/absence always agree
-// - Identity rule (§1-2): provider IDs, logins, and emails must not appear
-//   in any row
-
 import { decodeOrgId } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
 import { env, SELF } from "cloudflare:test";
@@ -71,7 +59,6 @@ async function countEvent(event: string): Promise<number | undefined> {
   return row?.n;
 }
 
-/** Put the login_failed window counter (AUDIT_SPEC §3.1) into an arbitrary state. */
 async function seedLoginFailedWindow(
   authMethod: "github_oauth" | "cli_handoff",
   reason: string,
@@ -85,7 +72,6 @@ async function seedLoginFailedWindow(
     .run();
 }
 
-/** A callback call that reliably enters the auth.login_failed path via a state mismatch. */
 function callbackFailure(): Promise<Response> {
   return SELF.fetch(`${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`, {
     redirect: "manual",
@@ -108,20 +94,16 @@ describe("Web OAuth login (§3.1)", () => {
       "auth.identity_linked",
       "auth.login_succeeded",
     ]);
-    // Every row's actor = the just-created user themself (type user)
     for (const row of events) {
       expect(row.actor_type).toBe("user");
       expect(row.actor_user_id).toBe(userId);
     }
-    // identity_linked carries only the provider kind name (numeric IDs and logins are banned by §1-2)
     expect(payloadOf(events[1] as AuditRow)).toEqual({ provider: "github" });
-    // login_succeeded carries auth_method and the corresponding session id (same hash as the stored id)
     const login = payloadOf(events[2] as AuditRow);
     expect(login["authMethod"]).toBe("github_oauth");
     const sessionRow = await env.DB.prepare("SELECT id FROM sessions").first<{ id: string }>();
     expect(login["sessionId"]).toBe(sessionRow?.id);
 
-    // The personal-org auto-creation is also recorded as org events (§3.2)
     const orgId = (await env.DB.prepare("SELECT id FROM organizations").first<{ id: string }>())
       ?.id;
     const orgEvents = await auditRows("org_audit_events");
@@ -143,13 +125,11 @@ describe("Web OAuth login (§3.1)", () => {
   });
 
   it("records auth.login_failed with the reason only (state mismatch / bad code)", async () => {
-    // state mismatch (no cookie)
     const mismatch = await SELF.fetch(
       `${BASE}/auth/github/callback?code=code-700&state=${"ab".repeat(16)}`,
       { redirect: "manual" },
     );
     expect(mismatch.status).toBe(400);
-    // A bad code with the correct state
     const start = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
     const state = new URL(start.headers.get("location") ?? "").searchParams.get("state") ?? "";
     const badCode = await SELF.fetch(
@@ -177,23 +157,16 @@ describe("Web OAuth login (§3.1)", () => {
   });
 
   it("caps auth.login_failed writes per fixed window (unauthenticated write amplification bound)", async () => {
-    // The window state lives on the counter row (the audit log is not
-    // scanned), so reaching the limit is created by seeding the counter
-    // directly
     const now = Date.now();
     await seedLoginFailedWindow("github_oauth", "state-mismatch", now, LOGIN_FAILED_WINDOW_LIMIT);
     const blocked = await callbackFailure();
-    // The rejection response is unchanged; only the audit rows stop growing
     expect(blocked.status).toBe(400);
     expect(await countEvent("auth.login_failed")).toBe(0);
-    // Suppression is not silent: the first suppression leaves one marker row
     const suppressedOnce = await env.DB.prepare(
       "SELECT COUNT(*) AS n, MAX(actor_user_id) AS actor, MAX(payload) AS payload FROM user_audit_events WHERE event = 'auth.login_failed_suppressed'",
     ).first<{ n: number; actor: string | null; payload: string }>();
     expect(suppressedOnce?.n).toBe(1);
-    // actor has no user_id, same as the per-event rows (external IDs / IPs are never written — §1-2)
     expect(suppressedOnce?.actor).toBeNull();
-    // The payload carries only auth_method, reason, window length, limit, and suppressed count
     expect(JSON.parse(suppressedOnce?.payload ?? "{}")).toEqual({
       authMethod: "github_oauth",
       reason: "state-mismatch",
@@ -201,12 +174,10 @@ describe("Web OAuth login (§3.1)", () => {
       limit: LOGIN_FAILED_WINDOW_LIMIT,
       suppressedCount: 1,
     });
-    // The marker does not grow per suppression (only powers of 10)
     for (let i = 0; i < 8; i += 1) {
       expect((await callbackFailure()).status).toBe(400);
     }
     expect(await countEvent("auth.login_failed_suppressed")).toBe(1);
-    // The 10th suppression adds one more row. The scale of suppression is readable from the count
     expect((await callbackFailure()).status).toBe(400);
     expect(await countEvent("auth.login_failed_suppressed")).toBe(2);
     const milestone = await env.DB.prepare(
@@ -214,7 +185,6 @@ describe("Web OAuth login (§3.1)", () => {
     ).first<{ payload: string }>();
     expect(JSON.parse(milestone?.payload ?? "{}")).toMatchObject({ suppressedCount: 10 });
 
-    // Once the window has passed, recording resumes
     await seedLoginFailedWindow(
       "github_oauth",
       "state-mismatch",
@@ -226,16 +196,12 @@ describe("Web OAuth login (§3.1)", () => {
   });
 
   it("counts the cap per auth_method + reason bucket, so one path cannot blind another", async () => {
-    // With the CLI handoff window exhausted, Web OAuth failures keep being
-    // recorded (even for the same reason, the bucket is split by
-    // auth_method)
     await seedLoginFailedWindow(
       "cli_handoff",
       "state-mismatch",
       Date.now(),
       LOGIN_FAILED_WINDOW_LIMIT,
     );
-    // A state mismatch on the CLI branch (`cli.` prefix + no flow-binding cookie)
     const cliBlocked = await SELF.fetch(
       `${BASE}/auth/github/callback?code=code-700&state=cli.${"ab".repeat(16)}`,
       { redirect: "manual" },
@@ -260,10 +226,8 @@ describe("Web OAuth login (§3.1)", () => {
       Date.now(),
       LOGIN_FAILED_WINDOW_LIMIT,
     );
-    // A saturated reason drops per-event rows and leaves an aggregate marker carrying the reason
     expect((await callbackFailure()).status).toBe(400);
 
-    // Even under the same auth_method, code-exchange-failed is an independent bucket and is recorded
     const start = await SELF.fetch(`${BASE}/auth/github/start`, { redirect: "manual" });
     const state = new URL(start.headers.get("location") ?? "").searchParams.get("state") ?? "";
     const badCode = await SELF.fetch(
@@ -294,16 +258,10 @@ describe("Web OAuth login (§3.1)", () => {
 
 describe("CLI login handoff (§3.1 — AUTH_SPEC §4)", () => {
   it("records login_succeeded (cli_handoff) on approval and token_created on issuance", async () => {
-    // The user is pre-seeded (CLI login is for existing accounts only —
-    // ruling DH). The events are just two rows: approval = login_succeeded,
-    // issuance = token_created
     await seedUser("user-cli-audit", 701);
     const token = await cliToken(701);
     const events = await auditRows("user_audit_events");
     expect(events.map((row) => row.event)).toEqual(["auth.login_succeeded", "auth.token_created"]);
-    // Approval (§4-2): actor = the internal user_id resolved by the
-    // lookup; the payload carries only authMethod and the flow correlator
-    // (no provider info — §1-2)
     const login = events[0] as AuditRow;
     expect(login.actor_user_id).toBe("user-cli-audit");
     const loginPayload = payloadOf(login);
@@ -315,7 +273,6 @@ describe("CLI login handoff (§3.1 — AUTH_SPEC §4)", () => {
       name: "cli-login",
       scopes: [{ project: "*", permission: "admin" }],
     });
-    // The just-issued token actually works (a side check of event/token consistency)
     const me = await SELF.fetch(`${BASE}/auth/me`, { headers: bearer(token) });
     expect(me.status).toBe(200);
   });
@@ -326,21 +283,13 @@ describe("CLI login handoff (§3.1 — AUTH_SPEC §4)", () => {
     const events = await auditRows("user_audit_events");
     const created = events.filter((row) => row.event === "auth.token_created");
     expect(created).toHaveLength(2);
-    // The deletion of the replaced old row is part of the rotation and
-    // does not become an explicit revocation event (the negative side of
-    // the §3.1 line)
     expect(events.filter((row) => row.event === "auth.token_revoked")).toHaveLength(0);
-    // Still, the fact of the replacement and its target can be
-    // reconstructed from the log: the first issuance row has no key, and
-    // the second carries the first's id as replacedTokenId
     const first = payloadOf(created[0] as AuditRow);
     const second = payloadOf(created[1] as AuditRow);
     expect(first["replacedTokenId"]).toBeUndefined();
     expect(second["replacedTokenId"]).toBe(first["tokenId"]);
-    // The surviving token is the second one (the audit's claim and the DB state agree)
     const surviving = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
     expect(surviving?.id).toBe(second["tokenId"]);
-    // The real token remaining after rotation is still just one
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM api_tokens").first<{
       n: number;
     }>();
@@ -348,9 +297,6 @@ describe("CLI login handoff (§3.1 — AUTH_SPEC §4)", () => {
   });
 
   it("records auth.login_failed (cli_handoff) when the browser leg's code exchange fails", async () => {
-    // start → verify is unrecorded (ruling DH). The callback's code
-    // exchange failure (§4-1 (4) (i)) is the first recording point, and
-    // carries only the reason code (the presented code is not recorded)
     const started = await startCliFlow();
     const callback = await cliBrowserLeg(started.verificationUrl, 701, { code: "not-a-code" });
     expect(callback.status).toBe(400);
@@ -379,7 +325,6 @@ describe("session / token revocation (§3.1)", () => {
       payloadOf(succeeded as AuditRow)["sessionId"],
     );
     expect((revoked[0] as AuditRow).actor_user_id).toBe((succeeded as AuditRow).actor_user_id);
-    // Re-logout with the revoked cookie is a 401 and adds no event
     const again = await SELF.fetch(`${BASE}/auth/logout`, {
       method: "POST",
       headers: sessionHeaders(session),
@@ -395,7 +340,6 @@ describe("session / token revocation (§3.1)", () => {
       headers: { cookie: `__Host-maruhi_session=${session}` },
     });
     expect(me.status).toBe(401);
-    // The row is cleaned up (DB-backed revocation) but no event is added
     const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions").first<{ n: number }>();
     expect(count?.n).toBe(0);
     const events = await auditRows("user_audit_events");
@@ -422,9 +366,6 @@ describe("session / token revocation (§3.1)", () => {
     expect((revoked[0] as AuditRow).actor_api_token_id).toBe(tokenRow.id);
     expect(payloadOf(revoked[0] as AuditRow)).toEqual({ tokenId: tokenRow.id });
 
-    // A re-revocation whose delete misses (the same execution order as
-    // the loser of a concurrent revoke) adds no event (one revocation = at
-    // most one row)
     const services = makeDbServices(env.DB);
     const tokens = Context.get(services, TokenRepo);
     await Effect.runPromise(
@@ -469,7 +410,6 @@ describe("recovery (§3.1 / AUTH_SPEC §13-5)", () => {
 
   it("records recovery_code_reissued on PUT and recovery_blob_fetched on distributed GET only", async () => {
     const token = await cliToken(702);
-    // A GET for an unregistered one (404) is no distribution = no record
     const missing = await SELF.fetch(`${BASE}/auth/recovery`, { headers: bearer(token) });
     expect(missing.status).toBe(404);
     const put = await SELF.fetch(`${BASE}/auth/recovery`, {
@@ -487,7 +427,6 @@ describe("recovery (§3.1 / AUTH_SPEC §13-5)", () => {
       "auth.recovery_code_reissued",
       "auth.recovery_blob_fetched",
     ]);
-    // Ops via a PAT carry the token id as actor (§2)
     const tokenRow = await env.DB.prepare("SELECT id FROM api_tokens").first<{ id: string }>();
     for (const row of recovery) {
       expect(row.actor_api_token_id).toBe(tokenRow?.id);
@@ -552,9 +491,6 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
   it("does not record org.project_created when the insert is skipped by conflict", async () => {
     const token = await cliToken(OWNER_GITHUB_ID);
     await initGenesis(token);
-    // An idempotent insert when the row already exists (the same
-    // execution order as the loser of a concurrent init) adds no event
-    // (it must not fabricate a creation event)
     const services = makeDbServices(env.DB);
     const projects = Context.get(services, ProjectRepo);
     await Effect.runPromise(
@@ -586,8 +522,6 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
     ];
     expect(typed).toHaveLength(3);
     const before = (await auditRows("user_audit_events")).length;
-    // Structural typing lets a wider object through (this compiles); the
-    // store's check at serialization refuses it before any SQL runs
     const linked = { provider: "github" as const, login: "octocat" };
     const exit = await Effect.runPromiseExit(
       audit.appendUserEvent(
@@ -595,7 +529,6 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
         Date.now(),
       ),
     );
-    // A defect (the repository boundary's orDie over tryD1's wrapper) whose cause is the check
     expect(Exit.isFailure(exit)).toBe(true);
     const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
     expect(String((defect as { readonly cause?: unknown } | null)?.cause)).toContain(
@@ -605,8 +538,6 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
   });
 
   it("never records provider identifiers or emails in any row (§1-2)", async () => {
-    // Scan every row after passing through Web login (the verified-email
-    // storage path) + CLI handoff + project creation
     await loginSession(987002);
     const token = await cliToken(OWNER_GITHUB_ID);
     await initGenesis(token);
@@ -617,7 +548,6 @@ describe("org.project_created (§3.2) and forbidden info (§1-2)", () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
       for (const [column, value] of Object.entries(row)) {
-        // row_id is random hex — it may coincidentally contain digit runs, so exclude it from the scan
         if (column === "server_ts" || column === "seq" || column === "row_id" || value === null) {
           continue;
         }

@@ -1,7 +1,3 @@
-// Tests for push (§12-5 CAS): create / new version, 409 retries
-// (VersionConflict / EpochConflict = resync → re-encrypt → retry),
-// and the raw out-of-schema 413 branch.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -35,8 +31,6 @@ import { MockServer, onRequest } from "./support/server.ts";
 
 describe("maruhi push", () => {
   it("refuses when the post-409 refetched statement is a metaVersion rollback (the §12-5 meta isomorph)", async () => {
-    // The client has verified the metaVersion-2 statement. The refetch (post-
-    // 409) distributing a metaVersion-1 statement = evidence of a metadata rollback
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -116,15 +110,10 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);
-    // The floor's rule (a), committed by the first pull, detects it first (floor-check.ts's wording)
     expect(env.errors.join("\n")).toContain("rollback");
   });
 
   it("refuses when the post-409 refetch has an adjacent metaVersion with a prev mismatch (chaining to a branched history)", async () => {
-    // The client has verified the metaVersion-1 statement. The refetched (post-
-    // 409) metaVersion-2's prev not matching the verified signed-bytes hash =
-    // refuse to follow a branched prev chain (isomorphic to
-    // winnerValueRegression's adjacency check)
     const head = headOf(chainV1, chainV1.entries.length);
     const existing = await encryptValueFor({
       dek: dek1,
@@ -158,7 +147,6 @@ describe("maruhi push", () => {
       head: { seq: 1, hashHex: chainV1.projectId },
       metaVersion: 1,
     });
-    // prev's default ("cd"×32) does not match statementV1's signed-bytes hash
     const forkedSuccessor = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -187,10 +175,6 @@ describe("maruhi push", () => {
             ],
             [wrap1],
             1,
-            // The second time, the metaVersion-2 winner = the manifest also
-            // advances by one meta operation (an adjacent version, so prev
-            // chains to the v1 manifest — independent of the manifest's own
-            // prev verification, only the winner statement's prev mismatch is pinned)
             pullCalls === 1 ? 1 : 2,
             pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
           ),
@@ -241,7 +225,6 @@ describe("maruhi push", () => {
       prevValueSigHashHex: await valueHashOf(existing, owner.userId),
     });
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
-    // Valid statements under the same metaVersion (1) with differing name = evidence of a rename fork
     const forkedStatement = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -307,11 +290,9 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainHandlerOf([chainV1]),
       deksHandlerOf([[wrap1]]),
-      // The first resolution sees no variable (create path); the re-resolution sees v-meta-race
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
-        // The shape where the concurrent rename's meta operation advanced the manifest to v2 (identical to variant 2)
         return {
           status: 200,
           json: await pullJsonOf([entryRaced], [wrap1], 1, 2, await manifestHashAt([])),
@@ -343,13 +324,11 @@ describe("maruhi push", () => {
     });
     env.setStdin(new TextEncoder().encode("value"));
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(0);
-    // The value-bearing pull runs only once, after re-resolution (the first resolution is metadata-only)
     expect(pullCalls).toBe(1);
     expect(pushedVersion).toBe(2);
   });
 
   it("names are NFC-normalized before signing (both the lookup key and the statement — §12-1)", async () => {
-    // Push with an NFD (combining-character) name → the bundled statement's name is the NFC normal form
     const nfdName = "CAFE\u0301_URL";
     const nfcName = nfdName.normalize("NFC");
     expect(nfcName).not.toBe(nfdName);
@@ -391,9 +370,6 @@ describe("maruhi push", () => {
   });
 
   it("aborts at the attempt cap when the conflict never resolves", async () => {
-    // The server keeps returning "the same currentVersion as the verified
-    // latest + a distribution of the same value" = each round's winner checks
-    // (absence · stale pull · equivocation) pass but nothing advances. Cut off at the generic attempt cap
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -430,9 +406,6 @@ describe("maruhi push", () => {
   });
 
   it("refuses without aiming the push when a concurrent rename lands between name resolution and value fetch", async () => {
-    // Metadata resolution: API_KEY → v-existing. The value-bearing pull sees
-    // the same variable already renamed to API_KEY_V2 (metaVersion 2) = blocks
-    // a push aimed at a variable whose name changed from the typed one
     const existing = await encryptValueFor({
       dek: dek1,
       projectId: chainV1.projectId,
@@ -458,9 +431,6 @@ describe("maruhi push", () => {
       [
         chainHandlerOf([chainV1]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
-        // The concurrent rename's meta operation also advances the manifest to
-        // v2 (§12-5 — a same-version set difference would be equivocation, so
-        // it is assembled in the shape of an honest rename)
         onRequest(
           "GET",
           `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
@@ -483,9 +453,6 @@ describe("maruhi push", () => {
   });
 
   it("refuses when the metadata-resolution response's active list mixes in a deleted statement (§12-7)", async () => {
-    // A metadata-only pull is under the same verification discipline as a
-    // value-bearing one (the carriage form of unauthorized deletion reversal.
-    // With no values, verification completes on the statement side alone)
     const deletedStatement = await statementFor({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,

@@ -1,8 +1,3 @@
-// `maruhi invite accept`: link interpretation -> the issue-signature check
-// -> the inviter confirmation (backing source -> fingerprint ceremony) ->
-// key generation when absent -> the joint acceptance signature -> accept
-// -> the anchor pin (the group's overview lives in invite.ts).
-
 import {
   ForbiddenError,
   InviteGoneError,
@@ -47,16 +42,11 @@ import { describeScope, sameScope } from "../scope.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 import { resolveLinkKey } from "./invite.ts";
 
-// ---------------------------------------------------------------------------
-// invite accept
-// ---------------------------------------------------------------------------
-
 interface InviteAcceptSummary {
   readonly projectId: ProjectId;
   readonly role: InviteRole;
 }
 
-/** The inviter FP (derived from `ie` ‖ `is` per §3). */
 const inviterFingerprintOf = Effect.fn("invite-accept.inviterFingerprintOf")(function* (
   link: InviteLinkData,
 ): Effect.fn.Return<string, CliError> {
@@ -71,13 +61,6 @@ const inviterFingerprintOf = Effect.fn("invite-accept.inviterFingerprintOf")(fun
   return encodeHex(fingerprint);
 });
 
-/**
- * Verifying the issue signature (CRYPTO_SPEC §6.5 — the invitee-side
- * first check). Failure = do not accept (never overridden by the
- * out-of-band check): either tampering on the link's path or a third
- * party's link ghost-added with the inviter's public key. link_pub uses
- * the value derived from the seed (the link is not carried).
- */
 const verifyLinkIssuanceWith = Effect.fn("invite-accept.verifyLinkIssuanceWith")(function* (
   link: InviteLinkData,
   linkPubHex: string,
@@ -109,29 +92,6 @@ const verifyLinkIssuanceWith = Effect.fn("invite-accept.verifyLinkIssuanceWith")
   );
 });
 
-/**
- * The invitee-side mutual confirmation (§6.5): display the inviter key's
- * FP words from the link and require an explicit confirmation of the
- * out-of-band check. A mechanical check against the chain is
- * **impossible** at acceptance time (a non-member's chain GET is a flat
- * 404 — AUTH_SPEC §11-2), so it happens at the first sync after
- * add_member (context.ts's anchor check).
- *
- * - `--inviter-fingerprint <hex>`: mechanically compares the inviter FP
- *   noted out of band against the link's key (non-interactive explicit
- *   confirmation + second-path detection of link tampering)
- * - Interactive: shows the 12 words and requires re-typing the last word
- *   (the same ceremony as server-grant)
- * - An agent environment refuses to perform the flagless ceremony on
- *   one's behalf (even on a ledger hit)
- * - The verified-fingerprint ledger (KF — known-fingerprints.ts): when an
- *   inviter (origin × user_id) previously confirmed out of band matches
- *   the fingerprint, re-running the 12-word out-of-band read-out is
- *   waived. **The explicit confirmation of the acceptance itself (typing
- *   yes) is still required on a hit**. The ledger is usable only when
- *   stdin / stdout are interactive terminals (ADR-0016 decision 7's
- *   first boundary)
- */
 const confirmInviterFingerprint = Effect.fn("invite-accept.confirmInviterFingerprint")(
   function* (input: {
     readonly origin: string;
@@ -149,9 +109,6 @@ const confirmInviterFingerprint = Effect.fn("invite-accept.confirmInviterFingerp
       userId: input.link.inviterUserId,
       fingerprintHex: input.inviterFingerprintHex,
     });
-    // A ledger hit is usable only on the path of interactive terminals +
-    // no flag + non-agent (the decision is usableBookHit). In that case
-    // the two instruction lines for the read-out check are dropped
     const hit = yield* usableBookHit({
       book,
       flagProvided: input.expectInviterFingerprintHex !== null,
@@ -187,10 +144,6 @@ const confirmInviterFingerprint = Effect.fn("invite-accept.confirmInviterFingerp
       return;
     }
     yield* book.warnIfChanged;
-    // Do not let the ceremony be performed by an AI agent environment
-    // (the same posture as server-grant. A ledger hit is not grounds for
-    // acting on one's behalf either — only an explicit flag is the
-    // non-interactive path)
     if (io.agentProfile().isAgent) {
       return yield* Effect.fail(
         cliError(
@@ -218,16 +171,6 @@ const confirmInviterFingerprint = Effect.fn("invite-accept.confirmInviterFingerp
   },
 );
 
-/**
- * Preparing the master key (§15-3's "key generation [when absent]" — B1b
- * ruling A′'s 3 guards): (1) never generated under an agent environment,
- * (2) recovery already registered = an existing key on another device →
- * steer to `key recover` (prevents the accident of overwriting the old
- * key's recovery registration), (3) explicit interactive confirmation →
- * run the existing keyGenerateOp (generation → recovery-code ceremony)
- * as-is. If interrupted after generating, a re-run detects the existing
- * key and resumes at acceptance (idempotent restart).
- */
 const ensureMasterKeysForAccept = Effect.fn("invite-accept.ensureMasterKeysForAccept")(
   function* (input: {
     readonly session: CliSession;
@@ -282,18 +225,6 @@ const ensureMasterKeysForAccept = Effect.fn("invite-accept.ensureMasterKeysForAc
   },
 );
 
-/**
- * The invitee-side sufficiency form 4 (CRYPTO_SPEC §6.5 — IV2): when the
- * backing source confirms "the inviter's sig key (`is`) is a signing key
- * of the login (`il`) the link names", the 12-word read-out is unneeded
- * and **the invitee's declaration that they "were expecting an invite
- * from that login"** satisfies it (non-interactive: a `--from` match /
- * interactive: a yes naming the login). A check that is **impossible**
- * (backing `none`, no `il`, unregistered, unfetchable) is false = fall
- * back to sufficiency forms 1–3 (confirmInviterFingerprint). Only a
- * `--from` / `il` mismatch is **refused** (the shape of a valid link for
- * someone else, swapped in along the path).
- */
 const confirmInviterViaBacking = Effect.fn("invite-accept.confirmInviterViaBacking")(
   function* (input: {
     readonly link: InviteLinkData;
@@ -351,12 +282,6 @@ const confirmInviterViaBacking = Effect.fn("invite-accept.confirmInviterViaBacki
   },
 );
 
-/**
- * Sufficiency form 4's "was expecting it" declaration (interactive): a
- * yes naming the login. Non-interactive only the flag (`--from`) is the
- * path — an agent environment is refused, a non-terminal falls back to
- * the ceremony.
- */
 const confirmExpectedInviter = Effect.fn("invite-accept.confirmExpectedInviter")(function* (
   link: InviteLinkData,
   inviterLogin: string,
@@ -394,17 +319,11 @@ export const inviteAcceptOp = Effect.fn("invite-accept.inviteAcceptOp")(function
   readonly session: CliSession;
   readonly link: InviteLinkData;
   readonly expectInviterFingerprintHex: string | null;
-  /** `--from <login>` (the non-interactive declaration of sufficiency form 4 via the backing source). */
   readonly expectedFromLogin: string | null;
   readonly identityBacking: IdentityBacking;
-  /** keyGenerateOp itself (generation → recovery ceremony) (wired by invite.package/command.ts). */
   readonly keyGenerate: Effect.Effect<void, CliError, CliServices>;
 }): Effect.fn.Return<InviteAcceptSummary, CliError, CliServices> {
   const { link } = input;
-  // §15-3's order: verify the issue signature (mechanical) → mutual
-  // confirmation (sufficiency form 4 → 1–3) → key generation [when
-  // absent] → joint signature → accept → pin the anchor (only after
-  // the acceptance is established)
   const linkKey = yield* resolveLinkKey(link);
   yield* verifyLinkIssuanceWith(link, linkKey.linkPubHex);
   const inviterFingerprintHex = yield* inviterFingerprintOf(link);
@@ -455,10 +374,6 @@ export const inviteAcceptOp = Effect.fn("invite-accept.inviteAcceptOp")(function
     })
     .pipe(Effect.mapError(acceptErrorToCliError));
 
-  // Reconciling the link (issue-signed) with the server's response: a
-  // p / r mismatch is a response that should not have passed signature
-  // verification = the server contradicting itself or a swapped row →
-  // refuse
   if (accepted.projectId !== link.projectId) {
     return yield* Effect.fail(
       cliError(
@@ -473,9 +388,6 @@ export const inviteAcceptOp = Effect.fn("invite-accept.inviteAcceptOp")(function
       ),
     );
   }
-  // scope (2026-09-14 ES) is also covered by the issue signature: a
-  // response scope disagreeing with the signed link is likewise the
-  // server contradicting itself → refuse (AUTH_SPEC §15-3)
   if (!sameScope(accepted, link)) {
     return yield* Effect.fail(
       cliError(
@@ -484,7 +396,6 @@ export const inviteAcceptOp = Effect.fn("invite-accept.inviteAcceptOp")(function
     );
   }
 
-  // The anchor pin comes after the acceptance is established (+ reconciled) (see pinAnchorAfterAccept)
   const anchored = yield* pinAnchorAfterAccept(link, inviterFingerprintHex);
 
   yield* reportAcceptOutcome({
@@ -493,47 +404,23 @@ export const inviteAcceptOp = Effect.fn("invite-accept.inviteAcceptOp")(function
     anchored,
     identityBacking: input.identityBacking,
   });
-  // The registration path (supplement 21, ruling G ⑥ (b)): when a key
-  // was born inside this acceptance, offer GitHub registration here so
-  // the inviter can add them ceremony-free
   if (generated && input.identityBacking !== "none") {
     yield* offerGithubRegistration({ session: input.session });
   }
   return { projectId: accepted.projectId, role: accepted.role };
 });
 
-/** The warning for a failed anchor pin (a SHOULD-level degradation — the acceptance itself is already established). */
 const warnUnpinned = (detail: string) =>
   logWarning(
     `could not pin the invite link anchor (${detail}). The machine check on first sync (CRYPTO_SPEC §6.3 (a)) will not run — be sure to perform the ceremony with the inviter (out-of-band FP word comparison)`,
   );
 
-/**
- * Pinning the anchor after the acceptance is established (§6.3 (a)).
- * **An existing anchor already machine-checked (verifiedAtSeq ≠ null) is
- * never overwritten**: the chain is append-only so a verified anchor's
- * containment check keeps holding forever (old but harmless, detection
- * power equal), there is no gain in replacing it, and leaving no
- * overwrite path at all narrows the attack surface (a verified track
- * record wins over a re-invite's fresh anchor). An unchecked anchor is
- * replaced by the latest acceptance (the last legitimate acceptance
- * wins).
- *
- * Return = whether a valid anchor exists (saved successfully or the
- * verified one kept).
- */
 const pinAnchorAfterAccept = Effect.fn("invite-accept.pinAnchorAfterAccept")(function* (
   link: InviteLinkData,
   inviterFingerprintHex: string,
 ): Effect.fn.Return<boolean, CliError, CliIo | PinStore> {
   const io = yield* CliIo;
   const pinStore = yield* PinStore;
-  // By the time we get here the acceptance is established server-side.
-  // The pin is SHOULD-level local defense, so a pinning failure does
-  // not fail the acceptance — the link is already consumed and
-  // "re-running" can only become 410 (accepted). A corrupt file is left
-  // un-overwritten (pins.ts's merge discipline) while warning to make
-  // the degradation explicit
   const loaded = yield* pinStore
     .load(link.projectId)
     .pipe(
@@ -559,9 +446,6 @@ const pinAnchorAfterAccept = Effect.fn("invite-accept.pinAnchorAfterAccept")(fun
     return true;
   }
   if (existing !== null) {
-    // Replacing an unchecked anchor also happens on a legitimate
-    // re-invite, but with zero trace a substitution by a fake link (a
-    // DoS path) would be unauditable — surface it in one line
     yield* io.log(
       "Replacing the unverified existing anchor with this acceptance's link anchor (the latest legitimate acceptance wins)",
     );
@@ -581,7 +465,6 @@ const pinAnchorAfterAccept = Effect.fn("invite-accept.pinAnchorAfterAccept")(fun
     );
 });
 
-/** The display after the acceptance is established (one's own FP words = the read-out material for the inviter + the next-step guidance). */
 const reportAcceptOutcome = Effect.fn("invite-accept.reportAcceptOutcome")(function* (input: {
   readonly accepted: InviteAcceptSummary;
   readonly fingerprintHex: string;
@@ -599,9 +482,6 @@ const reportAcceptOutcome = Effect.fn("invite-accept.reportAcceptOutcome")(funct
   yield* io.log("Your key fingerprint (the inviter checks this at member add):");
   yield* io.log(`  hex:  ${input.fingerprintHex}`);
   yield* io.log("  word: " + formatWordList(ownWords));
-  // The completion display (supplement 21, ruling G ⑥ (a)): when a
-  // backing source exists, "register" is the primary path and the
-  // 12-word read-out is its fallback
   yield* io.log(
     input.identityBacking === "none"
       ? "Your acceptance is bound to the invite link. Read these 12 words to the inviter out of band (e.g. over a call) (§6.5 mutual confirmation. To show them again later, run `maruhi key show`)"
@@ -614,7 +494,6 @@ const reportAcceptOutcome = Effect.fn("invite-accept.reportAcceptOutcome")(funct
   );
 });
 
-/** Translating 410's reason code into an operational procedure. */
 function goneErrorToCliError(error: InviteGoneError): CliError {
   switch (error.reason) {
     case "accepted":
@@ -631,7 +510,6 @@ function goneErrorToCliError(error: InviteGoneError): CliError {
   }
 }
 
-/** The acceptance-error wording map (translates reason codes into operational procedures). */
 function acceptErrorToCliError(error: unknown): CliError {
   if (error instanceof InviteNotFoundError) {
     return cliError(

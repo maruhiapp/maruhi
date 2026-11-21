@@ -1,9 +1,3 @@
-// The inspected request of the forward proxy (proxy-server.ts): finding
-// every placeholder in the request (path, query, headers — a Basic
-// credential decoded first — and body), the refusal when a rule does not
-// allow the use, the substitution into the upstream request, and the
-// scrub patterns for the forms the proxy itself puts on the wire.
-
 import { Data } from "effect";
 
 import { type BytePattern, replaceBytes, scrubPatterns } from "../byte-replace.ts";
@@ -11,11 +5,6 @@ import type { Surface } from "./proxy-config.ts";
 import { authorityOf, type BrokeredCredential, hostHeaderOf, type Target } from "./proxy-rules.ts";
 import { HOP_BY_HOP } from "./proxy-server-http.ts";
 
-/* -------------------------------------------------------------------------- */
-/* Request inspection                                                           */
-/* -------------------------------------------------------------------------- */
-
-/** Where a placeholder was found, for the refusal wording. */
 export type Found = { readonly credential: BrokeredCredential; readonly surface: Surface };
 
 function findIn(text: string, credentials: readonly BrokeredCredential[]): BrokeredCredential[] {
@@ -32,7 +21,6 @@ function substituteText(text: string, values: ReadonlyMap<BrokeredCredential, st
 
 const BASIC_PREFIX = /^basic\s+/i;
 
-/** `Basic <base64>` → the decoded `user:password` text (null when not Basic or not base64). */
 function decodeBasic(value: string): string | null {
   if (!BASIC_PREFIX.test(value)) {
     return null;
@@ -45,11 +33,9 @@ function decodeBasic(value: string): string | null {
 }
 
 export interface Inspection {
-  /** Placeholders found in the request, by surface. */
   readonly found: readonly Found[];
 }
 
-/** Placeholders in the headers (a Basic credential is searched decoded as well). */
 function findInHeaders(
   headers: Readonly<Record<string, string>>,
   credentials: readonly BrokeredCredential[],
@@ -96,7 +82,6 @@ export function inspectRequest(input: {
   return { found };
 }
 
-/** Current real values of the credentials that may be substituted into a request (only the ones the request uses). */
 export async function resolveValues(
   allowed: readonly BrokeredCredential[],
   needed: ReadonlySet<BrokeredCredential>,
@@ -112,7 +97,6 @@ export async function resolveValues(
   return values;
 }
 
-/** The refusal for a placeholder used where its rule does not allow it (null = every use is allowed). */
 export function refusalFor(
   found: readonly Found[],
   allowed: readonly BrokeredCredential[],
@@ -131,7 +115,6 @@ export function refusalFor(
 
 const textEncoder = new TextEncoder();
 
-/** The request as it leaves toward the origin: substituted path, headers, and body. */
 export function buildUpstreamRequest(input: {
   readonly target: Target;
   readonly path: string;
@@ -146,11 +129,6 @@ export function buildUpstreamRequest(input: {
   readonly substituted: readonly string[];
 } {
   const { values } = input;
-  // A value in the request target must be percent-encoded (a space, `&`,
-  // `#`, `%`, `+` would change the URL's meaning or be refused by the HTTP
-  // client — review finding §19 C-4); a header value must stay a single
-  // Latin-1 line (a line break would be refused by the client; a value that
-  // cannot be a header is reported, never mangled)
   const encoded = new Map(
     [...values].map(([credential, value]) => [credential, encodeURIComponent(value)]),
   );
@@ -163,9 +141,6 @@ export function buildUpstreamRequest(input: {
       name === "authorization"
         ? substituteAuthorization(value, values)
         : substituteText(value, values);
-    // Only a value that lands in a header as text must be header-safe (a
-    // `Basic` credential is re-encoded as base64; a placeholder found only
-    // in the path, query, or body is never a header — review finding §21 R-9)
     if (substituted !== value && !isHeaderSafe(substituted)) {
       throw new UnsendableValueError(unsendableCredentialName(value, values));
     }
@@ -177,7 +152,6 @@ export function buildUpstreamRequest(input: {
   }));
   const body = Buffer.from(replaceBytes(input.body, bodyPatterns));
   headers["host"] = hostHeaderOf(input.target);
-  // The response must be readable to be scrubbed (and HTTP/1.1 upstream keeps it simple)
   headers["accept-encoding"] = "identity";
   if (body.length > 0 || input.headers["content-length"] !== undefined) {
     headers["content-length"] = String(body.length);
@@ -190,7 +164,6 @@ export function buildUpstreamRequest(input: {
   };
 }
 
-/** The variable whose value made a header unsendable (the first placeholder in the header whose value is not header-safe). */
 function unsendableCredentialName(
   header: string,
   values: ReadonlyMap<BrokeredCredential, string>,
@@ -203,7 +176,6 @@ function unsendableCredentialName(
   return [...values.keys()].map((credential) => credential.name).join(", ");
 }
 
-/** A single Latin-1 line (what an HTTP header value may carry). */
 function isHeaderSafe(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
@@ -214,7 +186,6 @@ function isHeaderSafe(value: string): boolean {
   return true;
 }
 
-/** A brokered value that cannot travel in a header (a line break or a non-Latin-1 character). */
 export class UnsendableValueError extends Data.TaggedError("UnsendableValueError")<{
   readonly variable: string;
   readonly message: string;
@@ -224,7 +195,6 @@ export class UnsendableValueError extends Data.TaggedError("UnsendableValueError
   }
 }
 
-/** `Authorization`: a Basic credential is substituted decoded and re-encoded; anything else as text. */
 function substituteAuthorization(
   value: string,
   values: ReadonlyMap<BrokeredCredential, string>,
@@ -239,13 +209,6 @@ function substituteAuthorization(
     : `Basic ${Buffer.from(substituted, "utf8").toString("base64")}`;
 }
 
-/**
- * The values plus the forms the proxy itself puts on the wire (review
- * finding §21 R-21): a value substituted into the path or query travels
- * percent-encoded, and an origin that echoes the request URL echoes that
- * form — the scrub must know it too. (The Basic re-encoding is per request
- * — {@link wirePatterns}.)
- */
 export function withWireForms(values: readonly Uint8Array[]): readonly Uint8Array[] {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const extra: Uint8Array[] = [];
@@ -264,13 +227,6 @@ export function withWireForms(values: readonly Uint8Array[]): readonly Uint8Arra
   return [...values, ...extra];
 }
 
-/**
- * Patterns for what this one request put on the wire in a form the global
- * scrub cannot know: a `Basic` credential the proxy decoded, substituted,
- * and re-encoded. An origin echoing the header echoes the re-encoded blob;
- * it is scrubbed back to the blob the client sent (which carries the
- * placeholder) — §21 R-21.
- */
 export function wirePatterns(
   original: Readonly<Record<string, string>>,
   sent: Readonly<Record<string, string>>,

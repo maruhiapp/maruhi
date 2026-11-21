@@ -1,14 +1,3 @@
-// Handlers for the project export API (AUTH_SPEC §11-6 — PF3).
-//
-// - page: token scope admin × chain role owner (the role floor, the
-//   window, the audit row and the page are the DO's — programs-export.ts).
-//   A stateless read apart from the first page's audit row; session
-//   principals are refused (outside §5's allowlist)
-// - identities: the same authorization (the DO answers the current
-//   members' ids under the owner floor); the join with D1's
-//   linked_identities happens here. A member without a linked identity
-//   on this deployment is reported as unlinked, never invented
-
 import { maruhiApi } from "@maruhi/api-schema";
 import { RequestAuth } from "@maruhi/core";
 import { Effect } from "effect";

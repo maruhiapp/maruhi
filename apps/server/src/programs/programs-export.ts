@@ -1,19 +1,3 @@
-// Project export programs (AUTH_SPEC §11-6 — PF3, docs/notes/pf3-design.md).
-//
-// - page: chain role owner (the strongest read — every member's wraps and
-//   the class-2 audit rows travel). The first page consumes the
-//   per-project export window, appends `project.exported` (class 2 —
-//   the exported log records its own export) and takes the watermarks;
-//   every later page re-reads them and refuses with export-changed when
-//   the project moved (the client starts over). The lines are the
-//   evacuation's (do-snapshot.ts), read a page at a time by
-//   do-snapshot-export.ts — nothing is decrypted or re-encoded
-// - members: the current chain members' user ids (the identities
-//   companion joins them with D1 on the worker side)
-//
-// Both run under the DO's permit synchronously (one page = one
-// synchronous read; no permit across awaits).
-
 import type { UserId } from "@maruhi/core";
 import { Clock, Effect, Option, Schema } from "effect";
 
@@ -35,17 +19,14 @@ import { MAX_EXPORT_PAGE_BYTES, MAX_EXPORT_PAGE_ROWS, MAX_EXPORTS_PER_WINDOW } f
 import type { StorageMeter } from "../storage-guard.ts";
 import { observeStorageLevel } from "../storage-guard.ts";
 
-/** One page as the worker returns it (the wire shape of api-schema's ExportPageSchema). */
 export interface ExportPageValue {
   readonly lines: readonly string[];
-  /** null = the last page. */
   readonly next: string | null;
   readonly head: {
     readonly chainHeadSeq: number;
     readonly chainHeadHashHex: string;
     readonly auditMaxSeq: number;
     readonly mutationSeq: number;
-    /** The source this project is marked as a mirror of (read with the marks — ruling J revision, round 5); absent on a writable project. */
     readonly mirrorOf?: string;
   };
 }
@@ -68,9 +49,6 @@ export const exportPageProgram = Effect.fn("programs-export.exportPageProgram")(
     cursor === null
       ? yield* openExport(actor, state.headSeq, state.headHashHex, sql, nowMs)
       : cursor.exportedSeq;
-  // The mark is read in the same synchronous call as the page's marks:
-  // "marked at the last page, marks unchanged since the first" then
-  // says by construction that no write landed after the export
   const { page, mirrorOf } = yield* Effect.sync(() => ({
     page: exportSnapshotPage({
       sql,
@@ -91,15 +69,6 @@ export const exportPageProgram = Effect.fn("programs-export.exportPageProgram")(
   return pageValue(page, mirrorOf);
 });
 
-/**
- * The cursor of a continuation (null = the first page). A cursor this
- * server did not produce is treated like a changed project (the client
- * starts over), and a continuation is served only to the owner whose
- * export it is: the audit row the cursor names must be theirs and still
- * say what the cursor says (ruling D revision) — another owner continuing
- * a cursor would take pages without a row of their own and outside their
- * window.
- */
 function continuationOf(
   cursorText: string | null,
   sql: SqlStorage,
@@ -123,7 +92,6 @@ function pageValue(
     next: page.next === null ? null : encodeExportCursor(page.next),
     head: {
       chainHeadSeq: page.marks.chainHeadSeq,
-      // An initialized project always has a head (requireMemberState passed)
       chainHeadHashHex: page.marks.chainHeadHashHex ?? "",
       auditMaxSeq: page.auditMaxSeq,
       mutationSeq: page.marks.mutationSeq,
@@ -132,15 +100,6 @@ function pageValue(
   };
 }
 
-/**
- * The first page: the window (judged after authorization), then the audit
- * row before the marks are read, so the exported log carries the row of
- * its own export (ruling F); then the cumulative-hash column is brought to
- * the mark, so the trailer carries the audit head the restore recomputes
- * (bounded extension, run to convergence below the storage guard's
- * rejection threshold — null past it).
- * Returns the seq of the export's row (the cursor binds it).
- */
 const openExport = Effect.fn("programs-export.openExport")(function* (
   actor: DataActor,
   chainHeadSeq: number,
@@ -167,17 +126,10 @@ const openExport = Effect.fn("programs-export.openExport")(function* (
     );
     return lastAuditSeq(sql);
   });
-  // Only below the storage guard's rejection threshold, measured before
-  // each bounded call (AUTH_SPEC §11-6 / §12-8 — at most one call
-  // overshoots); a column left short puts null in the trailer's head. The
-  // measurement is also the warning-band observation of this audit-writing
-  // read
   while (
     (yield* observeStorageLevel) !== "reject" &&
     (yield* audit.ensureHeadCurrent) === "more-remains"
-  ) {
-    // Each call makes progress (the bounded contract of audit-store.ts)
-  }
+  ) {}
   return exportedSeq;
 });
 
@@ -185,19 +137,12 @@ function lastAuditSeq(sql: SqlStorage): number {
   return Number(sql.exec("SELECT COALESCE(MAX(seq), 0) AS m FROM audit_events").one()["m"]);
 }
 
-/**
- * The `project.exported` row's payload as the cursor binds it: the head the
- * first page's row recorded (ruling D revision). A column that does not
- * decode to exactly this — not JSON, a scalar, a wrong shape, or a
- * different head — fails the binding like a stale cursor.
- */
 const exportRowPayload = Schema.Struct({
   chainHeadSeq: Schema.Number,
   chainHeadHashHex: Schema.NullOr(Schema.String),
 });
 const decodeExportRowPayload = Schema.decodeUnknownOption(Schema.fromJsonString(exportRowPayload));
 
-/** Whether the cursor's `project.exported` row exists, is the requester's, and names the cursor's head (within the exported bound). */
 function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: UserId): boolean {
   const row = sql
     .exec(
@@ -216,14 +161,12 @@ function exportRowBinds(sql: SqlStorage, cursor: ExportCursorState, userId: User
   );
 }
 
-/** The members of the companion and the chain head they were read at (the companion is bound to it — ruling H revision). */
 export interface ExportMembersValue {
   readonly members: readonly UserId[];
   readonly chainHeadSeq: number;
   readonly chainHeadHashHex: string;
 }
 
-/** The current members' user ids (owner only — the identities companion of an export), with the chain head. */
 export const exportMembersProgram = (
   actor: DataActor,
   cache: StateCache,

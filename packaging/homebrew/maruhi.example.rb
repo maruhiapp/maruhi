@@ -31,8 +31,6 @@ class Maruhi < Formula
 
   def install
     bin.install "maruhi"
-    # The archive contains a single binary. `mh` is linked by the
-    # installer side (ADR-0015 rulings 6/7)
     bin.install_symlink "maruhi" => "mh"
   end
 

@@ -1,25 +1,3 @@
-// `maruhi member add|remove|change-role` (CRYPTO_SPEC §6.2 / §6.5 / §7,
-// AUTH_SPEC §12-6 / §15).
-//
-// - add: §6.5 independent verification of the list's acceptance block +
-//   issuance-pin cross-check + the FP-confirmation ceremony → add_member
-//   append (CAS retry) → backfill of every environment × every epoch
-//   (409 = an idempotent resume of already-registered. **A 409 from a
-//   re-addition (a past membership under a different key) suggests a
-//   stale-key wrap**, so it auto-repairs via delete → re-register behind a
-//   key-history gate — §12-6's repair path. Left alone, a re-added member
-//   cannot decrypt historical epochs)
-// - remove / change-role (demotion below member): append the entry →
-//   **forced rotation of every environment** (§7). Interruption recovery
-//   uses the same chain-derived scheme as server revoke
-//   (rotation-sweep.ts — baseline = the seq of the last rotation-duty
-//   entry)
-//
-// Removing yourself or demoting yourself below member is refused: after
-// the operation the actor loses rotate_epoch authority and cannot fulfill
-// the §7 duty themselves (the consensus rules don't forbid it, but the CLI
-// never creates a shape where the duty is structurally orphaned).
-
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
@@ -52,48 +30,18 @@ import {
   sweepRotations,
 } from "../rotation-sweep.ts";
 
-/**
- * Each op's result under four-eyes (K6): if the policy targets the inner
- * op, append a `propose` and finish (`proposed` — nothing is applied).
- * Otherwise the usual application result (`applied`).
- */
 export type MemberOpOutcome<S> =
   | { readonly kind: "proposed"; readonly proposal: ProposedSummary }
   | { readonly kind: "applied"; readonly summary: S };
 
-/** The rotation reason after a remove / demotion / narrowing (the fixed string of the §6.2 payload). */
 const MEMBER_REMOVED_ROTATION_REASON = "member-removed";
 const ROLE_DEMOTED_ROTATION_REASON = "role-demoted";
 const SCOPE_NARROWED_ROTATION_REASON = "scope-narrowed";
 
-// ---------------------------------------------------------------------------
-// Shared: the rotation-duty environment set and the baseline seq (the interruption-recovery baseline — chain-derived only)
-// ---------------------------------------------------------------------------
-
-/**
- * **The target user_id's** rotation-duty entries (`remove_member` /
- * demotion / narrowing — §7). The derivation's core is rotation-sweep.ts's
- * rotationMandates (the same single derivation as the always-on
- * unconverged warning — prevents judgment drift structurally). The duty's
- * environment set is concretized per entry (remove = the current scope,
- * demotion = the new scope, narrowing = old \ new — design record K4-J).
- *
- * Target-scoping exists to limit the duty each command converges to **its
- * own operation's share**: keyed on the global duty, a no-op re-run
- * against a born-reader would pick up **someone else's** unconverged duty
- * and start a rotation. Rotations after the target's duty entry close the
- * target's forgeable coordinates (§7), so a target scope never
- * under-fulfills its own duty (others' unconverged duties are the
- * always-on warning — rotation-sweep.ts — and that operation's re-run's
- * responsibility).
- */
 export function memberMandatesFor(
   verified: VerifiedProject,
   targetUserId: UserId,
 ): readonly RotationMandate[] {
-  // The device-revocation duty (`device-revoked`) is fulfilled by `device
-  // revoke`'s own sweep (device-ops.ts) — member commands' re-runs never
-  // pick up another operation's duty (same line)
   return rotationMandates(verified).filter(
     (mandate) =>
       mandate.kind !== "server-revoked" &&
@@ -102,16 +50,12 @@ export function memberMandatesFor(
   );
 }
 
-/** The §7 duty-environment sweep (the shared aftermath of remove / demotion / narrowing. Baseline = environment → the max duty seq). */
 export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly mandates: readonly RotationMandate[];
-  /** The actor. A duty environment outside scope cannot be rotated (§7), so it is dropped from the targets and noted. */
   readonly actorUserId: UserId;
-  /** The key of the device the actor signs with (the fulfillable range = the device's effective scope — DK K4-17). */
   readonly signingKeyPair: SigningKeyPair;
-  /** The per-duty-kind rotation injection (the rotate entry's reason matches the duty). */
   readonly rotateWith: (reason: string) => SweepRotate<R>;
 }): Effect.fn.Return<MemberSweepOutcome, CliError, R> {
   const actorScope = yield* actorEffectiveScope(
@@ -119,12 +63,6 @@ export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function*
     input.actorUserId,
     input.signingKeyPair,
   );
-  // Duty environments outside my (the device's effective) scope (when a
-  // duty from a narrowing / remove someone made in the past remains on
-  // the target's history, when run on a capped device) are excluded from
-  // the rotate targets (CRYPTO_SPEC §7 — even the actor cannot rotate
-  // outside scope. Independent review S2). The always-on warning keeps
-  // displaying them
   const deletedVerified = chainDeletedEnvironments(input.verified);
   const { baselines, outOfScope, skippedDeleted } = partitionSweepBaselines({
     verified: input.verified,
@@ -132,7 +70,6 @@ export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function*
     actorScope,
     deletedVerified,
   });
-  // Each environment's reason = the kind of the duty that became that environment's baseline (max seq) (independent review N3)
   const reasons = reasonsByEnvironment(input.mandates);
   const sweep = yield* sweepRotations({
     rotate: (environmentId, mode) =>
@@ -147,14 +84,6 @@ export const sweepAfterMandate = Effect.fn("member.sweepAfterMandate")(function*
   return { ...sweep, skippedDeleted, outOfScope };
 });
 
-/**
- * The range of environments where the actor can fulfill rotate = the
- * signing device's effective scope (person ∩ device — DK K4-17). An
- * effective role below member (reader, or a member-cap device) is empty
- * (rotate needs member or above — §6.2). Non-members and unregistered
- * devices are empty too (fail-closed — they stay on the always-on
- * warning).
- */
 const actorEffectiveScope = Effect.fn("member.actorEffectiveScope")(function* (
   verified: VerifiedProject,
   actorUserId: UserId,
@@ -176,12 +105,6 @@ const actorEffectiveScope = Effect.fn("member.actorEffectiveScope")(function* (
     : { kind: "listed", environmentIds: [] };
 });
 
-/**
- * The sweep of the target's duties (remove / demotion / narrowing —
- * including application via a proposal). Shared between the direct
- * append's aftermath and the approver's fulfillment that completes the
- * application under four-eyes (approval-approve.ts — approval item 22).
- */
 export function sweepMemberMandates<R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -194,10 +117,8 @@ export function sweepMemberMandates<R>(input: {
   return mandates.length === 0 ? Effect.succeed(null) : sweepAfterMandate({ ...input, mandates });
 }
 
-/** The member-family sweep result (includes deleted environments and ones that could not be rotated because they are outside the actor's scope). */
 export type MemberSweepOutcome = SweepOutcome & {
   readonly skippedDeleted: readonly EnvironmentId[];
-  /** Duty environments outside the actor's scope that cannot be rotated (§7 — left to another member's fulfillment). */
   readonly outOfScope: readonly EnvironmentId[];
 };
 
@@ -209,7 +130,6 @@ const MANDATE_REASONS = {
   "device-revoked": "device-revoked",
 } satisfies Record<RotationMandate["kind"], string>;
 
-/** Environment → the reason of the baseline (max seq) duty (on a seq tie, demotion wins). */
 function reasonsByEnvironment(mandates: readonly RotationMandate[]): ReadonlyMap<string, string> {
   const chosen = new Map<string, RotationMandate>();
   for (const mandate of mandates) {
@@ -229,19 +149,10 @@ function reasonsByEnvironment(mandates: readonly RotationMandate[]): ReadonlyMap
   );
 }
 
-/**
- * The CAS append of a membership op (chain-append.ts's appendWithRetry —
- * same shape across add / remove / change_role). On each head conflict,
- * after the resync: the four-eyes policy must still leave `inner` to a
- * direct append, and `recheck` redoes the op's pre-check; if a concurrent
- * run already committed the same change (already), the op continues
- * without appending.
- */
 export function appendWithCas(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-  /** The op as a four-eyes inner operation (ensureStillTarget — approval.ts); its op names it in the exhausted wording. */
   readonly inner: ProposableOperation;
   readonly signEntry: (verified: VerifiedProject) => Effect.Effect<ChainEntry, CliError>;
   readonly recheck: (
@@ -262,7 +173,6 @@ export function appendWithCas(input: {
   );
 }
 
-/** Resolving the actor and the target (the shared prologue of remove / change_role). */
 export function resolveActorAndTarget(
   verified: VerifiedProject,
   signerUserId: UserId,
@@ -278,20 +188,8 @@ export function resolveActorAndTarget(
   return Effect.succeed({ actor, target: verified.state.members.get(targetUserId) });
 }
 
-/**
- * The actor's authority material the pre-flight sees. Since the consensus
- * judges by effective authority (person ∩ device cap — §6.2
- * `effectivePermissionOf`), the early judgment follows it (if the signing
- * device's cap is narrower than the person's, skipping the effective-side
- * check means advancing to the append-time refusal).
- */
 export type ActorAuthority = { readonly role: Role; readonly scope: MemberScope };
 
-/**
- * Pulls the signing device and returns its effective authority. For a key
- * absent from the chain (unregistered / revoked), a typed failure precedes
- * the person's-authority wording (same order as device-ops.ts).
- */
 export function actorAuthority(
   verified: VerifiedProject,
   actor: ChainMember,
@@ -302,7 +200,6 @@ export function actorAuthority(
   );
 }
 
-/** The CLI's early check of the target rules (§6.2) for remove / change_role (a pre-judgment for the wording). */
 export function targetedOpRejection(input: {
   readonly actor: ActorAuthority;
   readonly target: ChainMember;

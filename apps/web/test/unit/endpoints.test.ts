@@ -1,11 +1,3 @@
-// The sweep of the dashboard's consumed surfaces (ruling BW —
-// docs/notes/session-43.md §11).
-//
-// The catalog (src/dashboard/endpoints.ts) is collated against the
-// registered HttpApi (api-schema — value imports are allowed only in
-// the test process) to make "path agreement" and "session allowance"
-// fail-loud. The client-side counterpart of serving-topology.test.ts
-// (the server-side run_worker_first coverage).
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 
@@ -21,10 +13,8 @@ import {
   SAMPLE_TOKEN_ID,
 } from "../../src/dashboard/endpoints.ts";
 
-/** The structural slice of one registered endpoint surface. */
 interface RegisteredEndpoint {
   readonly path: string;
-  /** The query Schema (undefined on an endpoint that does not declare one). */
   readonly query?: {
     readonly ast?: {
       readonly propertySignatures?: ReadonlyArray<{ readonly name: PropertyKey }>;
@@ -32,7 +22,6 @@ interface RegisteredEndpoint {
   };
 }
 
-/** The structural slice under inspection (a structural type for the same reason as session-capability.ts's SweepableApi). */
 interface PathedApi {
   readonly groups: {
     readonly [group: string]: {
@@ -45,11 +34,6 @@ interface PathedApi {
 
 const api = maruhiApi as unknown as PathedApi;
 
-/**
- * Materializes a path template's `:param` with the same sample values
- * the catalog uses. An unknown parameter name stays in place, fails
- * the equality comparison, and forces a catalog revision (fail-loud).
- */
 function substituteTemplate(template: string): string {
   return template
     .replace(/:projectId/g, SAMPLE_PROJECT_ID)
@@ -68,11 +52,6 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("classifies every consumed endpoint's auth surface correctly (AUTH_SPEC §5)", () => {
-    // access: "session" must be inside the session-allowance
-    // enumeration (a screen calling an unlisted API fails here, not
-    // as a runtime 403). access: "unauthenticated" must be inside the
-    // unauthenticated-surface enumeration (consuming an
-    // auth-required surface as a navigation funnel also fails here)
     const unauthenticated = new Set(UNAUTHENTICATED_ENDPOINTS.map(([g, e]) => `${g}.${e}`));
     for (const { group, endpoint, access } of DASHBOARD_ENDPOINTS) {
       if (access === "session") {
@@ -95,10 +74,6 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("declares every consumed cursor query in the endpoint's query schema (ruling CB)", () => {
-    // The cursor name withCursor attaches must be declared in
-    // api-schema's query Schema: renaming the parameter fails here,
-    // not as "paging silently going unresponsive" (the server ignores
-    // an unknown query, so no runtime error ever surfaces)
     for (const { group, endpoint, cursor } of DASHBOARD_ENDPOINTS) {
       if (cursor === undefined) continue;
       expect(
@@ -109,10 +84,6 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("appends the declared cursor name from inside the paged builders (ruling CB)", () => {
-    // Callers never touch the name (a mix-up is impossible
-    // syntactically). The name the builders actually attach is pinned
-    // here: the expected-value literals are deliberate (avoid
-    // tautological repetition between builders)
     expect(apiPaths.projects("x")).toBe("/projects?after=x");
     expect(apiPaths.auditEvents(SAMPLE_PROJECT_ID, "y")).toBe(
       `/projects/${SAMPLE_PROJECT_ID}/audit/events?before=y`,
@@ -124,13 +95,6 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("keeps path literals out of screen code (builders are the only source)", () => {
-    // Source tripwire (rulings BY / CA): the catalog's completeness
-    // rests on the discipline that "every path a screen uses goes
-    // through a builder" (API = endpoints.ts, SPA = routes.ts). Here
-    // we mechanically check that no API-prefixed or /dashboard-
-    // prefixed path literal appears under src/ (excluding the two
-    // builder homes), and drop the mixing-in of a builder-bypassing
-    // consumer as drift
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(
@@ -143,39 +107,11 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("keeps effect / @effect / api-schema / core imports type-only in bundle sources (rulings BR/CD)", () => {
-    // Ruling BR — "no Effect / Schema executable code enters the
-    // bundle (= the TCB)" — used to be a mere convention: a value
-    // import passed both build and run silently while the bundle and
-    // the supply chain quietly grew. Under verbatimModuleSyntax a
-    // type-only import is spelled `import type`, so a value import
-    // mixing in is mechanically checkable. This is the web half of the
-    // Effect fence (CLAUDE.md "Architecture"); the crypto half is the
-    // packages/crypto override of no-restricted-imports in vite.config.ts.
-    // @effect/* and @maruhi/core are Effect code too, and are swept for a
-    // second reason: the root config's outbound-HTTP and identity-mint
-    // bans (its shipped-source override) do not reach this tree (see
-    // vite.config.ts), so this sweep refuses their value imports here,
-    // and the next test any @maruhi/crypto specifier, test-support
-    // included
     const srcRoot = join(import.meta.dirname, "../../src");
-    // effect with its subpaths (effect/schema etc. — this repository's
-    // mainstream form), any @effect/* package, and @maruhi/api-schema
-    // and @maruhi/core with their subpaths
     const specifier = String.raw`["'](?:effect|@effect\/[^"'/]+|@maruhi\/(?:api-schema|core))(?:\/[^"']*)?["']`;
     expect(
       findSourceOffenders(
         srcRoot,
-        // The line-start anchor (m): an import statement is a
-        // top-level declaration appearing at the start of a line —
-        // without the anchor a match would bridge from the word
-        // "import" in a comment to a real import's from clause and
-        // false-positive (the ruling-CN note comment in api.ts was the
-        // first trip). Re-exports (`export { X } from …` /
-        // `export * from …`) pull the same executable code into the
-        // bundle, so they are in scope too, and so are a side-effect
-        // import (`import "effect"`), an import() and a require(), which
-        // name the module with no from clause (in bundle source a type
-        // is imported with `import type`, never as an import() type)
         new RegExp(
           String.raw`^(?:import|export)\s+(?!type\b)[^;]*?from\s*${specifier}|\b(?:import\s*\(?|require\s*\()\s*${specifier}`,
           "m",
@@ -187,11 +123,6 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("keeps @maruhi/crypto out of bundle sources entirely (ADR-0018)", () => {
-    // ADR-0018: the web holds no keys or plaintext and ships no decrypt,
-    // wrap or verification code (decision 1, revision 2 item 4), so
-    // bundle source imports nothing from packages/crypto — not even
-    // types. Any quoted specifier counts: a static import, a re-export
-    // or a dynamic import(). Tests may use it (a devDependency)
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(srcRoot, /["']@maruhi\/crypto(?:\/[^"']*)?["']/, new Set()),
@@ -200,10 +131,6 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 
   it("keeps route() declarations inside the SPA route catalog (rulings BZ/CA)", () => {
-    // SPA_ROUTES's authority rests on the discipline that "route()
-    // declarations live only in routes.ts" (an inline route() in
-    // App.tsx would silently narrow the non-intersection sweep).
-    // bindRoute( is a different name and never false-positives
     const srcRoot = join(import.meta.dirname, "../../src");
     expect(
       findSourceOffenders(srcRoot, /\broute\(/, new Set([join(srcRoot, BUILDER_SPA_MODULE)])),
@@ -212,29 +139,19 @@ describe("dashboard endpoint sweep (ruling BW)", () => {
   });
 });
 
-/** The builder homes (excluded from the tripwire) — identified uniquely by resolved path. */
 const BUILDER_API_MODULE = "dashboard/endpoints.ts";
 const BUILDER_SPA_MODULE = "dashboard/routes.ts";
 
-/** Fetches a registered endpoint (absence is fail-loud — the same premise as the path-agreement test). */
 function requireEndpoint(group: string, endpoint: string): RegisteredEndpoint {
   const registered = api.groups[group]?.endpoints[endpoint];
   if (registered === undefined) throw new Error(`${group}.${endpoint} is not registered`);
   return registered;
 }
 
-/** The query Schema's declared property names (empty when undeclared). */
 function queryKeys(registered: RegisteredEndpoint): PropertyKey[] {
   return (registered.query?.ast?.propertySignatures ?? []).map((p) => p.name);
 }
 
-/**
- * The tripwire's scan target: every JS / TS source (`.ts` / `.tsx` /
- * `.js` / `.jsx`, and the `.m` / `.c` forms), so a module extension
- * cannot step around a sweep (exclusions are compared by resolved path —
- * a filename comparison would silently exempt a same-named file in
- * another directory).
- */
 function isSweepTarget(
   entry: { isFile(): boolean; name: string },
   filePath: string,
@@ -243,15 +160,6 @@ function isSweepTarget(
   return entry.isFile() && /\.[cm]?[jt]sx?$/.test(entry.name) && !excluded.has(filePath);
 }
 
-/**
- * The shared scan listing src/ files that hit pattern (excluded is a
- * set of resolved paths). The path-literal check covers only
- * double/single-quoted strings — backticks are out of scope because
- * they collide with path examples inside comments (`/auth/me` etc.),
- * and the resulting evasion gap is accepted (the same "good-faith
- * drift detection" standing as the word-hash tripwire — session-41
- * BG).
- */
 function findSourceOffenders(
   srcRoot: string,
   pattern: RegExp,
@@ -268,33 +176,12 @@ function findSourceOffenders(
   return offenders;
 }
 
-// ---------------------------------------------------------------------------
-// The sweep of the consumption surfaces' envelope types (DK K8-2 /
-// K8-7).
-//
-// Ruling BR says "the dashboard's wire types are only ever derived
-// from api-schema's Schemas" (types.ts). A hand-written copy silently
-// goes stale when api-schema is revised (backward compatible in the
-// K7-8 sense). There are two claims, and both compare counts to
-// counts (no recounting needed). If the target disappears, a
-// readFileSync / 0-count fails (never passes vacuously). The
-// type-only-import discipline is already held across all of src/ by
-// "keeps effect / api-schema imports type-only" above, so it is not
-// repeated here (one claim in one place — K6-R).
-// ---------------------------------------------------------------------------
-
 const TYPES_MODULE = "dashboard/types.ts";
 
-/** The body with comments stripped (block / JSDoc / line comments). */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
-/**
- * The type arguments from just after a `<` to the matching `>` (spans
- * nested `<…>` / `{…}` — a `[^<>]+` regexp never survives nesting and
- * would miss a hand-written envelope).
- */
 function typeArgumentAt(source: string, start: number): string {
   let depth = 1;
   for (const bracket of source.slice(start).matchAll(/[<>]/g)) {
@@ -304,11 +191,6 @@ function typeArgumentAt(source: string, start: number): string {
   throw new Error("unterminated type argument list");
 }
 
-/**
- * The first argument of a type argument list. Nested `<…>` / `{…}` /
- * `(…)` / `[…]` groups are blanked, innermost first, until none is
- * left, so only the top-level commas remain to separate the arguments.
- */
 function firstTypeArgument(typeArguments: string): string {
   let flat = typeArguments;
   for (let before = ""; flat !== before;) {
@@ -321,11 +203,6 @@ function firstTypeArgument(typeArguments: string): string {
   return comma === -1 ? typeArguments : typeArguments.slice(0, comma).trim();
 }
 
-/**
- * The consumption entrances whose type arguments name the envelope.
- * RevocableList's second argument is the screen's own row type, so only
- * its first is swept.
- */
 const ENVELOPE_ENTRANCES = [
   "apiGet",
   "useApiResource",
@@ -343,7 +220,6 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
 
   it("keeps types.ts to `typeof XxxSchema.Type` derivations only (no interface, no literal)", () => {
     expect(typesSource.match(/^(?:export )?interface\s/gm), "hand-written interface").toBeNull();
-    // Count across a wrap (oxfmt may break after `=`)
     const derived = typesSource.match(/^export type \w+\s*=\s*typeof \w+Schema\.Type;/gm) ?? [];
     expect(exportedNames.length, "types.ts must export at least one type").toBeGreaterThan(0);
     expect(derived.length, "every exported type must be `typeof XxxSchema.Type`").toBe(
@@ -352,19 +228,7 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
   });
 
   it("names a types.ts export at every consumption site (no inline envelope in screens)", () => {
-    // Collect the envelope type arguments of the consumption entrances
-    // (ENVELOPE_ENTRANCES) across all of src/ and require each to be a
-    // types.ts export name — widening the check's reach from the single
-    // types.ts file to the whole consumption surface (pullfrog's point).
-    // RevocableList's own first type argument is swept too: tsc checks
-    // an explicit one only against the list it is given, so a
-    // hand-written supertype (`any`, or optional fields) would hide
-    // api-schema drift, and a useRevocableList called inline in the
-    // `list` prop infers its T from it
     const known = new Set(exportedNames);
-    // The 3 modules that declare the entrances pass only their own type
-    // parameter through (`<T>`, and api.ts's `<void>` for a response
-    // without a body); types.ts itself is out of scope
     const passThrough = new Map<string, ReadonlySet<string>>([
       [join(srcRoot, "dashboard/api.ts"), new Set(["T", "void"])],
       [join(srcRoot, "dashboard/use-api-resource.ts"), new Set(["T"])],
@@ -386,8 +250,6 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
         });
       }
     }
-    // Never passes vacuously: each entrance is found at least at its own
-    // declaration, and some site lies outside the declaring modules
     expect(
       ENVELOPE_ENTRANCES.filter((name) => !sites.some((site) => site.entrance === name)),
       "entrance with no site — the sweep pattern is stale",
@@ -408,31 +270,12 @@ describe("dashboard envelope types are derived from api-schema (DK K8)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// The boundary on dashboard imports from the RSC (server graph).
-//
-// CLAUDE.md "RSC is the static shell only": when a server-graph file
-// (App.tsx / Root.tsx / a pages/*.tsx without "use client") imports
-// src/dashboard/*, the target is limited to a module behind a
-// "use client" boundary (replaced by a client reference) or the
-// allowlist known to be safe to evaluate server-side (routes.ts —
-// route definitions and path constants only). Directly importing a
-// dashboard module without a boundary (api.ts etc.) gets its body
-// evaluated by the build-time RSC. A type-only import is erased, so it
-// is out of scope. If routes.ts itself had a relative import, any
-// module could enter the server graph via the allowlist, so routes.ts
-// is not allowed to carry a relative import.
-// ---------------------------------------------------------------------------
-
-/** The dashboard modules without "use client" that the server graph may import. */
 const SERVER_GRAPH_DASHBOARD_ALLOWLIST: ReadonlySet<string> = new Set(["dashboard/routes.ts"]);
 
-/** Whether the comment-stripped body begins with the "use client" directive. */
 function hasUseClientDirective(source: string): boolean {
   return /^\s*(["'])use client\1/.test(stripComments(source));
 }
 
-/** The specifiers of value imports / re-exports (`import type` / `export type` excluded). */
 function valueImportSpecifiers(source: string): string[] {
   const stripped = stripComments(source);
   return [
@@ -442,19 +285,11 @@ function valueImportSpecifiers(source: string): string[] {
     .map((match) => match[3] ?? "");
 }
 
-/** Resolves a relative specifier to a path relative to srcRoot ("/"-separated). undefined when not relative. */
 function resolveRelative(fromFile: string, specifier: string): string | undefined {
   if (!specifier.startsWith(".")) return undefined;
   return join(dirname(fromFile), specifier).split(sep).join("/");
 }
 
-/**
- * For each server-graph file (srcRoot-relative), returns its
- * boundary-violating dashboard imports.
- * `read` maps a srcRoot-relative path → its body (undefined when
- * absent). Kept a pure function so the negative self-test below can
- * run the same checker against fake sources.
- */
 function serverGraphDashboardOffenders(
   serverGraphFiles: ReadonlyArray<string>,
   read: (relativePath: string) => string | undefined,
@@ -467,7 +302,6 @@ function serverGraphDashboardOffenders(
   );
 }
 
-/** Whether an import target under dashboard/ is outside the allowlist and has no confirmable "use client" boundary. */
 function isUnboundedDashboardImport(
   target: string,
   read: (relativePath: string) => string | undefined,
@@ -482,8 +316,6 @@ describe("server-graph imports of src/dashboard stay behind a client boundary (R
   const srcRoot = join(import.meta.dirname, "../../src");
   const read = (relativePath: string): string | undefined => {
     const filePath = join(srcRoot, relativePath);
-    // An unresolvable import target is made an offender by the
-    // checker as "no confirmable boundary"
     return existsSync(filePath) ? readFileSync(filePath, "utf8") : undefined;
   };
   const pageFiles = readdirSync(join(srcRoot, "pages"))
@@ -511,8 +343,6 @@ describe("server-graph imports of src/dashboard stay behind a client boundary (R
   it("keeps the allowlisted routes.ts free of relative imports", () => {
     const routes = read("dashboard/routes.ts");
     expect(routes, "dashboard/routes.ts not found").toBeDefined();
-    // Even a type-only relative import could be the entry of a
-    // dependency via the allowlist, so it is banned
     expect(stripComments(routes ?? "")).not.toMatch(/\b(?:from|import)\s+["']\./);
   });
 
@@ -542,12 +372,8 @@ describe("server-graph imports of src/dashboard stay behind a client boundary (R
       "pages/Fake.tsx -> dashboard/helper.ts",
       "pages/Fake.tsx -> dashboard/missing.ts",
     ]);
-    // The "use client" check: a directive-looking statement on a later
-    // line is not a boundary
     expect(hasUseClientDirective('const x = 1;\n"use client";')).toBe(false);
     expect(hasUseClientDirective("'use client';\nexport {}")).toBe(true);
-    // The routes.ts relative-import check also fails against fake
-    // sources
     expect(stripComments('import { x } from "./api.ts";')).toMatch(/\b(?:from|import)\s+["']\./);
   });
 });

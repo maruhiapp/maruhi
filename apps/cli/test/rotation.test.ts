@@ -1,23 +1,3 @@
-// Integration tests for `maruhi rotation list|dismiss` (AUDIT_SPEC §4.1 /
-// §7 — Wave 2 B2) and the always-on warning about unconverged rotation
-// mandates / the project verify detail.
-//
-// Properties pinned down:
-//  1. list displays the server's derived view and resolves variable names
-//     from verified meta statements (deleted variables via the tombstone's
-//     name — §4.2). Names are never mixed into an identifier-only response
-//     (TCB discipline — AUDIT_SPEC §7)
-//  2. dismiss sends a single pair / --all (--env narrows it; folds per
-//     pair) to the operations endpoint, and reports a 404 (no live flag)
-//     with a path forward
-//  3. An unconverged rotation mandate (an environment whose current epoch
-//     didn't start after the mandate entry) is always warned about after
-//     the command's sync (never when converged). project verify shows the
-//     same derivation's detail. Guidance adapts to the target's current
-//     state (no re-running a destructive op on a re-added target), and a
-//     deleted environment is known from the chain alone (no environment
-//     list read — CRYPTO_SPEC §6.2 delete_environment)
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -67,7 +47,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** A converged chain (rotated after the remove — no unconverged warning). */
 async function convergedChain(): Promise<BuiltChain> {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -78,7 +57,6 @@ async function convergedChain(): Promise<BuiltChain> {
   ]);
 }
 
-/** An unconverged chain (no rotate after the remove — the §7 mandate left dangling). */
 async function unconvergedChain(): Promise<BuiltChain> {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -96,7 +74,6 @@ interface WireFlag {
   readonly targetServerKeyFingerprintHex?: string;
   readonly recommendedAtMs: number;
   readonly triggerChainSeq: number;
-  /** AUDIT_SPEC §3.3's trigger (2026-09-14 ES). */
   readonly trigger: "remove_member" | "change_role" | "revoke_server";
 }
 
@@ -107,26 +84,17 @@ interface RotationServerState {
   }[];
 }
 
-/** The mock for the rotation flows: chain, environment list, metadata pull, flags, dismissals. */
 async function makeRotationServer(input: {
   readonly built: BuiltChain;
   readonly flags: readonly WireFlag[];
   readonly currentEpoch?: number;
-  /** An insert into dismissals (undefined = accept 204). */
   readonly onDismiss?: () => { status: number; json?: unknown } | undefined;
-  /** Whether the metadata pull works (false = 404 — the degraded name-resolution path). */
   readonly metadataAvailable?: boolean;
-  /** Whether the environment-list GET works (false = 500 — nothing in these flows may depend on it). */
   readonly environmentsAvailable?: boolean;
-  /** When set, a layout-v3 variable with max age 30 days exists, last pushed at this time (PF6 R9). */
   readonly expiringPushedAtMs?: number;
-  /** Whether that variable's history can be read (false = 500 — the unreadable-age path of `--fail-on-due`). */
   readonly historyAvailable?: boolean;
-  /** Whether the flags GET works (false = 500 — an unknown part of `--fail-on-flags`, A-16). */
   readonly flagsAvailable?: boolean;
-  /** When set, the latest version is a re-encryption pushed at this time (`sameValueAs` the version pushed at `expiringPushedAtMs`). */
   readonly reencryptedAtMs?: number;
-  /** The expiries of the pending sealed proposals listed to the caller (default none); null = the list fails (500). */
   readonly pendingProposalExpiries?: readonly number[] | null;
 }): Promise<RotationServerState> {
   const projectId = input.built.projectId;
@@ -159,7 +127,6 @@ async function makeRotationServer(input: {
     status: "deleted",
     metaVersion: 2,
   });
-  // A layout-v3 statement declaring a max age (PF6 R9 — the expiring section)
   const expiringStatement: WireDistributedVariableStatement = await statementFor({
     projectId,
     environmentId: ENV_ID,
@@ -335,25 +302,18 @@ describe("maruhi rotation list", () => {
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("Rotation flags: 2 active flags");
-    // trigger = change_role (demotion / narrowing — 2026-09-14 ES) is
-    // distinguished from removal. remove_member keeps the member: display
     expect(logs).toContain(`member (role/scope changed):${target.userId}`);
-    // Name resolution: active comes from the statement, deleted from the
-    // tombstone's name (§4.2)
     expect(logs).toContain("ALPHA (va)");
     expect(logs).toContain("DELETED_KEY (vdel)");
     expect(logs).toContain("read (confirmed fetch)");
     expect(logs).toContain("readable (fetch was possible)");
     expect(logs).toContain(`member:${target.userId}`);
-    // The resolution paths (resolve via push / dismiss for the deleted) —
-    // one "next:" action per row (PF6 R3; no rotation config in cwd = the by-hand route)
     expect(logs).toContain(
       "    next: rotate at the issuer, then `maruhi push ALPHA --env env-app-1` (runbooks: https://maruhi.app/docs/rotation)",
     );
     expect(logs).toContain(
       "    next: deleted — rotate at the issuer, then `maruhi rotation dismiss vdel --env env-app-1` (a deleted variable cannot be pushed)",
     );
-    // The chain is converged, so no unconverged warning appears
     expect(env.errors.join("\n")).not.toContain("unconverged rotation mandate");
   });
 
@@ -370,7 +330,6 @@ describe("maruhi rotation list", () => {
     expect(env.logs.join("\n")).toContain("va");
     expect(env.logs.join("\n")).not.toContain("ALPHA");
     expect(env.errors.join("\n")).toContain("could not fetch verified metadata");
-    // The check cannot pass on it: the environment's ages are unknown (A-11)
     const check = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
     expect(check.errors.join("\n")).toContain(
@@ -386,18 +345,12 @@ describe("maruhi rotation list", () => {
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
       { actor: owner, operation: deleteEnvironmentOp(GONE) },
     ]);
-    // The deleted environment stays in the chain's set forever, marked by its
-    // delete_environment entry (CRYPTO_SPEC §6.2): it is not walked and the
-    // check passes — even with the environment list unreadable, since the
-    // deletion is chain-derived
     const deleted = await startEnv(
       await makeRotationServer({ built: withGone, flags: [], environmentsAvailable: false }),
       withGone.projectId,
     );
     expect(await runCli(["rotation", "list", "--fail-on-due"], deleted.layer)).toBe(0);
     expect(deleted.errors.join("\n")).not.toContain(GONE);
-    // A scoped member's check covers every environment: the metadata-only
-    // pull and the history are read under scope "any" (A-15)
     const scoped = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -415,8 +368,6 @@ describe("maruhi rotation list", () => {
     expect(
       server.requests.some((r) => r.path.includes(`/environments/${ENV_ID}/pull/metadata`)),
     ).toBe(true);
-    // … including an environment OUTSIDE the member's scope: a value past
-    // its max age there is due (A-17 pins A-15 against A-14's reading)
     const outOfScope = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -508,7 +459,6 @@ describe("maruhi rotation list", () => {
     expect(none.errors.join("\n")).toContain(
       `Cannot judge the check: the pending proposals are unknown: only the environments in your scope are listed (${ENV_ID}); run it with a member whose scope covers every environment`,
     );
-    // A known pending proposal is still exit 3 (due over unknown — A-10)
     const some = await asScoped(
       await makeRotationServer({
         built: scoped,
@@ -533,7 +483,6 @@ describe("maruhi rotation list", () => {
   it("lists values past, or close to, the max age their layout-v3 schema declares, with the next step (PF6 R9)", async () => {
     const built = await convergedChain();
     const day = 24 * 60 * 60 * 1000;
-    // Pushed 40 days ago under a 30-day max age: expired 10 days ago
     const expired = await makeRotationServer({
       built,
       currentEpoch: 2,
@@ -547,7 +496,6 @@ describe("maruhi rotation list", () => {
     expect(logs).toMatch(
       /\[expired\] env-app-1 STRIPE_SECRET_KEY: max age 30d, pushed \d{4}-\d{2}-\d{2}, expired 10 days ago — next: rotate at the issuer, then `maruhi push STRIPE_SECRET_KEY --env env-app-1`/,
     );
-    // Pushed 25 days ago: due in 5 days (inside the 14-day window)
     const soon = await makeRotationServer({
       built,
       currentEpoch: 2,
@@ -558,7 +506,6 @@ describe("maruhi rotation list", () => {
     expect(await runCli(["rotation", "list"], soonEnv.layer)).toBe(0);
     expect(soonEnv.logs.join("\n")).toContain("Expiring values: 1 value due within 14 days");
     expect(soonEnv.logs.join("\n")).toContain("[due] env-app-1 STRIPE_SECRET_KEY: max age 30d");
-    // Pushed yesterday: nothing to report
     const fresh = await makeRotationServer({
       built,
       currentEpoch: 2,
@@ -573,7 +520,6 @@ describe("maruhi rotation list", () => {
   it("--fail-on-due exits 3 when a value is past its max age, --due-within widens it, and fresh values exit 0 (PF7a S-B)", async () => {
     const built = await convergedChain();
     const day = 24 * 60 * 60 * 1000;
-    // Expired 10 days ago: the plain listing still exits 0; --fail-on-due makes it 3
     const expired = await makeRotationServer({
       built,
       currentEpoch: 2,
@@ -587,9 +533,7 @@ describe("maruhi rotation list", () => {
     expect(env.errors.join("\n")).toContain(
       "Rotation due (exit 3): 1 value past the declared max age (STRIPE_SECRET_KEY)",
     );
-    // The listing itself was still printed in full
     expect(env.logs.join("\n")).toContain("[expired] env-app-1 STRIPE_SECRET_KEY");
-    // Due in 5 days: past-due-only passes, a 7-day window fails
     const soon = await makeRotationServer({
       built,
       currentEpoch: 2,
@@ -605,7 +549,6 @@ describe("maruhi rotation list", () => {
     expect(soonFail.errors.join("\n")).toContain(
       "Rotation due (exit 3): 1 value due within 7 days (STRIPE_SECRET_KEY)",
     );
-    // --due-within is meaningless without --fail-on-due (a usage error, before any network)
     const misuse = await startEnv(soon, built.projectId);
     expect(await runCli(["rotation", "list", "--due-within", "7"], misuse.layer)).toBe(2);
     expect(misuse.errors.join("\n")).toContain(
@@ -638,7 +581,6 @@ describe("maruhi rotation list", () => {
       built.projectId,
     );
     expect(await runCli(["rotation", "list", "--fail-on-pending"], none.layer)).toBe(0);
-    // An unreadable list is a failed check, not a passed one
     const broken = await startEnv(
       await makeRotationServer({ built, flags: [], pendingProposalExpiries: null }),
       built.projectId,
@@ -673,20 +615,16 @@ describe("maruhi rotation list", () => {
       expiringPushedAtMs: Date.now() - 40 * 24 * 60 * 60 * 1000,
       historyAvailable: false,
     });
-    // The plain listing notes the failure and still exits 0
     const plain = await startEnv(unreadable, built.projectId);
     expect(await runCli(["rotation", "list"], plain.layer)).toBe(0);
     expect(plain.errors.join("\n")).toContain(
       "could not read the history of STRIPE_SECRET_KEY in environment env-app-1",
     );
-    // The check cannot pass on an age it could not read
     const check = await startEnv(unreadable, built.projectId);
     expect(await runCli(["rotation", "list", "--fail-on-due"], check.layer)).toBe(1);
     expect(check.errors.join("\n")).toContain(
       "Cannot judge the check: the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
     );
-    // Something known due is due whatever else could not be read (A-10):
-    // exit 3 carries the known part, and names the unread part on the line
     const partly = await startEnv(
       await makeRotationServer({
         built,
@@ -703,7 +641,6 @@ describe("maruhi rotation list", () => {
     expect(partly.errors.join("\n")).toContain(
       "Rotation due (exit 3): 1 rotation flag active; also the history of 1 value could not be read (env-app-1/STRIPE_SECRET_KEY)",
     );
-    // --fail-on-flags alone does not need the age
     const flagsOnly = await startEnv(unreadable, built.projectId);
     expect(await runCli(["rotation", "list", "--fail-on-flags"], flagsOnly.layer)).toBe(0);
   });
@@ -769,12 +706,9 @@ describe("maruhi rotation dismiss", () => {
       built,
       currentEpoch: 2,
       flags: [
-        // Multiple flags on the same pair (a re-removal — different
-        // recommended times) fold into one pair
         flagFor({ variableId: "va" }),
         flagFor({ variableId: "va", recommendedAtMs: 1_700_000_100_000 }),
         flagFor({ variableId: "vdel" }),
-        // Another environment's flag is excluded by the --env narrowing
         flagFor({ variableId: "vother", environmentId: "env-other" }),
       ],
     });
@@ -830,17 +764,12 @@ describe("the always-on warning for unconverged rotation mandates (CRYPTO_SPEC �
     expect(errors).toContain("unconverged rotation mandate");
     expect(errors).toContain(`member-removed (target=${target.userId}`);
     expect(errors).toContain(ENV_ID);
-    // An actionable warning (the B2 ruling): it names the converging
-    // command
     expect(errors).toContain(
       `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );
   });
 
   it("a rolled-back mandate (the target was re-added) does not guide toward re-running the destructive op", async () => {
-    // Re-added with the same key after the remove (rotation still absent)
-    // — the mandate remains, but suggesting a member-remove re-run would
-    // have an active member deleted
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -881,12 +810,9 @@ describe("the always-on warning for unconverged rotation mandates (CRYPTO_SPEC �
     const env = await startEnv(state, built.projectId);
     expect(await runCli(["rotation", "list"], env.layer)).toBe(0);
     const errors = env.errors.join("\n");
-    // The demotion-mandate row steers toward env rotate (change-role
-    // can't be re-run with the target absent)
     expect(errors).toContain("role-demoted");
     expect(errors).toContain("the target has been removed");
     expect(errors).not.toContain("maruhi member change-role");
-    // The removal-mandate row suggests a member-remove re-run as before
     expect(errors).toContain(
       `re-running \`maruhi member remove ${target.userId}\` converges the mandate`,
     );

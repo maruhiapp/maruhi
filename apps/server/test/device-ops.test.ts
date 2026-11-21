@@ -1,31 +1,3 @@
-// Integration tests for the device-key ops (`add_device` /
-// `revoke_device`): their acceptance side effects and the device
-// expansion of R(E) (CRYPTO_SPEC §6.2 / AUTH_SPEC §12-6 /
-// AUDIT_SPEC §3.4, §4.1 — 2026-09-19 DK K3)
-// (@cloudflare/vitest-plugin — real workerd environment).
-//
-// Items verified:
-// - acceptance-guard removal: the 2 ops are accepted via generic
-//   append, and the mirror rows (§3.4) carry the device fingerprint
-// - R(E)'s device expansion: the wrap-complete set is per (person,
-//   device); the response carries all of one's own devices, each
-//   identified by `recipientEncPubHex`
-// - two-stage authorization (design record §8 K3-1): resolve the
-//   device from the signing key, then judge stage 2 by the device's
-//   effective permissions
-// - `revoke_device` side effects: dropping the attestation rows,
-//   rotation-needed detection (trigger `revoke_device`), rejecting
-//   wraps addressed to the revoked key, rejecting signatures by the
-//   revoked device, and NOT sweeping existing wraps
-// - DeviceLimit (16 / member / project — an acceptance policy, 422)
-// - the token level (add_device = write; another's revoke_device =
-//   admin)
-// - a reader's self-backfill (only addressed to its own device)
-// - device-axis delete references (`recipientEncPubHex` required —
-//   deletes only the slot of the named device)
-// - version skew: the single-device path (input equivalent to a
-//   pre-K2 client) is unchanged
-
 import {
   computeUserKeyFingerprint,
   encodeHex,
@@ -84,7 +56,6 @@ registerDataScenario();
 
 const OTHER = "env-other-0002";
 
-/** A vector device key (the names are the vectors' — the binding is done by the chain's add_device). */
 const PHONE = "user-owner-0001@phone";
 const SECOND = "user-owner-0014@second";
 const READER_CAP = "user-owner-0015@reader-cap";
@@ -105,7 +76,6 @@ function vectorDevice(name: string): DevicePublic {
   };
 }
 
-/** A throwaway device public key (for DeviceLimit — never used for signing). */
 async function freshDevice(): Promise<DevicePublic> {
   const enc = await generateEncryptionKeyPair();
   const sig = await generateSigningKeyPair();
@@ -128,7 +98,6 @@ type Cap = {
   readonly scopeEnvironmentIds?: readonly string[];
 };
 
-/** Append `add_device` (the actor's own device) to the chain. */
 async function addDevice(
   actorUserId: string,
   device: DevicePublic,
@@ -147,7 +116,6 @@ async function addDevice(
   return fixture.head.seq;
 }
 
-/** Append `revoke_device` to the chain. */
 async function revokeDevice(
   actorUserId: string,
   targetUserId: string,
@@ -163,7 +131,6 @@ async function revokeDevice(
   return fixture.head.seq;
 }
 
-/** Send generic append under an arbitrary token (a path that need not be accepted). */
 async function appendWith(
   actorUserId: string,
   rawToken: string,
@@ -187,7 +154,6 @@ interface Slot {
   readonly encPubHex: string;
 }
 
-/** The wrap set for each (person, device) slot (signer = registrar). */
 async function wrapSlots(
   environmentId: string,
   epoch: number,
@@ -212,11 +178,9 @@ async function wrapSlots(
   return wraps;
 }
 
-/** The three members' primary-key slots (one base-chain device each). */
 const baseSlots = (): Slot[] =>
   ALL_MEMBERS.map((userId) => ({ userId, encPubHex: vectorKeyOf(userId).enc_pub_hex }));
 
-/** Environment creation (with an arbitrary slot set). */
 async function createEnvironmentWithSlots(
   environmentId: string,
   slots: readonly Slot[],
@@ -245,7 +209,6 @@ async function listMyDeks(userId: string): Promise<readonly WireRecipientDek[]> 
   return ((await response.json()) as { deks: readonly WireRecipientDek[] }).deks;
 }
 
-/** A value push (signed with the signer's current key — the device is switchable via useDeviceKey). */
 async function pushValue(
   dek: Uint8Array,
   writerUserId: string,
@@ -270,7 +233,6 @@ async function pushValue(
   });
 }
 
-/** Submit a head attestation (with the signer's current key). */
 async function attest(userId: string): Promise<Response> {
   const keys = vectorKeyOf(userId);
   const pair = await importSigningKeyPair({
@@ -350,7 +312,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
     expect(mirror?.["chain_seq"]).toBe(seq);
     expect(mirror?.["actor_type"]).toBe("user");
     expect(mirror?.["actor_user_id"]).toBe(OWNER);
-    // The actor is the device that signed the append (the primary key); the target is self (only one's own devices can be added)
     expect(mirror?.["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
     expect(mirror?.["target_user_id"]).toBe(OWNER);
     expect(JSON.parse(String(mirror?.["payload"]))).toEqual({
@@ -359,7 +320,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
-    // The mirror row carries no provider info such as GitHub (internal user_id and FP only)
     expect(JSON.stringify(mirror)).not.toContain("github");
   });
 
@@ -367,7 +327,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
     const phone = vectorDevice(PHONE);
     await addDevice(OWNER, phone);
 
-    // One device's worth (3 rows) does not form the complete set
     const short = await createEnvironmentWithSlots(ENV, baseSlots());
     expect(short.response.status).toBe(422);
     expect(await errorBody(short.response)).toMatchObject({
@@ -375,7 +334,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
       reason: "recipient-missing",
     });
 
-    // Accepted with the 4 (person, device) rows
     const full = await createEnvironmentWithSlots(ENV, [
       ...baseSlots(),
       { userId: OWNER, encPubHex: phone.encPubHex },
@@ -392,13 +350,11 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
       ].toSorted((a, b) => `${a[0]}:${a[1]}`.localeCompare(`${b[0]}:${b[1]}`)),
     );
 
-    // The response carries all of one's own devices; the device is identified by recipientEncPubHex
     const mine = await listMyDeks(OWNER);
     expect(mine).toHaveLength(2);
     expect(mine.map((row) => row.recipientEncPubHex).toSorted()).toEqual(
       [vectorKeyOf(OWNER).enc_pub_hex, phone.encPubHex].toSorted(),
     );
-    // No other member's devices are mixed in
     expect((await listMyDeks(MEMBER)).map((row) => row.recipientEncPubHex)).toEqual([
       vectorKeyOf(MEMBER).enc_pub_hex,
     ]);
@@ -440,7 +396,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
         [OWNER, phone.fp],
       ].toSorted((a, b) => `${a[1]}`.localeCompare(`${b[1]}`)),
     );
-    // The distribution (GET /chain) also carries per-device rows
     const chain = await SELF.fetch(`${BASE}/projects/${projectId}/chain`, {
       headers: bearer(token(MEMBER)),
     });
@@ -476,7 +431,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
       _tag: "DeviceLimit",
       limit: MAX_DEVICES_PER_MEMBER,
     });
-    // Revoking one frees a slot and another can be added again (counted by active devices)
     const first = devices[0];
     if (first === undefined) {
       throw new Error("no device");
@@ -515,8 +469,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
     const body = (await accepted.json()) as { headSeq: number; headHashHex: string };
     fixture.head = { seq: body.headSeq, hashHex: body.headHashHex };
 
-    // Add a second device to MEMBER, then OWNER revokes another's
-    // device under a write token → 403 (admin required)
     const ciBox = vectorDevice(CI_BOX);
     await addDevice(MEMBER, ciBox, { roleCap: "member" });
     const asWrite = await appendWith(OWNER, writeToken, {
@@ -524,7 +476,6 @@ describe("add_device acceptance and mirror (CRYPTO_SPEC §6.2 / AUDIT_SPEC §3.4
       payload: { targetUserId: MEMBER, deviceFingerprintsHex: [ciBox.fp] },
     });
     expect(asWrite.status).toBe(403);
-    // Revoking one's own device suffices with write
     const own = await appendWith(OWNER, writeToken, {
       op: "revoke_device",
       payload: { targetUserId: OWNER, deviceFingerprintsHex: [phone.fp] },
@@ -543,11 +494,8 @@ describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () 
     ]);
     expect(created.response.status).toBe(200);
     const v1 = await createVariableOk(created.dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // The device reads the value via pull (var.read — material for
-    // detection (a)) and files an attestation
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(OWNER));
     expect(pull.status).toBe(200);
-    // One unread candidate (readable)
     await createVariableOk(created.dek, "var-api-key", "API_KEY", "sk-alpha");
     useDeviceKey(OWNER, PHONE);
     expect((await attest(OWNER)).status).toBe(204);
@@ -557,21 +505,17 @@ describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () 
 
     const revokeSeq = await revokeDevice(OWNER, OWNER, [phone.fp]);
 
-    // The mirror row ★ (payload = the revoked FP list, target = the target)
     const events = await readAuditEvents(projectId);
     const mirror = events.find((event) => event["event"] === "chain.device_revoked");
     expect(mirror?.["chain_seq"]).toBe(revokeSeq);
     expect(mirror?.["target_user_id"]).toBe(OWNER);
     expect(JSON.parse(String(mirror?.["payload"]))).toEqual({ deviceKeyFingerprints: [phone.fp] });
 
-    // The attestation rows for the revoked device alone disappear
     const rows = await attestationRows();
     expect(rows.map((row) => row["attester_key_fingerprint"])).toEqual([
       vectorKeyOf(OWNER).key_fingerprint_hex,
     ]);
 
-    // Rotation-needed detection: one aggregate row per environment right after
-    // the mirror (§3.3 Sc-5), trigger = revoke_device, the revoked FP set on the payload
     const recommended = events.filter((event) => event["event"] === "rotation.recommended");
     expect(recommended).toHaveLength(1);
     const recommendedRow = recommended[0];
@@ -604,10 +548,8 @@ describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () 
       trigger: "revoke_device",
     });
 
-    // Existing wraps are not swept (the sweep rule is unchanged — replaced on the next rotation)
     expect(await wrapRows()).toHaveLength(4);
 
-    // A new wrap addressed to the revoked key is not accepted
     const toRevoked = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -623,12 +565,10 @@ describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () 
     expect(rejected.status).toBe(422);
     expect(await errorBody(rejected)).toMatchObject({ reason: "recipient-key-mismatch" });
 
-    // A signature by the revoked device is invalid (the device cannot be resolved from the signing key = signature-invalid)
     useDeviceKey(OWNER, PHONE);
     const push = await pushValue(created.dek, OWNER, 2, await valueSignedBytesHashOf(v1, MEMBER));
     expect(push.status).toBe(422);
     expect(await errorBody(push)).toMatchObject({ reason: "signature-invalid" });
-    // An attestation by the revoked device is also not accepted
     const stale = await attest(OWNER);
     expect(stale.status).not.toBe(204);
     resetDeviceKeys();
@@ -641,7 +581,6 @@ describe("two-stage authorization — a device's effective permissions (design r
     const second = vectorDevice(SECOND);
     await addDevice(READER, second, { roleCap: "reader" });
 
-    // Only to one's own device = the role stage suffices with reader (self-backfill)
     const own = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -659,7 +598,6 @@ describe("two-stage authorization — a device's effective permissions (design r
       [vectorKeyOf(READER).enc_pub_hex, second.encPubHex].toSorted(),
     );
 
-    // Addressing another member requires member or above (reader is 403)
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -684,7 +622,6 @@ describe("two-stage authorization — a device's effective permissions (design r
     });
     expect(denied.status).toBe(403);
     expect(await errorBody(denied)).toMatchObject({ reason: "insufficient-role" });
-    // A mix of own-device and other-member recipients is likewise 403 (judged on the whole set)
     const mixed = await requestJson("POST", `/environments/${ENV}/deks`, token(READER), {
       deks: [other, own],
     });
@@ -692,15 +629,6 @@ describe("two-stage authorization — a device's effective permissions (design r
   });
 
   it("applies the device cap to value pushes: a reader-cap device and an out-of-scope device are rejected at the declared head (§6.3 — 422)", async () => {
-    // For a value / meta / manifest, CRYPTO_SPEC §6.3's
-    // "authorization at the declared head" (replaced by the device's
-    // effective permissions in K2 — deviceStateAt) runs first as part
-    // of signature verification, so insufficient device cap settles as
-    // 422 chain-head-state-mismatch. The server's stage 2
-    // (ensureDevicePermission — 403) is observed on composites,
-    // checkpoints, and DEK registration (3 cases in
-    // membership-negatives-composite / the reader backfill in this
-    // file)
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
@@ -728,7 +656,6 @@ describe("two-stage authorization — a device's effective permissions (design r
     });
     resetDeviceKeys();
 
-    // The primary key (no cap) passes — the person's (role, scope) has not changed
     const primary = await pushValue(dek, OWNER, 2, prev);
     expect(primary.status).toBe(200);
   });
@@ -758,8 +685,6 @@ describe("two-stage authorization — a device's effective permissions (design r
       (await wrapRows()).map((row) => [row["recipient_user_id"], row["recipient_enc_pub_hex"]]),
     ).not.toContainEqual([OWNER, phone.encPubHex]);
     expect(await wrapRows()).toHaveLength(3);
-    // The primary key's slot is removed via a different reference
-    // (the primary key's enc public key)
     const primary = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -772,7 +697,6 @@ describe("two-stage authorization — a device's effective permissions (design r
     });
     expect(primary.status).toBe(204);
     expect((await wrapRows()).map((row) => row["recipient_user_id"])).toEqual([MEMBER, READER]);
-    // A nonexistent reference is 404 (same with a device specified)
     const gone = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -789,7 +713,6 @@ describe("two-stage authorization — a device's effective permissions (design r
 
 describe("version skew — a single-device chain (input equivalent to a pre-K2 client) is unchanged", () => {
   it("accepts single-device wrap sets, device-keyed delete references, attestations and pushes exactly as before", async () => {
-    // Environment creation: 3 members × 1 device each = 3 wraps (the shape a pre-K2 CLI sends)
     const dek = makeDek();
     const deks = await wrapDekForAll({
       projectId,
@@ -806,12 +729,10 @@ describe("version skew — a single-device chain (input equivalent to a pre-K2 c
       dekCommitmentHex: await commitmentOf(projectId, ENV, 1, dek),
     });
     expect(created.status).toBe(200);
-    // The response is 1 row even on the device-axis key (recipientEncPubHex = one's only key)
     const mine = await listMyDeks(READER);
     expect(mine).toHaveLength(1);
     expect(mine[0]?.recipientEncPubHex).toBe(vectorKeyOf(READER).enc_pub_hex);
 
-    // A delete reference addressing the unique slot by device key
     const removed = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {
       wraps: [
         {
@@ -823,7 +744,6 @@ describe("version skew — a single-device chain (input equivalent to a pre-K2 c
       ],
     });
     expect(removed.status).toBe(204);
-    // A device-less backfill (the pre-K2 append path) → 204
     const reWrap = await wrapDekTo({
       projectId,
       environmentId: ENV,
@@ -838,7 +758,6 @@ describe("version skew — a single-device chain (input equivalent to a pre-K2 c
     expect(backfilled.status).toBe(204);
     expect(await listMyDeks(READER)).toHaveLength(1);
 
-    // Attestations and value pushes work as before under the primary key
     expect((await attest(OWNER)).status).toBe(204);
     expect(await attestationRows()).toEqual([
       {

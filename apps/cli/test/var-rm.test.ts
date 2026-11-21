@@ -1,21 +1,3 @@
-// Tests for `maruhi var rm` (S4 — variable removal).
-//
-// Invariants pinned down:
-//  1. **Removing a v3 variable keeps the schema fields and layout
-//     byte-exact from just before** (CRYPTO_SPEC §4.2's removal
-//     convention); **removing a v1 variable stays in v1 form** (no v3
-//     fields — don't silently upgrade the layout)
-//  2. Removal is terminal: removing an active variable requires explicit
-//     interactive confirmation (retyping the variable name), and in a
-//     non-interactive environment it's refused without --force
-//     (fail-closed). A declared variable isn't silently removed either
-//  3. The existing discipline of metadata operations: 3-F intent
-//     (journal-before-send) + 1-E' effect confirmation (verified
-//     distribution of the tombstone) + the floor's advance to the
-//     tombstone
-//  4. Already-removed or nonexistent names are typed errors before any
-//     signing or sending
-
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -49,11 +31,8 @@ const DESCRIPTION = "Primary endpoint of the shop";
 let owner: TestUser;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
-/** v3 declared (url type, required, with a description). */
 let declaredV3: WireDistributedVariableStatement;
-/** v3 active (with schema fields). */
 let activeV3: WireDistributedVariableStatement;
-/** v1 active (no schema fields — the traditional shape). */
 let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
@@ -104,7 +83,6 @@ async function startRmEnv(options?: {
   readonly initialVariables?: readonly WireDistributedVariableStatement[];
   readonly initialTombstones?: readonly WireDistributedVariableStatement[];
   readonly ignoreRemovals?: boolean;
-  /** Handlers tried before the honest environment's (injected conflicts / concurrent changes). */
   readonly before?: (state: MetaEnvironmentState) => readonly MockHandler[];
 }): Promise<{ env: TestEnv; state: MetaEnvironmentState }> {
   const { state, handlers } = makeMetaEnvironmentServer({
@@ -136,7 +114,6 @@ function lastServer(): MockServer {
   return server;
 }
 
-/** Reads the floor (the fold of the observation log). */
 async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
   const loaded = await Effect.runPromise(
     makeFileFloorStore(env.floorDir).load(testProjectId(built.projectId)),
@@ -157,25 +134,17 @@ describe("maruhi var rm (the removal statement's shape)", () => {
     };
     expect(body.statement["status"]).toBe("deleted");
     expect(body.statement["metaVersion"]).toBe(2);
-    // name keeps the previous name verbatim (removal doesn't empty it —
-    // §4.2)
     expect(body.statement["name"]).toBe("SHOP_URL");
-    // Schema fields and layout hold the previous statement's values
-    // byte-exact
     expect(body.statement["layoutVersion"]).toBe(3);
     expect(body.statement["varType"]).toBe("url");
     expect(body.statement["required"]).toBe(true);
     expect(body.statement["description"]).toBe(DESCRIPTION);
     expect(body.statement["maxAgeDays"]).toBeNull();
     expect(body.statement["prevMetaSigHashHex"]).not.toBe("");
-    // The manifest is re-issued over the set including the tombstone
-    // (§4.3)
     expect(body.manifest["manifestVersion"]).toBe(2);
     const output = env.logs.join("\n");
     expect(output).toContain("Deleted SHOP_URL");
     expect(output).toContain("declared only");
-    // The floor advances to the tombstone (the material for detecting a
-    // removal silently revoked)
     const floor = await loadFloor(env);
     expect(floor.environments[ENV_ID]?.variables["v-declared"]).toMatchObject({
       status: "deleted",
@@ -205,8 +174,6 @@ describe("explicit confirmation of removal (fail-closed)", () => {
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("the typed name did not match");
     expect(state.mutations).toEqual([]);
-    // Nothing was sent before confirmation (just the resolution's
-    // metadata pull and chain sync)
     expect(lastServer().requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
   });
 
@@ -268,11 +235,6 @@ describe("target resolution (typed errors before signing / sending)", () => {
 
 describe("the CAS retry and the binding to the confirmed target", () => {
   it("a retry re-resolves the confirmed variableId, never another variable that took the name", async () => {
-    // The post-confirmation 409 (a concurrent metadata op) → a concurrent
-    // removal + a same-named creation put **a different variable** under
-    // the typed name. The confirmation binds the variableId, so the retry
-    // re-resolves that ID: the confirmed variable is already deleted (a
-    // determinate error), and nothing is sent toward the replacement
     const tombstone = await statementFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -304,9 +266,6 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       envStatement,
       statements: [declaredV3],
     });
-    // The second-and-later distributions give the post-replacement set
-    // (the manifest advances by prev-chaining — don't confuse this with
-    // the same-version different-hash equivocation refusal)
     const secondManifest = await manifestFor({
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -367,8 +326,6 @@ describe("the CAS retry and the binding to the confirmed target", () => {
     expect(await runCli(["var", "rm", "SHOP_URL"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("Variable SHOP_URL is already deleted");
-    // Only the single 409-refused call — no DELETE was sent toward the
-    // other variableId
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0]?.path.endsWith("/variables/v-declared")).toBe(true);
   });
@@ -397,7 +354,6 @@ describe("the CAS retry after a concurrent rename", () => {
               return null;
             }
             conflicted = true;
-            // A concurrent rename lands (metaVersion 2 + the manifest chained to v1)
             const renamed = await statementFor({
               projectId: built.projectId,
               environmentId: ENV_ID,
@@ -427,7 +383,6 @@ describe("the CAS retry after a concurrent rename", () => {
     });
     env.setPromptResponses(["LEGACY_KEY"]);
     expect(await runCli(["var", "rm", "LEGACY_KEY"], env.layer)).toBe(0);
-    // One confirmation only: the retry binds the confirmed ID
     expect(env.prompts).toHaveLength(1);
     expect(state.mutations.map((m) => m.kind)).toEqual(["remove"]);
     const retried = state.mutations[0]?.request.body as { statement: Record<string, unknown> };
@@ -452,8 +407,6 @@ describe("effect confirmation (1-E' — §12-10 (3))", () => {
     const errors = env.errors.join("\n");
     expect(errors).toContain("variable deletion");
     expect(errors).toContain("unconfirmed");
-    // The floor hasn't advanced to the tombstone (don't write your own
-    // assumption onto the floor)
     const floor = await loadFloor(env);
     expect(floor.environments[ENV_ID]?.variables["v-declared"]).toBeUndefined();
   });

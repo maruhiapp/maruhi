@@ -1,6 +1,3 @@
-// Runs all checks under the real Bun runtime (CRYPTO_SPEC §11).
-// vitest runs on Node, so Bun (the CLI's runtime environment) is verified by direct execution.
-// Usage: bun run test/run-in-bun.ts (inside packages/crypto)
 import { runAllChecks } from "./all-checks.ts";
 
 declare const Bun: { readonly version: string } | undefined;

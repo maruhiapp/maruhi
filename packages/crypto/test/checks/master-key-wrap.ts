@@ -1,11 +1,3 @@
-// Checks for CRYPTO_SPEC §8 (0.9-draft / KL3 — the master key wrap ledger).
-// Vectors: test-vectors/master-key-wrap.json. Same layout as dek-wrap /
-// lease-wrap: fixed vectors (generated via hpke-js ekm derandomize) are
-// verified in the Open direction, and the Seal direction is covered by a
-// roundtrip. For AES-GCM / HKDF, a successful vector decryption pins the
-// derivation. recovery-wrap.json (the recovery-code path) is unchanged and
-// still lives in checks/recovery.ts.
-
 import {
   buildGuardianWrapInfo,
   buildHandoffWrapInfo,
@@ -156,7 +148,6 @@ const unwrapVector = (v: AeadVector, context: MasterWrapContext, kek?: Uint8Arra
     context,
   });
 
-/** B and user_id are inherited from recovery-wrap.json (the ledger = the set of wraps of the same B). */
 function provenanceChecks(c: Checks): void {
   const recovery = recoveryVectors.vectors[0];
   c.push(
@@ -176,7 +167,6 @@ async function passkeyChecks(c: Checks): Promise<void> {
   c.push("master-wrap: passkey KEK derivation", kek.ok && toHex(kek.value) === passkey.kek_hex);
   const blob = await unwrapVector(passkey, passkeyContext);
   c.push("master-wrap: passkey vector unwrap == B", blob.ok && toHex(blob.value) === blobHex);
-  // A short PRF output is InvalidInput (never reaches HKDF)
   const short = await derivePasskeyKek(fromHex(passkey.prf_out_hex).slice(0, 16));
   c.push(
     "master-wrap: passkey short prf output rejected",
@@ -215,8 +205,6 @@ async function guardianGroupChecks(c: Checks, g: GuardianGroupVector): Promise<v
   const blob = await unwrapVector(g, groupContext(g));
   c.push(`master-wrap: ${g.name} vector unwrap == B`, blob.ok && toHex(blob.value) === blobHex);
   const opened = await openVectorShares(g, c);
-  // Assemble the KEK from the segments (any: 1 segment / all: XOR of all
-  // segments)
   const joined = joinGuardianShares({
     mode: g.mode,
     shares: g.mode === "any" ? opened.slice(0, 1) : opened,
@@ -260,8 +248,6 @@ async function handoffIdChecks(c: Checks): Promise<void> {
     "master-wrap: handoff code decoding",
     decoded.ok && toHex(decoded.value) === doc.handoff.ephemeral_pub_hex,
   );
-  // Lowercase, whitespace, and hyphen-free input decodes to the same key
-  // (leniency for transcription)
   const lenient = await decodeHandoffCode(
     ` ${doc.handoff.code.symbols.toLowerCase().replace(/(.{8})/g, "$1 ")} `,
   );
@@ -272,8 +258,6 @@ async function handoffIdChecks(c: Checks): Promise<void> {
 }
 
 async function handoffOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<void> {
-  // Only a guardian may approve (2026-09-19 DK — the old-device approval
-  // handoff-device was removed from §8.4)
   for (const h of [handoffShare]) {
     c.push(
       `master-wrap: ${h.name} info construction`,
@@ -289,15 +273,12 @@ async function handoffOpenChecks(c: Checks, pair: EncryptionKeyPair): Promise<vo
       value.ok && toHex(value.value) === h.value_hex,
     );
   }
-  // The guardian approval is a re-seal of segment 1 of guardian-all-3 (the
-  // value is identical)
   c.push(
     "master-wrap: handoff-guardian-share re-seals share 1 of guardian-all-3",
     handoffShare.source === all3.group_id && handoffShare.value_hex === all3.shares[0]?.share_hex,
   );
 }
 
-/** AAD-substitution negative: the vector's decrypt_aad_hex matches the built AAD, and decryption fails. */
 async function aadNegativeCheck(
   c: Checks,
   name: string,
@@ -314,11 +295,6 @@ async function aadNegativeCheck(
 }
 
 async function aadNegativeChecks(c: Checks): Promise<void> {
-  // Substitution on the kind axis alone (guardian → passkey-prf; same
-  // wrap_ref, same mode — rebuilt on guardian-any-2 as base in 2026-09-20 DK
-  // because device left the kind set)
-  // (mode is a guardian-only field, so a passkey-prf context has no mode —
-  // having one would be InvalidInput)
   await aadNegativeCheck(c, "aad-kind-mismatch", any2, {
     ...passkeyContext,
     wrapRef: any2.group_id,
@@ -333,24 +309,18 @@ async function aadNegativeChecks(c: Checks): Promise<void> {
   });
   await aadNegativeCheck(c, "aad-mode-all-as-any", all3, { ...groupContext(all3), mode: "any" });
   await aadNegativeCheck(c, "aad-mode-any-as-all", any2, { ...groupContext(any2), mode: "all" });
-  // suite-mismatch: the implementation API cannot swap the domain string
-  // (fixed by the type). Only check that the expected AAD bytes exist in the
-  // vector; the decryption failure itself is pinned by verify_reference.mjs
-  // (the independent implementation)
   c.push(
     "master-wrap negative: suite-mismatch",
     negativeNamed("suite-mismatch").decrypt_aad_hex !== undefined,
   );
 }
 
-/** hex of a successful Uint8Array result, or null (a helper to fold comparisons into one expression). */
 function okHex(
   result: { readonly ok: boolean; readonly value?: Uint8Array } | null,
 ): string | null {
   return result?.ok === true && result.value !== undefined ? toHex(result.value) : null;
 }
 
-/** Decrypting with a "wrong KEK" that matches the vector's decrypt_kek_hex must yield DecryptFailed. */
 async function expectWrongKek(
   c: Checks,
   name: string,
@@ -368,9 +338,6 @@ async function expectWrongKek(
 }
 
 async function kekNegativeChecks(c: Checks): Promise<void> {
-  // share-missing: the XOR of n−1 segments is not the KEK.
-  // joinGuardianShares rejects an insufficient segment count as InvalidInput
-  // first, and a KEK assembled with a faked segment count fails decryption
   const twoShares = all3.shares.slice(0, 2).map((s) => fromHex(s.share_hex));
   const tooFew = joinGuardianShares({ mode: "all", shares: twoShares, expectedCount: 3 });
   c.push(
@@ -385,8 +352,6 @@ async function kekNegativeChecks(c: Checks): Promise<void> {
     groupContext(all3),
     partial.ok ? partial.value : null,
   );
-  // prf-salt-mismatch: a PRF output under a different salt → a different KEK
-  // → decryption fails
   const salt = negativeNamed("prf-salt-mismatch");
   const otherKek = await derivePasskeyKek(fromHex(salt.other_prf_out_hex ?? ""));
   await expectWrongKek(
@@ -441,8 +406,6 @@ async function handoffNegativeChecks(c: Checks, pair: EncryptionKeyPair): Promis
       name: "handoff-transplant-approver",
       context: { ...base, approverUserId: testUserId("user-admin-0003") },
     },
-    // Relabeling the guardian segment's group (all-3 → any-2 — rebuilt from
-    // the old → device shape in 2026-09-20 DK)
     { name: "handoff-transplant-source", context: { ...base, source: any2.group_id } },
     { name: "handoff-share-index-mismatch", context: { ...base, shareIndex: 2 } },
     { name: "handoff-request-id-other-key", context: base },
@@ -480,8 +443,6 @@ async function codeNegativeChecks(c: Checks): Promise<void> {
         decoded.error.field === "handoff code",
     );
   }
-  // Characters outside the alphabet (0 / 1 / 8 / 9) are rejected rather than
-  // guessed-substituted
   const zeroForO = await decodeHandoffCode(doc.handoff.code.symbols.replace(/[A-Z]/, "0"));
   c.push("master-wrap negative: handoff code non-alphabet symbol", !zeroForO.ok);
 }
@@ -589,7 +550,6 @@ async function passkeyRoundtrip(c: Checks): Promise<void> {
   );
 }
 
-/** Seal one segment to a generated guardian key, then open with that key (a different key fails). Returns the opened segment. */
 async function sealAndOpenShare(
   share: Uint8Array,
   context: GuardianWrapContext,
@@ -613,7 +573,6 @@ async function sealAndOpenShare(
   return opened.ok && !wrongKey.ok ? opened.value : null;
 }
 
-/** Seal 3 segments to 3 generated guardian keys, then open and collect them (a failed segment drops out). */
 async function recoverShares(
   mode: GuardianMode,
   shares: readonly Uint8Array[],
@@ -663,8 +622,6 @@ async function guardianRoundtrip(c: Checks, mode: GuardianMode): Promise<void> {
     recovered.length === 3 && okHex(joined) === toHex(groupKek) && okHex(unwrapped) === blobHex,
   );
   if (mode === "all") {
-    // Any 2 segments are independent of the KEK: the XOR of 2 segments does
-    // not equal the KEK
     const pairJoin = joinGuardianShares({ mode, shares: recovered.slice(0, 2), expectedCount: 2 });
     c.push(
       "master-wrap: guardian all roundtrip partial shares != KEK",
@@ -673,7 +630,6 @@ async function guardianRoundtrip(c: Checks, mode: GuardianMode): Promise<void> {
   }
 }
 
-/** ephemeral public key → code → decode → request_id. Returns null if the roundtrip does not hold. */
 async function codeRoundtrip(pub: Uint8Array): Promise<string | null> {
   const code = await encodeHandoffCode(pub);
   const decoded = code.ok ? await decodeHandoffCode(code.value) : null;
@@ -685,7 +641,6 @@ async function codeRoundtrip(pub: Uint8Array): Promise<string | null> {
 }
 
 async function handoffRoundtrip(c: Checks): Promise<void> {
-  // generated ephemeral key → code → decode → request_id → seal / open
   const ephemeral = await generateEncryptionKeyPair();
   const pub = await exportEncryptionPublicKey(ephemeral.publicKey);
   const requestId = await codeRoundtrip(pub);
@@ -712,8 +667,6 @@ async function handoffRoundtrip(c: Checks): Promise<void> {
     context,
   });
   c.push("master-wrap: handoff roundtrip", requestId !== null && okHex(opened) === toHex(kekH));
-  // A different ephemeral key cannot open it (once the requester process
-  // ends, the approval is worthless)
   const otherEphemeral = await generateEncryptionKeyPair();
   const wrongKey = await openHandoffValue({
     ephemeralKeyPair: otherEphemeral,

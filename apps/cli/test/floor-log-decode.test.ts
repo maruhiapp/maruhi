@@ -1,12 +1,3 @@
-// Pins the floor-log record decoder's accept / reject boundary
-// (CRYPTO_SPEC §6.3 — a line that does not decode strictly is ignored by
-// fold, so what counts as "undecodable" is spec behavior).
-//
-// Each case is one JSON line and the expected outcome: accepted (decoded
-// to the given record) or rejected (null). Valid lines are built from the
-// floor.ts types; every reject case mutates exactly one field of a valid
-// line so the case pins that field's form.
-
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import {
@@ -30,7 +21,6 @@ const HASH_B = "22".repeat(32);
 const HASH_C = "33".repeat(32);
 const INTENT_ID = "0123456789abcdef";
 const UNSAFE_INTEGER_JSON = "9007199254740993";
-/** A sentinel token replaced in the JSON text, so a literal the JS number type cannot hold survives. */
 const UNSAFE_TOKEN = "__UNSAFE_INTEGER__";
 
 const head: ChainHeadFloor = { seq: 7, hashHex: HASH_A };
@@ -82,7 +72,6 @@ const intent: FloorIntent = {
   declaredHead: head,
 };
 
-/** One valid record per `r` kind (CRYPTO_SPEC §6.3's observation / ledger / snapshot records). */
 const VALID = {
   head: { r: "head", head },
   pull: { r: "pull", head, environmentId: "prod", environment },
@@ -113,7 +102,6 @@ const VALID = {
 
 type Path = readonly (string | number)[];
 
-/** Sets `value` at `path` in a deep copy of `base` (`undefined` deletes the key). */
 function withField(base: unknown, path: Path, value: unknown): unknown {
   const copy = structuredClone(base) as Record<string | number, unknown>;
   let target = copy;
@@ -132,7 +120,6 @@ function withField(base: unknown, path: Path, value: unknown): unknown {
   return copy;
 }
 
-/** Defines a JSON property named `__proto__` (an own key, as JSON.parse produces it). */
 function withProtoKey(record: Record<string, unknown>, value: unknown): Record<string, unknown> {
   const copy: Record<string, unknown> = { ...record };
   Object.defineProperty(copy, "__proto__", {
@@ -191,7 +178,6 @@ describe("decodeLogRecord — one valid line per r kind", () => {
     };
     const record = { r: "intent", intent: deletion };
     expect(decodeLogRecord(line(record))).toEqual(record);
-    // A deletion intent still binds the declared head (the slot it reconciles against)
     expect(
       decodeLogRecord(line(withField(record, ["intent", "declaredHead"], undefined))),
     ).toBeNull();
@@ -208,7 +194,6 @@ describe("decodeLogRecord — accept / reject table", () => {
   };
 
   it.each<[string, string, boolean]>([
-    // ---- record keys (§12-1's id form) ----
     [
       "variables key out of form (leading -)",
       at(VALID.pull, ["environment", "variables", "-bad"], activeVariable),
@@ -279,7 +264,6 @@ describe("decodeLogRecord — accept / reject table", () => {
       false,
     ],
 
-    // ---- integers: safe, sign, integrality ----
     ["head.seq a non-safe integer", at(VALID.head, ["head", "seq"], UNSAFE_TOKEN), false],
     ["head.seq negative", at(VALID.head, ["head", "seq"], -1), false],
     ["head.seq zero (positive required)", at(VALID.head, ["head", "seq"], 0), false],
@@ -328,7 +312,6 @@ describe("decodeLogRecord — accept / reject table", () => {
     ["snapshot folded a non-integer", at(VALID.snapshot, ["folded"], 1.5), false],
     ["snapshot folded a non-safe integer", at(VALID.snapshot, ["folded"], UNSAFE_TOKEN), false],
 
-    // ---- metaVersion 0 <-> metaSigHashHex "" pairing (environment floor) ----
     ["metaVersion 0 with an empty hash", at(VALID.pull, ["environment"], bottomEnvironment), true],
     ["metaVersion >0 with a 64-hex hash", at(VALID.pull, ["environment", "metaVersion"], 5), true],
     ["metaVersion 0 with a 64-hex hash", at(VALID.pull, ["environment", "metaVersion"], 0), false],
@@ -354,7 +337,6 @@ describe("decodeLogRecord — accept / reject table", () => {
     ],
     ["meta record metaSigHashHex empty", at(VALID.meta, ["metaSigHashHex"], ""), false],
 
-    // ---- hash / id string forms ----
     ["head.hashHex uppercase", at(VALID.head, ["head", "hashHex"], "AB".repeat(32)), false],
     ["head.hashHex 63 chars", at(VALID.head, ["head", "hashHex"], HASH_A.slice(1)), false],
     [
@@ -389,7 +371,6 @@ describe("decodeLogRecord — accept / reject table", () => {
     ["environment manifest null", at(VALID.pull, ["environment", "manifest"], null), false],
     ["snapshot chainHead missing", at(VALID.snapshot, ["state", "chainHead"], undefined), false],
 
-    // ---- the r discriminant ----
     ["r unknown", at(VALID.head, ["r"], "bogus"), false],
     ["r constructor", at(VALID.head, ["r"], "constructor"), false],
     ["r __proto__", at(VALID.head, ["r"], "__proto__"), false],
@@ -398,7 +379,6 @@ describe("decodeLogRecord — accept / reject table", () => {
     ["r a number", at(VALID.head, ["r"], 1), false],
     ["r of a different kind than the fields", at(VALID.head, ["r"], "manifest"), false],
 
-    // ---- arrays where objects belong / objects where arrays belong ----
     ["the line an array", line([VALID.head]), false],
     ["the line an empty array", "[]", false],
     ["the line null", "null", false],
@@ -424,7 +404,6 @@ describe("decodeLogRecord — accept / reject table", () => {
       false,
     ],
 
-    // ---- torn JSON ----
     ["a torn line (truncated)", line(VALID.pull).slice(0, -5), false],
     ["a torn line (unterminated object)", '{"r":"head"', false],
     ["an empty line", "", false],
@@ -473,9 +452,6 @@ describe("decodeLogRecord — extra keys are tolerated and dropped", () => {
   });
 });
 
-// The decoded types are derived from the Schema; these checks anchor them
-// to floor.ts's hand-written domain types (mutual assignability), so a
-// drift on either side fails `tsc`.
 describe("decoded types stay anchored to floor.ts", () => {
   type Of<R extends FloorLogRecord["r"]> = Extract<FloorLogRecord, { readonly r: R }>;
 

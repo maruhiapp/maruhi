@@ -1,50 +1,19 @@
-// Generation and comparison of identifiers and credential randomness
-// (Web-standard crypto only; no Bun-specific APIs).
-//
-// This file holds only ID / randomness encodings, not cryptographic
-// protocols. Cryptographic operations (hashes) are delegated to
-// WebCrypto (CLAUDE.md: no hand-rolled primitives).
-//
-// Since the Effect 4.1 migration, the generators are Effects that draw
-// from the `SecureRandom` / `Digest` services (@maruhi/core's
-// crypto-services seam), so tests can substitute deterministic sources
-// with `Layer.mock`. Output formats are unchanged: AUTH_SPEC §5 / §6
-// byte lengths, encodings and shapes are exactly as before.
-//
-// The one exception is `randomHexSync`: the audit Durable Object's
-// append API, Drizzle statement construction and the lease grant map
-// are synchronous by design (the DO storage API and statement building
-// cannot yield a service), so those call sites keep a plain synchronous
-// draw. It is the same WebCrypto draw the service performs.
-
 import { decodeOrgId, decodeUserId, ulid, type OrgId, type UserId } from "@maruhi/core";
 import { decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 import type { CryptoError } from "effect/crypto";
 import { Digest, Mac, SecureRandom } from "effect/crypto";
 
-// ULID is @maruhi/core's shared implementation (the same one used for the CLI's ledger id assignment)
 export { ulid } from "@maruhi/core";
 
-/**
- * A fresh internal user id (AUTH_SPEC §2 — a ULID). Generation is a trust
- * boundary of the UserId brand, so this is where a new one is minted.
- */
 export const newUserId = (nowMs: number): Effect.Effect<UserId, never, SecureRandom.SecureRandom> =>
   Effect.map(ulid(nowMs), (id) => decodeUserId(id));
 
-/**
- * A fresh organization id (AUTH_SPEC §9 — a ULID). Generation is a trust
- * boundary of the OrgId brand, so this is where a new one is minted.
- */
 export const newOrgId = (nowMs: number): Effect.Effect<OrgId, never, SecureRandom.SecureRandom> =>
   Effect.map(ulid(nowMs), (id) => decodeOrgId(id));
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-/**
- * Base62 representation of a 256-bit nonce (43 chars fixed, the AUTH_SPEC §6 token body).
- */
 export const randomBase62 = (): Effect.Effect<string, never, SecureRandom.SecureRandom> =>
   Effect.flatMap(SecureRandom.SecureRandom, (random) =>
     Effect.map(random.randomBytes(32), (bytes) => {
@@ -61,7 +30,6 @@ export const randomBase62 = (): Effect.Effect<string, never, SecureRandom.Secure
     }),
   );
 
-/** A random hex string (`byteLength` bytes). Used for session raw values and OAuth state. */
 export const randomHex = (
   byteLength: number,
 ): Effect.Effect<string, never, SecureRandom.SecureRandom> =>
@@ -69,15 +37,10 @@ export const randomHex = (
     Effect.map(random.randomBytes(byteLength), (bytes) => encodeHex(bytes)),
   );
 
-/**
- * The synchronous counterpart of `randomHex`, for the call sites that
- * cannot run an Effect (see the file header). Same draw, same encoding.
- */
 export function randomHexSync(byteLength: number): string {
   return encodeHex(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
-/** SHA-256 in hex (lowercase). The storage hash for sessions / tokens (AUTH_SPEC §5 / §6). */
 export const sha256Hex = (
   value: string,
 ): Effect.Effect<string, CryptoError.CryptoError, Digest.Digest> =>
@@ -85,21 +48,6 @@ export const sha256Hex = (
     digest.digestHex(Digest.sha256, new TextEncoder().encode(value)),
   );
 
-/**
- * Timing-safe comparison of two hex strings (AUTH_SPEC §6). Both sides
- * are decoded with @maruhi/crypto's strict decoder (lowercase hex only —
- * odd length, non-hex or uppercase input fails the decode) and the bytes
- * are compared with effect/crypto's `Mac.timingSafeEqual`. A malformed
- * side makes the comparison false: the helper never throws and never
- * falls back to a plain string comparison.
- *
- * Callers compare server-minted lowercase hex only: token hashes, MACs
- * and the OAuth state nonces (randomHex). The one prefixed state — the
- * CLI flow's, `cli.` + randomHex — is compared by its nonce at the call
- * site (handlers-auth-cli.ts), not through this helper. The compared
- * values are fixed-length, so the length reveal of a length mismatch
- * discloses nothing.
- */
 export function constantTimeEqual(a: string, b: string): boolean {
   const aBytes = decodeHex(a);
   const bBytes = decodeHex(b);

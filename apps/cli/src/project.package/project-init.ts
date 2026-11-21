@@ -1,15 +1,3 @@
-// Project creation = genesis init (AUTH_SPEC §11-3 / CRYPTO_SPEC
-// §6.4).
-//
-// - orgId is required (§11-3). No org-creation API exists; pick from
-//   the orgs `GET /auth/me` returns (the personal org auto-created at
-//   sign-up — §9-1). In solo use (one org), org is neither shown nor
-//   selected (concept simplification is a display-layer concern)
-// - Project ID = the genesis entry hash. The client can precompute
-//   the ID with the same calculation, so the server's response is
-//   collated against the precomputed value (the server is not
-//   trusted)
-
 import type { UserOrgSchema } from "@maruhi/api-schema";
 import { cryptoEffect, cryptoPromise, type ProjectId } from "@maruhi/core";
 import {
@@ -31,7 +19,6 @@ type UserOrg = typeof UserOrgSchema.Type;
 
 const GENESIS_PREV_HASH = "0".repeat(64);
 
-/** The pure function for org selection returns a tagged Result (no instanceof discrimination — uniformity of idiom). */
 type PickedOrg =
   | { readonly kind: "ok"; readonly org: UserOrg }
   | { readonly kind: "rejected"; readonly message: string };
@@ -48,9 +35,6 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
   }
   const [first] = orgs;
   if (first === undefined) {
-    // Normally impossible — a personal org is auto-created at
-    // sign-up (§9-1). If it happens, report it accurately as a
-    // server-side state anomaly
     return {
       kind: "rejected",
       message:
@@ -58,7 +42,6 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
     };
   }
   if (orgs.length === 1) {
-    // Only the personal org (solo use). The org concept is not shown (§9-1)
     return { kind: "ok", org: first };
   }
   return {
@@ -67,7 +50,6 @@ function pickOrg(orgs: readonly UserOrg[], flag: string | undefined): PickedOrg 
   };
 }
 
-/** `maruhi project init`: sign a genesis entry and initialize the project. */
 export const projectInitOp = Effect.fn("project-init.projectInitOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly session: CliSession;
@@ -101,7 +83,6 @@ export const projectInitOp = Effect.fn("project-init.projectInitOp")(function* (
   const signed = yield* cryptoEffect(() =>
     signChainEntry({ entry: unsigned, signingKey: input.masterKeys.sigKeyPair.privateKey }),
   ).pipe(Effect.mapError(() => cliError("Failed to sign the genesis entry")));
-  // The project ID precomputed client-side (the genesis hash — §6.4)
   const expectedProjectId = yield* cryptoPromise("computeChainEntryHash", () =>
     computeChainEntryHash(signed),
   ).pipe(Effect.mapError(() => cliError("Failed to compute the genesis hash (crypto error)")));
@@ -110,7 +91,6 @@ export const projectInitOp = Effect.fn("project-init.projectInitOp")(function* (
     .init({ payload: { orgId: org.orgId, entry: signed } })
     .pipe(Effect.mapError(toCliError));
 
-  // The server's issued value is not trusted: fail unless it exactly matches the precomputed value
   if (head.projectId !== expectedProjectId || head.headHashHex !== expectedProjectId) {
     return yield* Effect.fail(
       cliError(
@@ -121,9 +101,6 @@ export const projectInitOp = Effect.fn("project-init.projectInitOp")(function* (
 
   yield* io.log(`Created project ${head.projectId}`);
   yield* io.log(`To make it the default: \`maruhi config set defaultProject ${head.projectId}\``);
-  // schema import stays an independent command (not folded into
-  // init — design doc §1-3). Add just one guidance line to init's
-  // completion output
   yield* io.log(
     "To bootstrap a schema from an existing .env / .env.example: create an environment (`maruhi env create <id>`), then run `maruhi schema import <file>`",
   );

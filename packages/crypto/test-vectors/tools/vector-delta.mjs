@@ -1,40 +1,10 @@
-// Vector-delta review aid for packages/crypto (CI step 7d, pull requests).
-//
-// Compares packages/crypto between the merge-base and the PR head and
-// writes a Markdown report: how every test-vector entry moved (unchanged /
-// removed / added / changed, and for a changed one whether its expected
-// outcome changed), which domain-separation strings, chain ops and
-// SUPPORTED_* constants changed, and a conservative risk class R0–R3. The
-// classes and how to read the report are in ../README.md ("Reviewing a
-// crypto change").
-//
-// It is an aid for a human reviewer and never approves anything: the class
-// only says how much reading a change deserves, and every fact behind it is
-// printed so a wrong class is visible. Whenever a rule cannot tell, it picks
-// the higher class.
-//
-// Usage (in this directory):
-//   bun run delta -- --base <rev> [--head <rev>]
-// The report goes to stdout (CI appends it to $GITHUB_STEP_SUMMARY). Exit 0
-// unless the tool itself fails.
-
 import { execFileSync, spawnSync } from "node:child_process";
 
-// ---------------------------------------------------------------------------
-// Source canonicalization (TS / JS)
-//
-// R0 needs "only comments or formatting changed". Two independent checks
-// must both agree: the comment-free token text below, and the transpiled
-// runtime form (Bun.Transpiler, injected by the CLI). A lexer mistake here
-// can then only hide a type-level edit, never a runtime one.
-
 const IDENT_CHAR = /[\w$]/;
-// After one of these, a `/` starts a regular expression, not a division
 const REGEX_AFTER_CHAR = "(,=:[!&|?{};+-*%<>~^";
 const REGEX_AFTER_WORD =
   /\b(?:return|typeof|case|do|else|in|of|new|delete|void|throw|instanceof|yield|await)$/;
 
-/** Index just past the quoted string starting at `start`. */
 function skipQuoted(src, start) {
   const quote = src[start];
   let i = start + 1;
@@ -44,7 +14,6 @@ function skipQuoted(src, start) {
   return i + 1;
 }
 
-/** Index just past the template literal starting at `start` (handles `${…}` nesting). */
 function skipTemplate(src, start) {
   let i = start + 1;
   while (i < src.length) {
@@ -72,7 +41,6 @@ function skipTemplate(src, start) {
   return i;
 }
 
-/** Index just past the regular expression literal starting at `start`. */
 function skipRegex(src, start) {
   let i = start + 1;
   let inClass = false;
@@ -89,15 +57,10 @@ function skipRegex(src, start) {
   return i;
 }
 
-/**
- * Splits TS / JS source into tokens with comments and whitespace removed:
- * `str` (quoted string, raw), `tpl` (template literal, raw), `re` (regex
- * literal) and `code` (any other run of non-blank characters).
- */
 export function scanTokens(src) {
   const tokens = [];
   let code = "";
-  let last = ""; // the last significant text, for the regex-or-division call
+  let last = "";
   const flush = () => {
     if (code !== "") tokens.push({ t: "code", v: code });
     if (code !== "") last = code;
@@ -143,10 +106,6 @@ export function scanTokens(src) {
   return tokens;
 }
 
-/**
- * Comment- and formatting-free text of a source: tokens joined, with one
- * space kept only where two identifier characters would otherwise merge.
- */
 export function canonicalSource(src) {
   let out = "";
   for (const { v } of scanTokens(src)) {
@@ -156,41 +115,16 @@ export function canonicalSource(src) {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Facts extracted from packages/crypto/src
-
 const SUITE_LITERAL = /^maruhi\/v\d+$/;
-/** An `op:` / `op?:` / `inner_op:` declaration (the ChainOperation union). */
 const OP_DECLARATION = /(?:^|[^\w$])(?:inner_)?op\??:$/;
 const DOMAIN_LITERAL = /^maruhi\/v\d+\/[a-z0-9][a-z0-9/-]*$/;
-// WebCrypto algorithm names a primitive change would introduce
 const ALGORITHM_LITERAL =
   /^(?:AES-[A-Z]+|HKDF|PBKDF2|HMAC|ECDSA|ECDH|Ed25519|Ed448|X25519|X448|RSA[\w-]*|SHA-\d+)$/;
 
-/** `maruhi/v1/dek-wrap` → `<suite>/dek-wrap` (the suite is tracked separately). */
 function normalizeDomain(domain) {
   return domain.replace(/^maruhi\/v\d+\//, "<suite>/");
 }
 
-/**
- * Domain strings, suites, primitives, string `case` labels and SUPPORTED_*
- * constants in one source file. A template like
- * `${context.suite}/var-meta-sig-v${layout}` yields the pattern
- * `<suite>/var-meta-sig-v*`.
- *
- * A string `case` label is a member of a closed set the crypto code
- * dispatches on. The string switches are on the chain op (§6.1 payload
- * canonicalization, the approval dispatch of chain verification): their
- * labels are the chain ops, the domain separation of a chain entry (its
- * signed bytes begin with the bare suite, so no domain string shows it).
- * Any new label counts.
- *
- * The labels depend on how the dispatch is written (a constant, a default
- * branch or a table hides a label), so the `op` values the types declare
- * count too: a string after an `op:` / `inner_op:` property (the
- * `ChainOperation` union the canonicalization switches on — tsc requires a
- * new op there), together with the `| "…"` members that follow it.
- */
 export function sourceFacts(src) {
   const tokens = scanTokens(src);
   const canonical = canonicalSource(src);
@@ -198,7 +132,7 @@ export function sourceFacts(src) {
   const suites = new Set();
   const primitives = new Set();
   const caseLabels = new Set();
-  let opRun = false; // inside an `op:` declaration's union
+  let opRun = false;
   for (const [i, { t, v }] of tokens.entries()) {
     if (t === "str") {
       const text = v.slice(1, -1);
@@ -218,8 +152,6 @@ export function sourceFacts(src) {
       opRun = isOp;
       continue;
     }
-    // An `op:` declaration starts a run and a `|` continues it, so a union
-    // wrapped with a leading pipe (`op:\n  | "a"\n  | "b"`) is read too
     opRun = t === "code" && (v === "|" ? opRun : OP_DECLARATION.test(v));
     if (t === "tpl") {
       const m = /^`\$\{[^}]*\}\/([a-z0-9][a-z0-9/-]*)(\$\{)?/.exec(v);
@@ -230,8 +162,6 @@ export function sourceFacts(src) {
   for (const m of canonical.matchAll(/(?:\bfrom|\bimport\(?)(["'])([^"'.][^"']*)\1/g)) {
     primitives.add(`module ${m[2]}`);
   }
-  // Named and namespace bindings taken from external modules (hpke's suite
-  // constants are how a new KEM / KDF / AEAD would arrive)
   for (const m of canonical.matchAll(/\bimport(?: type)?\{([^}]*)\}from(["'])([^"'.][^"']*)\2/g)) {
     for (const part of m[1].split(",")) {
       const name = part
@@ -259,21 +189,6 @@ export function sourceFacts(src) {
   return { domains, suites, primitives, caseLabels, supported };
 }
 
-// ---------------------------------------------------------------------------
-// Vector entries
-//
-// Every object in an array of objects is one entry, named by `name`, `seq`
-// or `after_seq` (else by index). Whatever is left of a top-level key once
-// its entry arrays are taken out (keys, field orders, descriptions) is one
-// "fixture" entry named after the key.
-
-// Outcome keys, an explicit allow-list: the verdict and the expected
-// verifier state. Every other key is data — including expected bytes such
-// as `expected_hex` / `expected_*_hex` / `expected_line` and any expected_*
-// key added later — so an unlisted key is classified upward (a byte change
-// is R3 unless rebased; an outcome change is R2). `kind` is an outcome only
-// in a negative (its rejection class); in a positive it is data (e.g. the
-// wrap kind in master-key-wrap.json)
 const OUTCOME_KEYS = new Set([
   "must_fail",
   "expected_reason",
@@ -300,21 +215,6 @@ function entryKey(element, index) {
   return `#${index}`;
 }
 
-// Top-level keys whose value is a map of named fixture records: each member
-// is its own fixture entry (`file › map › key`), so adding a member reads as
-// added and editing one reads as that member's change, not as a change of
-// the whole map. An explicit list rather than structural detection: a
-// structural rule cannot tell a map of named records from one record whose
-// fields happen to be objects, and splitting such a record would turn a
-// byte change into an "added" part — a downward error. An unlisted map
-// keeps the coarse one-fixture-per-top-level-key identity, which errs
-// upward; a listed map's non-object members stay together as one entry
-// named after the key. Members are never rebase material (markRebased).
-//   extended_chains   chain-entries.json — derived chain name → chain doc
-//   keys              chain-entries.json — key owner → key record
-//   environment_deks  chain-entries.json — environment → per-epoch DEKs
-//   guardian_keypairs master-key-wrap.json — guardian → key pair
-//   extra_keys        env-manifest / metadata-signature / value-signature — signer → key
 const KEYED_FIXTURE_MAPS = new Set([
   "extended_chains",
   "keys",
@@ -323,7 +223,6 @@ const KEYED_FIXTURE_MAPS = new Set([
   "extra_keys",
 ]);
 
-/** All entries of one parsed vector file, keyed by a stable id. */
 export function collectEntries(file, json) {
   const entries = new Map();
   const addEntry = (arrayPath, key, value, fixture) => {
@@ -332,7 +231,6 @@ export function collectEntries(file, json) {
     const negative = !fixture && (value.must_fail === true || /negative/.test(arrayPath));
     entries.set(id, { id, file, arrayPath, value, fixture, negative });
   };
-  // Returns `node` with its entry arrays cut out (registering them)
   const take = (node, path) => {
     if (Array.isArray(node) && node.length > 0 && node.every(isPlainObject)) {
       node.forEach((element, index) => addEntry(path, entryKey(element, index), element, false));
@@ -353,10 +251,6 @@ export function collectEntries(file, json) {
       const rest = take(value, key);
       if (rest === undefined) continue;
       if (KEYED_FIXTURE_MAPS.has(key) && isPlainObject(rest)) {
-        // Always split a listed map, so its members keep their ids whatever
-        // its other members are: a split that flipped on one scalar sibling
-        // would remove every member at once and hand their hex to
-        // markRebased. The non-object members stay together as one entry
         const scalars = {};
         for (const [member, record] of Object.entries(rest)) {
           if (isPlainObject(record)) addEntry(key, member, record, true);
@@ -373,7 +267,6 @@ export function collectEntries(file, json) {
   return entries;
 }
 
-/** Flattens a value to leaf path → primitive (paths use `.` and `[i]`). */
 function leaves(value, path = "", out = new Map()) {
   if (Array.isArray(value)) value.forEach((v, i) => leaves(v, `${path}[${i}]`, out));
   else if (isPlainObject(value)) {
@@ -382,14 +275,6 @@ function leaves(value, path = "", out = new Map()) {
   return out;
 }
 
-/**
- * The kind of one leaf: `outcome` (the verdict a check must reach), `prose`
- * (explanatory text) or `data` (everything else — bytes and inputs).
- * Prose is a note / description key, or sentence-like text (six or more
- * words) outside expected_* keys. Treating an input sentence as prose hides
- * nothing: the regeneration check pins every input to its output bytes, so
- * a meaningful input edit also shows as a `data` change.
- */
 export function leafKind(entry, leafPath, value) {
   const keys = `${entry.arrayPath}.${leafPath}`
     .split(/[.[\]]+/)
@@ -404,7 +289,6 @@ export function leafKind(entry, leafPath, value) {
   return "data";
 }
 
-/** Which kinds of leaves differ between two versions of an entry. */
 function changedKinds(entry, before, after) {
   const a = leaves(before);
   const b = leaves(after);
@@ -417,16 +301,6 @@ function changedKinds(entry, before, after) {
   return kinds;
 }
 
-/**
- * Parses `hex` as a §2.1 length-prefixed encoding whose first field is a
- * domain string or a bare suite; returns { domain, fields } or null.
- *
- * A bare suite leads the encodings whose domain separation is not a leading
- * domain string: chain entries (§6.1 — the op is their fourth field) and
- * the variable AAD (§4). Their shape is the suite and the field count only;
- * a chain op and its payload order are surface through the chain-op and
- * field-order facts.
- */
 export function lpShape(hex) {
   if (!HEX.test(hex) || hex.length < 16) return null;
   const bytes = Uint8Array.from(hex.match(/../g), (h) => Number.parseInt(h, 16));
@@ -454,15 +328,6 @@ function emptyFacts() {
   return Object.fromEntries(FACT_KEYS.map((key) => [key, new Set()]));
 }
 
-/**
- * Domains, suites, encoding shapes (leading domain or suite + field count
- * of every length-prefixed hex value), field orders and chain ops seen in
- * a set of entries, in two layers: `accepted` from non-negative entries
- * (positives and fixtures) and `all` including negatives. Negatives are malformed or foreign on
- * purpose, so they never vouch for a surface: every comparison that could
- * lower a class (what base already knew, what head retired) reads
- * `accepted`; only "what head now carries" reads `all`, which errs upward.
- */
 function vectorFacts(entries) {
   const accepted = emptyFacts();
   const all = emptyFacts();
@@ -478,12 +343,8 @@ function vectorFacts(entries) {
   return { accepted, all };
 }
 
-// Keys whose value is the op of a chain entry being signed (§6.1 `op`, a
-// proposal's `inner_op` — §6.2). The op is a chain entry's domain
-// separation, but its signed bytes begin with the bare suite
 const OP_KEY = /(?:^|\.)(?:inner_)?op$/;
 
-/** Domains, suites, §2.1 shapes and chain ops (negatives included) one entry carries. */
 function entryFacts(entry) {
   const domains = new Set();
   const suites = new Set();
@@ -499,7 +360,6 @@ function entryFacts(entry) {
     }
     const shape = lpShape(value);
     if (shape !== null) {
-      // A suite-led shape is labeled `<suite>`, which is no domain string
       const label = SUITE_LITERAL.test(shape.domain) ? "<suite>" : normalizeDomain(shape.domain);
       if (label !== "<suite>") domains.add(label);
       suites.add(shape.domain.split("/").slice(0, 2).join("/"));
@@ -511,12 +371,6 @@ function entryFacts(entry) {
 
 const shapeDomain = (shape) => shape.slice(0, shape.lastIndexOf(" ×"));
 
-/**
- * The accepted surface that left head, from non-negative entries only:
- * shapes gone, domains whose every shape is gone (a retired layout keeps
- * negatives that use its domain, so domain presence alone would not show
- * it), and suites no longer used by any non-negative entry nor by src.
- */
 function retiredSurface(baseFacts, headFacts, headSrcSuites) {
   const base = baseFacts.accepted;
   const head = headFacts.accepted;
@@ -529,10 +383,6 @@ function retiredSurface(baseFacts, headFacts, headSrcSuites) {
   };
 }
 
-/**
- * The retired surface a removed negative exercised (empty = its surface is
- * still in head, so removing it may widen acceptance).
- */
 function retiredBy(entry, retired) {
   const facts = entryFacts(entry);
   return [
@@ -542,16 +392,6 @@ function retiredBy(entry, retired) {
   ];
 }
 
-/**
- * Field orders (lists of field names) describe encodings: a string list
- * under a `*_order` key, directly or inside a map there. A map's keys name
- * the structure each list orders and are part of its identity — in
- * chain-entries.json `payload_field_order.<op>` is the chain op table the
- * generator builds every payload from (verify_reference.mjs checks it
- * against its own copy), so a new op is a new field order even when its
- * list equals another op's. The `*_order` key itself is not part of it:
- * renaming a declaration adds no encoding.
- */
 function collectFieldOrders(node, out, member = null) {
   if (Array.isArray(node)) {
     if (member !== null && node.every((x) => typeof x === "string")) {
@@ -567,7 +407,6 @@ function collectFieldOrders(node, out, member = null) {
   }
 }
 
-/** Non-hex strings and long (≥ 16-byte) hex values of an entry (rebase detection). */
 function referenceValues(value) {
   const out = new Set();
   for (const v of leaves(value).values()) {
@@ -576,14 +415,8 @@ function referenceValues(value) {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// The analysis
-
-// Keys through which one entry names another (`base: "var-v2-create-typed"`).
-// Name references are read only here, never from free text
 const REFERENCE_KEYS = new Set(["base", "prev_base", "predecessor"]);
 
-/** Entry names an entry references through REFERENCE_KEYS. */
 function referencedNames(value) {
   const out = new Set();
   for (const [path, v] of leaves(value)) {
@@ -600,11 +433,8 @@ function setDiff(a, b) {
   return [...a].filter((x) => !b.has(x)).toSorted();
 }
 
-/** Whether `domain` (possibly a `*` pattern) is covered by `known`. */
 function domainKnown(domain, known) {
   if (known.has(domain)) return true;
-  // The `*` of `name-v${layout}` stands for a layout number only: it covers
-  // `name-v3` (or another pattern `name-v*`), never `name-vault` / `-v2-hybrid`
   return [...known].some(
     (k) =>
       k.endsWith("*") &&
@@ -619,13 +449,10 @@ function mergeFacts(perFile, pick) {
   return out;
 }
 
-// Python has no runtime form to compare, so only whitespace is ignored there
-// (a comment edit in the generator counts as a logic change)
 function normalizePython(text) {
   return text.replace(/[ \t]+$/gm, "").replace(/\n+/g, "\n");
 }
 
-/** Sorts the changed paths into docs / cosmetic code / logic code / config / vectors. */
 function classifyFiles(base, head, runtimeForm) {
   const paths = [...new Set([...base.keys(), ...head.keys()])].toSorted();
   const files = { docs: [], cosmetic: [], code: [], config: [], vectors: [] };
@@ -639,7 +466,6 @@ function classifyFiles(base, head, runtimeForm) {
     else if (path.endsWith(".py")) {
       (normalizePython(before) === normalizePython(after) ? files.cosmetic : files.code).push(path);
     } else {
-      // Both checks must agree (see "Source canonicalization")
       const runtime = runtimeForm(path, before);
       const cosmetic =
         canonicalSource(before) === canonicalSource(after) &&
@@ -657,7 +483,6 @@ function runtimeDependencies(packageJson) {
     : JSON.stringify(JSON.parse(packageJson).dependencies ?? {});
 }
 
-/** Every vector entry of a snapshot, keyed by id. */
 function entriesOf(files) {
   const all = new Map();
   for (const [path, text] of files) {
@@ -670,25 +495,12 @@ function entriesOf(files) {
 
 const lastSegment = (id) => id.split(" › ").at(-1);
 
-/**
- * Marks each changed entry with the removed material it referenced.
- * A changed entry is "rebased" when its old version referenced material only
- * removed (or likewise changed) non-negative entries had: a removed
- * positive of the same file named through a reference key, or a long hex
- * value of a removed positive / top-level fixture that no unchanged entry
- * carries (a removed keyed-map member never counts: a rename would explain
- * a re-key). Such an entry had to move with the deletion. It cannot hide an encoding
- * change on its own: that would also move the unchanged vectors of the same
- * encoding. Removed negatives never explain a byte change.
- */
 function markRebased(baseEntries, headEntries, removed, changedEntries) {
-  const removedNames = new Set(); // "file|name"
+  const removedNames = new Set();
   const removedValues = new Set();
   for (const id of removed) {
     const entry = baseEntries.get(id);
     if (entry.negative) continue;
-    // A keyed-map member is not rebase material: a rename (remove X, add
-    // X-2) would otherwise explain a re-key of every vector it signs
     if (entry.fixture && entry.arrayPath !== "") continue;
     if (!entry.fixture) removedNames.add(`${entry.file}|${lastSegment(id)}`);
     for (const v of referenceValues(entry.value)) if (HEX.test(v)) removedValues.add(v);
@@ -713,13 +525,6 @@ function markRebased(baseEntries, headEntries, removed, changedEntries) {
   }
 }
 
-/**
- * A negative built from retired material also exercised that surface even
- * when its own bytes do not show it — e.g. a v2 signature replayed under the
- * v1 domain. It counts when it references (by name through a reference key,
- * or by a long hex value no head entry carries) a removed positive that
- * itself exercised retired surface.
- */
 function markDerivedFromRetired(removedVectors, removedNegatives, retired, headEntries) {
   const headValues = new Set();
   for (const entry of headEntries.values()) {
@@ -741,7 +546,6 @@ function markDerivedFromRetired(removedVectors, removedNegatives, retired, headE
   }
 }
 
-/** Entry-level delta of the vector files. */
 function vectorDelta(base, head, headSrcSuites) {
   const baseEntries = entriesOf(base);
   const headEntries = entriesOf(head);
@@ -763,9 +567,6 @@ function vectorDelta(base, head, headSrcSuites) {
   const data = changed.filter((c) => c.kinds.has("data"));
   const baseFacts = vectorFacts(baseEntries);
   const headFacts = vectorFacts(headEntries);
-  // Removing an acceptance pin (a positive) can only narrow; removing a
-  // rejection pin (a negative) can widen, so a removed negative counts as
-  // narrowing only together with the surface it exercised
   const retired = retiredSurface(baseFacts, headFacts, headSrcSuites);
   const removedVectors = removed.map((id) => baseEntries.get(id)).filter((e) => !e.fixture);
   const removedNegatives = removedVectors
@@ -806,7 +607,6 @@ function showSupported(v) {
   return v.parsed ? `[${v.values.join(", ")}]` : v.raw;
 }
 
-/** SUPPORTED_* constants whose value changed, and whether each only shrank. */
 function supportedDelta(baseSrc, headSrc) {
   const before = supportedOf(baseSrc);
   const after = supportedOf(headSrc);
@@ -822,13 +622,6 @@ function supportedDelta(baseSrc, headSrc) {
   return out;
 }
 
-/**
- * What head adds to one kind of surface, compared like with like: an item
- * is new when it newly appears as accepted surface (src or a non-negative
- * entry; a base negative never vouches for it) or newly appears anywhere
- * (negatives included). Both halves err upward; a negative that merely
- * survives unchanged adds nothing.
- */
 function grown(srcBase, srcHead, base, head, known = (x, set) => set.has(x)) {
   const acceptedBase = new Set([...srcBase, ...base.accepted]);
   const allBase = new Set([...srcBase, ...base.all]);
@@ -838,12 +631,10 @@ function grown(srcBase, srcHead, base, head, known = (x, set) => set.has(x)) {
   return [...out].toSorted();
 }
 
-/** One kind of fact from both layers, for grown(). */
 function layers(facts, key) {
   return { accepted: facts.accepted[key], all: facts.all[key] };
 }
 
-/** Domain, suite, encoding, primitive and SUPPORTED_* delta of src + the vectors. */
 function surfaceDelta(baseSrc, headSrc, vectors) {
   const srcBase = mergeFacts(baseSrc, (f) => f.domains);
   const srcHead = mergeFacts(headSrc, (f) => f.domains);
@@ -891,7 +682,6 @@ function surfaceDelta(baseSrc, headSrc, vectors) {
   };
 }
 
-/** R3 reasons: the encoding surface grows. */
 function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
   const { domains, shapes, fieldOrders, suites, primitives, ops } = surface;
   const out = [];
@@ -914,23 +704,6 @@ function surfaceGrowth(vectors, surface, runtimeDependencyChange) {
   return out;
 }
 
-/**
- * The risk class and its reasons (highest class wins):
- * R3 — the encoding surface grows: a new domain string, suite, signed-bytes
- *      shape (domain- or suite-led), field order (a chain op's payload order
- *      included), chain op (a src string case label or `op:` declaration,
- *      or a vector `op` / `inner_op`) or primitive, a runtime dependency
- *      change, or a surviving vector whose bytes changed without being
- *      rebased.
- * R2 — the surface is kept but behavior moves: a surviving vector's expected
- *      outcome changed, a SUPPORTED_* set did anything but shrink, a
- *      negative was removed while the surface it exercised remains, or code /
- *      config / vectors changed without any narrowing.
- * R1 — a narrowing (positives removed, negatives removed with their retired
- *      surface, or a supported set shrunk) and nothing above;
- *      implementation changes that carry it out are admitted.
- * R0 — nothing but docs, prose and comment / formatting edits.
- */
 function classify(files, vectors, surface, runtimeDependencyChange) {
   const reasons = { R3: surfaceGrowth(vectors, surface, runtimeDependencyChange), R2: [], R1: [] };
   const { supported } = surface;
@@ -974,12 +747,6 @@ function classify(files, vectors, surface, runtimeDependencyChange) {
   return { risk, reasons };
 }
 
-/**
- * Compares two snapshots of packages/crypto.
- * @param base, head  Map of path (relative to packages/crypto) → file text
- * @param runtimeForm (path, text) → transpiled text, or undefined when the
- *   file cannot be transpiled; omitted = no code edit ever counts as cosmetic
- */
 export function analyze(base, head, runtimeForm = () => undefined) {
   const files = classifyFiles(base, head, runtimeForm);
   const runtimeDependencyChange =
@@ -1001,9 +768,6 @@ export function analyze(base, head, runtimeForm = () => undefined) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Report
-
 const CLASS_MEANING = {
   R0: "comments / docs / prose only",
   R1: "deletion or narrowing — existing encodings untouched",
@@ -1012,7 +776,6 @@ const CLASS_MEANING = {
 };
 const LIST_CAP = 200;
 
-/** A bullet list, capped so the job summary stays small. */
 function list(items, render = (x) => `\`${x}\``) {
   if (items.length === 0) return "_none_\n";
   const shown = items.slice(0, LIST_CAP).map((x) => `- ${render(x)}`);
@@ -1020,7 +783,6 @@ function list(items, render = (x) => `\`${x}\``) {
   return `${shown.join("\n")}\n`;
 }
 
-/** Inline code spans joined by commas, or _none_. */
 function inline(items) {
   return items.length === 0 ? "_none_" : items.map((x) => `\`${x}\``).join(", ");
 }
@@ -1091,7 +853,6 @@ function surfaceSection(result) {
   ];
 }
 
-/** Renders an analysis as GitHub-flavored Markdown. */
 export function renderReport(result, { baseLabel, headLabel, specChanged }) {
   const why = ["R3", "R2", "R1"].flatMap((r) => result.reasons[r].map((x) => `${r}: ${x}`));
   const { files } = result;
@@ -1122,13 +883,8 @@ export function renderReport(result, { baseLabel, headLabel, specChanged }) {
   return `${out.join("\n")}\n`;
 }
 
-// ---------------------------------------------------------------------------
-// CLI (git I/O)
-
 const PACKAGE = "packages/crypto";
 
-// Every git call runs at the repository root (ls-tree paths are relative to
-// the working directory otherwise). Resolved on first use, not on import
 let repoRoot;
 function root() {
   repoRoot ??= execFileSync("git", ["rev-parse", "--show-toplevel"], {
@@ -1142,7 +898,6 @@ function git(args) {
   return execFileSync("git", args, { cwd: root(), encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
-/** packages/crypto at `rev` as path → text (node_modules and lockfiles skipped). */
 function readSnapshot(rev) {
   const out = new Map();
   const names = git(["ls-tree", "-r", "-z", "--name-only", rev, "--", PACKAGE]).split("\0");
@@ -1171,13 +926,10 @@ function main(argv) {
     try {
       return transpiler.transformSync(text);
     } catch {
-      // Not transpilable means "cannot show the runtime is unchanged": the
-      // file then counts as a logic change (the conservative side)
       return undefined;
     }
   };
   const result = analyze(readSnapshot(mergeBase), readSnapshot(headRev), runtimeForm);
-  // `git diff --quiet` answers through its exit status: 0 same, 1 changed
   const spec = spawnSync(
     "git",
     ["diff", "--quiet", mergeBase, headRev, "--", "docs/CRYPTO_SPEC.md"],

@@ -1,22 +1,3 @@
-// Checks for CRYPTO_SPEC §6.6 (head attestation).
-// Ed25519 is the RFC 8032 deterministic signature, so the sign direction is
-// also verified to match the vector exactly.
-// The verification-rule family (kind = "authorization") pins that "the
-// signature is valid, but the §6.6 / §6.3-2 history verification rejects it
-// with expected_reason", via verifyDistributedHeadAttestation against a
-// history index built by verifyChainWithHistory.
-//
-// Pinning points unique to attestations (the difference from value / meta):
-// - removed-attester-in-tenure is **positive** (a past attestation inside the
-//   removed attester's membership interval passes verification), but the
-//   attester is not a current member — this pins that the distribution /
-//   comparison selection gate (§6.6 (1), first half) is the implementation
-//   test's responsibility
-// - The minimum required role is reader (reader-attestation is positive)
-// - chain-head-mismatch is not "reject and discard" but the entry to the
-//   hard evidence of comparison (a) (handling it is the CLI implementation
-//   test's domain — here we pin only the reason code)
-
 import type { ChainHistoryIndex, HeadAttestationContext } from "../../src/index.ts";
 import {
   buildHeadAttestationSignedBytes,
@@ -43,7 +24,6 @@ interface VectorContext {
 
 interface AttestationVector {
   readonly name: string;
-  /** The chain to compare against (unspecified = canonical. device-ops = device key derivation — 2026-09-19 DK). */
   readonly chain?: string;
   readonly context: VectorContext;
   readonly attester_key_fingerprint_hex: string;
@@ -77,7 +57,6 @@ function contextOf(v: VectorContext): HeadAttestationContext {
 
 const positives: readonly AttestationVector[] = vectors.vectors;
 
-/** Chains to compare against (name → verified history index). An unspecified `chain` in a vector means canonical. */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
 function historyFor(
@@ -87,7 +66,6 @@ function historyFor(
   return histories[chain ?? "canonical"];
 }
 
-/** The two checks of the sign direction (deterministic re-signing) and the low-level verify direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -95,7 +73,6 @@ async function signAndVerifyChecks(
   signatureHex: string,
   attesterKeyFingerprintHex: string,
 ): Promise<void> {
-  // Sign with the seed of the attester's device (user_id, FP) (2026-09-19 DK — the signer is per device)
   const signer = await importVectorSigner(context.attesterUserId, attesterKeyFingerprintHex);
   if (signer === null) {
     c.push(
@@ -143,7 +120,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.attester_key_fingerprint_hex,
     );
 
-    // History-based compound verification (§6.6): removed-attester-in-tenure is also positive
     const distributed = await verifyDistributedHeadAttestation({
       history,
       context,
@@ -158,11 +134,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
   }
 }
 
-/**
- * Pins the material of the distribution-target selection gate (§6.6 (1), first
- * half = the current-member check): the attester of removed-attester-in-tenure
- * passes verification but is not a current member
- */
 function distributionGateChecks(c: Checks, canonical: ChainHistoryIndex): void {
   const removed = positives.find((vector) => vector.name === "removed-attester-in-tenure");
   const basic = positives.find((vector) => vector.name === "basic");
@@ -175,7 +146,6 @@ function distributionGateChecks(c: Checks, canonical: ChainHistoryIndex): void {
   );
 }
 
-/** Verification-rule negative: the signature is valid, but the history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: AttestationNegative,
@@ -205,7 +175,6 @@ async function ruleNegativeCheck(
   );
 }
 
-/** Tamper / transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(c: Checks, negative: AttestationNegative): Promise<void> {
   const context = contextOf(negative.context);
   const bytesMatch =
@@ -239,7 +208,6 @@ async function negativeChecks(c: Checks, histories: Histories): Promise<void> {
       await tamperNegativeCheck(c, negative);
     }
   }
-  // Pins the kind vocabulary (introducing a third value would slip past both sieves)
   c.push(
     "head-attestation negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),

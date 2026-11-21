@@ -1,10 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) —
-// acceptance verification of meta statements (the §12-5 meta rules =
-// CRYPTO_SPEC §4.2).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-// The shared fixture and helpers live in support/data-scenario.ts.
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
@@ -55,7 +48,6 @@ import { queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** Side-effect-freeness on rejection: statement rows, the variable-name cache, and audits do not change. */
 async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]): Promise<void> {
   const rows = await queryProjectDo(
     projectId,
@@ -64,11 +56,6 @@ async function expectNoMetaSideEffects(expectedMetaVersions: readonly number[]):
     VAR,
   );
   expect(rows.map((row) => row["meta_version"])).toEqual([...expectedMetaVersions]);
-  // The invariant against the count of accepted meta ops (the rename
-  // path branches into var.renamed / var.schema_reissued on whether the
-  // name changed — AUDIT_SPEC §3.3. Count both so the invariant does
-  // not silently break if a name-unchanged acceptance case is added
-  // later)
   const renamedAudits = await queryProjectDo(
     projectId,
     "SELECT COUNT(*) AS n FROM audit_events WHERE event IN ('var.renamed', 'var.schema_reissued', 'var.deleted')",
@@ -80,13 +67,11 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
   it("accepts the create → rename → delete statement chain and keeps distributing the tombstone", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Snapshot the creation statement (metaVersion 1) before the rename overwrites it
     const created = varStatements.get(VAR);
     if (created === undefined) throw new Error("missing recorded statement");
     const renamed = await renameVariableRequest(VAR, "DB_URL", MEMBER);
     expect(renamed.status).toBe(204);
 
-    // A pull after the rename distributes the metaVersion-2 statement + author
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     const body = (await pull.json()) as {
       variables: {
@@ -108,9 +93,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     });
     expect(body.deletedVariables).toEqual([]);
 
-    // Deletion: tombstone + all versions deleted. The deleted
-    // statement (name keeps the just-prior active name) keeps being
-    // stored and distributed (§12-5)
     const removed = await deleteVariableRequest(VAR, MEMBER);
     expect(removed.status).toBe(204);
     const afterDelete = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
@@ -137,8 +119,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       }),
     ]);
 
-    // Statement rows (the §12-5 stored rows): per metaVersion they
-    // keep the author, declared head, prev, and server-recomputed hash
     const rows = await queryProjectDo(
       projectId,
       `SELECT meta_version, name, status, prev_meta_sig_hash_hex, signed_bytes_hash_hex, author_user_id, author_key_fingerprint
@@ -162,9 +142,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const created = varStatements.get(VAR);
     if (created === undefined) throw new Error("missing recorded statement");
-    // Attesting metaVersion 3 (latest is 1) → 409 currentMetaVersion
-    // 1. The winner's signed_bytes hash is not carried (the §12-5 409
-    // discipline)
     const stale = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -191,11 +168,9 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
 
   it("rejects non-NFC names with 422 NameNotNfc on every statement path (§12-1)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // An NFD (combining-character) name — the server only inspects, never normalizes (compatible with byte-exact signatures)
     const nfdName = "CAFE\u0301_URL";
     expect(nfdName.normalize("NFC")).not.toBe(nfdName);
 
-    // Variable creation
     const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, nfdName),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -207,7 +182,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     });
     await expectNoMetaSideEffects([]);
 
-    // Variable rename
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const renamed = await requestJson(
       "PATCH",
@@ -226,7 +200,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     expect(renamed.status).toBe(422);
     await expectNoMetaSideEffects([1]);
 
-    // Composite environment creation (bundled statement) — the chain entry is not appended either (atomicity)
     const headBefore = fixture.head;
     const response = await createEnvironmentWith(
       fixture,
@@ -256,7 +229,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     );
     expect(response.status).toBe(422);
     expect(((await response.json()) as { field: string }).field).toBe("name");
-    // The variable was not deleted
     const pull = await requestJson("GET", `/environments/${ENV}/pull`, token(READER));
     expect(((await pull.json()) as { variables: unknown[] }).variables.length).toBe(1);
     await expectNoMetaSideEffects([1]);
@@ -265,9 +237,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
   it("rejects a statement signed by someone other than the caller (422 signature-invalid)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // MEMBER carries in a rename signed by OWNER → the verification
-    // key is the calling principal's (MEMBER's) acceptance-time chain
-    // key, so it fails (refusing to carry someone else's signature)
     const ownerSigned = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -292,11 +261,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     if (created === undefined) throw new Error("missing recorded statement");
     const prevHash = await metaSignedBytesHashOf(projectId, created.statement, MEMBER);
 
-    // (a) Declared head = genesis (seq 1). Since MEMBER's add_member
-    // is seq 2, they were not a member at that head →
-    // chain-head-state-mismatch. Meta does not check the environment's
-    // existence (the §12-4 asymmetry), so the rejection reason reduces
-    // to membership only
     const beforeMembership = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -319,7 +283,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       "chain-head-state-mismatch",
     );
 
-    // (b) An existent seq × mismatched hash → chain-head-unknown
     const unknownHead = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -340,7 +303,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     expect(mismatch.status).toBe(422);
     expect(((await mismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
 
-    // (c) A prev mismatch (signature valid) → chain-head-state-mismatch
     const wrongPrev = await signMetaStatementAs(MEMBER, projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
@@ -392,12 +354,8 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     };
     const pulled = body.variables[0];
     if (pulled === undefined) throw new Error("missing pulled variable");
-    // The author info is distributed as of acceptance time (not re-derived from the current member set)
     expect(pulled.statement.authorUserId).toBe(MEMBER);
 
-    // Client-side verification (§6.3): even on the full chain after
-    // removal, the declared head lies within the membership interval so
-    // it verifies under the key of that time
     const chain = await requestJson("GET", "/chain", token(READER));
     const chainBody = (await chain.json()) as { entries: ChainEntry[] };
     const verified = await verifyChainWithHistory(chainBody.entries);
@@ -432,8 +390,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     const body = (await list.json()) as {
       environments: { environmentId: string; statement: { status: string } }[];
     };
-    // The deletion is on the chain (the client derives it there); no
-    // statement of the deleted environment remains to be listed
     expect(body.environments.map((e) => e.environmentId)).toEqual(["env-app-0002"]);
     expect(body.environments.every((e) => e.statement.status === "active")).toBe(true);
     for (const path of [`/environments/${ENV}/pull`, `/environments/${ENV}/pull/metadata`]) {
@@ -442,7 +398,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
   });
 
   it("requires the composite statement to declare the pre-append head (§12-4)", async () => {
-    // Create one environment first to advance the head and produce a "stale existent head"
     await createEnvironmentOk(fixture, ENV, "App");
     const staleHead = { seq: fixture.head.seq - 1, hashHex: await hashOf(fixture.head.seq - 1) };
     const deks = await wrapsFor("env-app-0002", ALL_MEMBERS);
@@ -462,7 +417,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     });
     expect(response.status).toBe(422);
     expect(((await response.json()) as { field: string }).field).toBe("statementChainHead");
-    // Atomicity: no trace is left on the chain or the environment row
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore.seq);
   });
@@ -474,14 +428,10 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       name: "App",
       deks,
       dekCommitmentHex: "ab".repeat(32),
-      parentHeadHashHex: projectId, // the genesis hash = a stale head
+      parentHeadHashHex: projectId,
     });
-    // The CAS drops it first (the statement's declared head is stale too, but the 409 prompts a retry)
     expect(stale.status).toBe(409);
     const headBefore = { ...fixture.head };
-    // The retry re-signs both the entry (changed prev) and the
-    // statement (changed declared head) (the fixture helper rebuilds
-    // both — §12-4)
     const retried = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
@@ -489,7 +439,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       dekCommitmentHex: "ab".repeat(32),
     });
     expect(retried.status).toBe(200);
-    // The stored statement's declared head is the pre-append current head (= re-signed)
     const rows = await queryProjectDo(
       projectId,
       "SELECT chain_head_seq, chain_head_hash_hex FROM environment_meta_statements WHERE environment_id = ?",
@@ -504,11 +453,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
   it("caps meta versions per variable (422 meta-versions — §12-8 applied per the provisional ruling)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Since 1,000 real renames are unrealistic, raise
-    // latest_meta_version directly and seed a statement row just below
-    // the cap (the predecessor the prev check needs) (the seeded state
-    // also preserves the storage invariant that a latest_meta_version
-    // row always exists — the premise of findVariable's status JOIN)
     await queryProjectDo(
       projectId,
       "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
@@ -550,20 +494,12 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
   });
 
   it("accepts the delete statement even at the meta version cap (deleted is outside the cap)", async () => {
-    // If the cap also blocked deletions, a resource that hit the cap
-    // via rename spam would become permanently undeletable under any
-    // role. A tombstone is the chain's terminus and adds at most one
-    // row, so it is outside the cap
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "active")).toBe(true);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE - 1, "active")).toBe(false);
     expect(metaVersionsExceeded(MAX_VERSIONS_PER_VARIABLE, "deleted")).toBe(false);
 
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Since 1,000 real renames are unrealistic, raise latest and the
-    // latest statement row's meta_version directly to seed the
-    // cap-reached state (prev reuses the stored server-recomputed
-    // hash)
     await queryProjectDo(
       projectId,
       "UPDATE variables SET latest_meta_version = ? WHERE environment_id = ? AND variable_id = ?",
@@ -592,7 +528,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
-      // A deleted's name keeps the just-prior active name (§4.2)
       name: "DATABASE_URL",
       status: "deleted" as const,
       metaVersion: MAX_VERSIONS_PER_VARIABLE + 1,
@@ -600,9 +535,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
     });
-    // Even at the cap, the bundled manifest (tombstone-including
-    // digest) is required as usual (the manifest itself is outside the
-    // row-count cap — §12-8: retention is the latest copy only)
     const { manifest } = await manifestForStatement(deleteStatement, MEMBER);
     const removed = await requestJson(
       "DELETE",
@@ -611,7 +543,6 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       { statement: deleteStatement, manifest },
     );
     expect(removed.status).toBe(204);
-    // The tombstone statement keeps being stored and distributed (§12-5)
     const tombstones = await queryProjectDo(
       projectId,
       "SELECT status, meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? AND status = 'deleted'",

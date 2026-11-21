@@ -1,9 +1,3 @@
-// Tests for the SigV4 signer (sigv4.ts — PF6): pinned to the worked example
-// of AWS's "Create a signed AWS API request" (IAM ListUsers, the example
-// credentials AKIDEXAMPLE / wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY,
-// 2015-08-30T12:36:00Z): the canonical request hash, the derived signing
-// key, and the signature are the documented values.
-
 import { describe, expect, it } from "vite-plus/test";
 
 import { amzDate, signingKey, signV4 } from "../src/sigv4.ts";

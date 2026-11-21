@@ -1,25 +1,3 @@
-// `maruhi approval approve <id>` (CRYPTO_SPEC §6.2 / §7 — PF1; design
-// record es-design.md §12 K6-B / N).
-//
-// Appends an approve and learns the result from the re-synced verified chain
-// (the server response does not carry whether it applied — K5-S (1)):
-// (i) the proposal stays pending = the vote was recorded; (ii) it leaves
-// pending and the completion seq in core's `indexProposals` equals my approve
-// seq = I completed it = **fulfiller** (approval item 22 / CRYPTO_SPEC §7).
-// Fulfilment calls, per inner op kind, the same functions as the post-stage
-// of a direct append: remove / demotion / narrowing = sweep (rotation
-// obligation), add_member / scope widening = member-directed backfill,
-// grant_server = server-directed backfill, revoke_server = sweep of all
-// environments. set_approval_policy = none. An approve that does not
-// complete fulfils nothing.
-//
-// Pre-flight checks (K5-S / K5-L): foretell duplicate-approval (my
-// (user_id, current key FP) is in S), approval-not-required (excluded by a
-// policy change), proposal-expired (my clock). A proposal targeting the
-// approver themself (own remove / demotion below member) is refused because
-// completing it removes the fulfiller; the user is guided to ask another
-// owner to approve (K6-N).
-
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import type { PendingProposal, ProposableOperation, SigningKeyPair } from "@maruhi/crypto";
 import { memberScopeOf } from "@maruhi/crypto";
@@ -52,7 +30,6 @@ import type { SweepOutcome, SweepRotate } from "../rotation-sweep.ts";
 import { backfillServerGrant, sweepAfterRevoke } from "../server.package/index.ts";
 import { proposalStatusOf } from "./approval.ts";
 
-/** What the completing approver's client did after the inner op was applied (approval item 22). */
 export type Fulfilment =
   | { readonly kind: "none" }
   | {
@@ -101,7 +78,6 @@ type ApproveOutcome =
     }
   | { readonly kind: "withdrawn-concurrently"; readonly proposal: PendingProposal };
 
-/** The shape where a proposal targets the approver themself and applying it leaves the approver unable to fulfil the §7 obligations (K6-N). */
 function selfObligationRejection(
   verified: VerifiedProject,
   inner: ProposableOperation,
@@ -118,7 +94,6 @@ function selfObligationRejection(
   ) {
     return null;
   }
-  // Demotion / scope narrowing is judged by the same single predicate as the self-obligation check of a direct append (member-change-role.ts)
   switch (
     selfObligationReason(verified, self, {
       role: inner.payload.newRole,
@@ -134,7 +109,6 @@ function selfObligationRejection(
   }
 }
 
-/** The pre-check for approve (run again after a resync). */
 function ensureApprovable(
   verified: VerifiedProject,
   proposalHashHex: string,
@@ -155,7 +129,6 @@ function ensureApprovable(
   return self === null ? Effect.succeed(view) : Effect.fail(cliError(self));
 }
 
-/** Fulfils the applied inner op (approval item 22 — the approver regardless of the inner op kind). */
 const fulfil = Effect.fn("approval-approve.fulfil")(function* <R>(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -262,7 +235,6 @@ const fulfil = Effect.fn("approval-approve.fulfil")(function* <R>(input: {
 
 interface ApproveState {
   readonly verified: VerifiedProject;
-  /** Set when the resync after a conflict shows the proposal no longer pending. */
   readonly closed:
     | { readonly kind: "completed"; readonly completedAtSeq: number }
     | { readonly kind: "withdrawn" }
@@ -276,7 +248,6 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
   readonly verified: VerifiedProject;
   readonly ref: string;
   readonly signerUserId: UserId;
-  /** FP of the signing device (a vote's eligibility is the device's effective role — approval-rules.ts). */
   readonly signerFingerprintHex: string;
   readonly signingKeyPair: SigningKeyPair;
   readonly recipient: DekRecipient;
@@ -300,9 +271,6 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
     recheck: (resynced) =>
       Effect.gen(function* () {
         const status = proposalStatusOf(resynced, proposal.proposalHashHex);
-        // Another owner completed / withdrew it first: re-signing and
-        // sending anyway would only be rejected as unknown-proposal, so
-        // stop here with a typed outcome (K6-B)
         if (status.kind === "completed" || status.kind === "withdrawn") {
           return { verified: resynced, closed: status };
         }
@@ -323,7 +291,6 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
       : { kind: "withdrawn-concurrently", proposal };
   }
 
-  // Learn the result from the post-acceptance resync (the server response does not carry whether it applied — K5-S)
   const verified = yield* resyncExtended(input.resync, outcome.state.verified);
   const status = proposalStatusOf(verified, proposal.proposalHashHex);
   if (status.kind === "pending") {
@@ -347,8 +314,6 @@ export const approveProposalOp = Effect.fn("approval-approve.approveProposalOp")
   }
   const seq = outcome.entry?.seq ?? null;
   if (seq === null || status.completedAtSeq !== seq) {
-    // Another owner's approve completed it after mine (my vote counted,
-    // but that owner is the fulfiller)
     return { kind: "completed-by-other", proposal, completedAtSeq: status.completedAtSeq };
   }
   const io = yield* CliIo;

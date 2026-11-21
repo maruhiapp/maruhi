@@ -1,47 +1,3 @@
-// The project DO: colocates the append-only membership-chain storage
-// (CRYPTO_SPEC §6.4), the data plane (environments, variables,
-// ciphertexts, wrapped DEKs — AUTH_SPEC §12), and the audit log
-// (AUDIT_SPEC §5.1) in one DO (so the §4 queries hold with no
-// cross-store join, and a chain append and its mirror append write under
-// the same serialization).
-//
-// - Server-side verification: verifyChain (@maruhi/crypto) is re-run when
-//   accepting an append. Client verification (§6.3) defends against an
-//   untrusted server; this verification defends against a malicious
-//   client — both are required (§6.4)
-// - Serialization + CAS: an append request carries the parent head hash
-//   and is rejected when it disagrees with the current head. Operations
-//   inside the DO are serialized by a Semaphore(1) — the DO's input gate
-//   opens during any non-storage await (crypto.subtle inside verifyChain),
-//   so leaving it to the gate would let appends interleave. Data-plane
-//   changes share the same permit (prevents lost/interleaved concurrent
-//   pushes). **Reads serialize under the same permit too**: a read outside
-//   the permit would let a remove_member acceptance slip between
-//   "membership check (chain-derived) → data read" and could distribute a
-//   value to a just-removed member (a TOCTOU violating §11-2). Under the
-//   permit every operation linearizes against chain writes. The PRIMARY
-//   KEY constraint is the last line of defense
-// - Acceptance policy: §6.4 for the chain (1 MiB / 10,000 entries / 32
-//   MiB); §12-8 for the data (policy.ts)
-// - Storage (DO SQLite) is isolated behind Effect services (ChainStore /
-//   DataStore / AuditStore). The DDL lives in do-schema.ts and is applied at
-//   genesis acceptance (init) — a never-initialized DO holds no tables so a
-//   probe of an arbitrary project ID leaves no storage (Sc-7 / A-4). The
-//   constructor only applies pending migration steps to an already-materialized
-//   DO; opsRestore materializes a fresh destination
-//
-// The RPC methods are thin: each runs one program under the permit — the
-// chain API's (programs-chain.ts), the head attestation's
-// (attestation-accept.ts), the data plane's (programs/programs-*.ts and
-// composite-programs.ts) or the ops RPC's (do-ops.ts). What stays in the
-// class is what runs around the programs: the runtime and the permit,
-// the instance state (the chain-state cache, dropped on a defect, and
-// the materialization flag), the guards (#runData's not-initialized
-// gate, #runWrite's membership and mirror checks, the lease's single-use
-// chain tokens, the ops RPCs' bucket and materialization checks) and the
-// folding of each program's result into its RPC outcome (toDataOutcome,
-// init's tag mapping, the lease and rotation-proposal matches).
-
 import type { EnvironmentId, UserId, VariableId } from "@maruhi/core";
 import type { ChainEntry, Role } from "@maruhi/crypto";
 import { DurableObject } from "cloudflare:workers";
@@ -170,121 +126,22 @@ import { LeaseChainGrants } from "./lease-chain-grants.ts";
 export interface Env {
   readonly PROJECT_CHAIN: DurableObjectNamespace<ProjectChainDO>;
   readonly DB: D1Database;
-  /**
-   * The GitHub OAuth App's client_id. Public information, but the
-   * provisioning path is uniformly secret-shaped (AUTH_SPEC §3-2):
-   * a plain string on self-host (Workers Secret / .dev.vars), a
-   * Secrets Store binding object on hosted (ADR-0012 revision 3).
-   * The union type covers both; the value is resolved once per env
-   * through worker-env.ts's readWorkerSecrets.
-   */
   readonly GITHUB_CLIENT_ID: string | SecretsStoreSecret;
-  /**
-   * The GitHub OAuth App's client_secret (same two shapes as
-   * GITHUB_CLIENT_ID above; only dummy values may be committed).
-   * Read only through worker-env.ts's readWorkerSecrets, which
-   * resolves it and wraps it in Redacted.
-   */
   readonly GITHUB_CLIENT_SECRET: string | SecretsStoreSecret;
-  /**
-   * The deployment keypair's input key material (same two shapes as
-   * GITHUB_CLIENT_ID above. 32 bytes hex — CRYPTO_SPEC §9). The
-   * keypair is derived at startup via RFC 9180 DeriveKeyPair
-   * (server-key.ts). Unset = a pure E2EE deployment with no
-   * selective disclosure (the default). On a deployment lacking the
-   * secret it is undefined at runtime. Read only through
-   * worker-env.ts's readWorkerSecret, which wraps it in Redacted.
-   */
   readonly SERVER_ENC_KEY_IKM?: string | SecretsStoreSecret;
-  // The seven *_RATE_LIMIT bindings below are required here because both
-  // serving modes declare them (test/cf-env.test.ts), but a deployment
-  // whose config lacks one has it undefined at runtime. They are read only
-  // through worker-env.ts's ipRateLimitAllowed, which answers a missing
-  // binding with 503 SetupIncomplete (AUTH_SPEC §4-1 (1)).
-  /**
-   * The source-IP rate limit of unauthenticated CLI-login start
-   * (AUTH_SPEC §4-1 (1) — the ratelimits of wrangler.jsonc. An unrecorded
-   * start, so this protects CPU, not the DB).
-   */
   readonly CLI_START_RATE_LIMIT: RateLimit;
-  /**
-   * The source-IP rate limit of unauthenticated CLI-login poll
-   * (AUTH_SPEC §4-1 (5) — looser than start so the normal path stays
-   * under the polling interval floor of 5 s = 12 req/min. The spec
-   * explicitly allows a 429 rejection of excess polling).
-   */
   readonly CLI_POLL_RATE_LIMIT: RateLimit;
-  /**
-   * The source-IP rate limit of the unauthenticated OAuth callback. A
-   * callback hits GitHub's token endpoint per request and consumes the
-   * shared quota per OAuth App. state is a cookie-and-query double
-   * submit (no server-side state), so a non-browser source can supply
-   * both itself and pass the check — this binding is the only thing
-   * bounding the rate. Browser interactive logins (incl. the CLI browser
-   * leg) share one egress, so the cap is looser than start's (the same
-   * 30/min as the WAF recommendation of docs/SELF_HOSTING.md).
-   */
   readonly OAUTH_CALLBACK_RATE_LIMIT: RateLimit;
-  /**
-   * The source-IP rate limit of lease issuance. A DO is addressable by
-   * name, so a valid OIDC token alone could aim requests at arbitrary
-   * project IDs; a never-materialized DO no longer stores anything on reach
-   * (Sc-7 / A-4), so this request-level limit before projectStub is reached
-   * bounds the CPU of such probing rather than any storage growth.
-   */
   readonly LEASE_RATE_LIMIT: RateLimit;
-  /**
-   * The source-IP rate limit of a `GET /auth/github/start` carrying a
-   * signup invite code (AUTH_SPEC §3). A code-bearing start is an
-   * unauthenticated surface involving a D1 read for pre-validation (the
-   * check itself is a hash comparison of a 256-bit single-use code and
-   * is not an existence oracle — the limit protects resources). A plain
-   * start is still unlimited (the login funnel — a 302 with no
-   * server-side state and no external call).
-   */
   readonly SIGNUP_START_RATE_LIMIT: RateLimit;
-  /**
-   * The source-IP rate limit of the CLI login browser leg's entry
-   * (AUTH_SPEC §4-3). Verify resolves the flow-signing key
-   * (get-or-create) before vsig verification, so an unauthenticated
-   * flood reaches D1 writes — unlike start / poll it is not covered
-   * by the statelessness premise. The cap matches the callback's
-   * (30/min): this leg is the same shared-egress browser path.
-   */
   readonly CLI_VERIFY_RATE_LIMIT: RateLimit;
-  /**
-   * The source-IP rate limit of the CLI login approval POST
-   * (AUTH_SPEC §4-3). The approval ticket is the only credential, so
-   * every well-formed unauthenticated POST runs the decision CAS
-   * against D1; the limit bounds that write amplification (a
-   * legitimate approver submits once per page opening).
-   */
   readonly CLI_APPROVE_RATE_LIMIT: RateLimit;
-  /**
-   * The destination of DO → R2 evacuations (docs/notes/hosted-ops.md
-   * §2-D / §2-F). An optional binding only the hosted environment
-   * (`cf deploy --mode hosted`) has. Absent = never evacuates (the
-   * self-hosted default; the sweep leaves a static one line and is a
-   * no-op).
-   */
   readonly OPS_BACKUP_BUCKET?: R2Bucket;
-  /**
-   * The tripwire-notification webhook (hosted-ops.md §2-B; same two
-   * shapes as GITHUB_CLIENT_ID above). Unset = never sends (disabled
-   * by default). The body is only static signal names + aggregate
-   * values. Read only through worker-env.ts's readWorkerSecret,
-   * which wraps it in Redacted.
-   */
   readonly OPS_ALERT_WEBHOOK_URL?: string | SecretsStoreSecret;
 }
 
-// ---------------------------------------------------------------------------
-// The Durable Object (the ManagedRuntime pattern)
-// ---------------------------------------------------------------------------
-
 type DoServices = ChainStore | DataStore | AuditStore | ServerKey | StorageMeter;
 
-/** Fold a data-plane rejection into an RPC outcome (a success goes to the ok side). */
 const toDataOutcome = <T, R>(
   program: Effect.Effect<T, DataRejectedError, R>,
 ): Effect.Effect<DataOutcome<T>, never, R> =>
@@ -297,35 +154,13 @@ const toDataOutcome = <T, R>(
 
 export class ProjectChainDO extends DurableObject<Env> {
   readonly #runtime: ManagedRuntime.ManagedRuntime<DoServices, never>;
-  // Serialization of all operations (writes + reads) — see the header comment
   readonly #opLock = Semaphore.makeUnsafe(1);
-  // Cache of the chain-derived state + the parsed chain (see chain-store.ts)
   readonly #stateCache: StateCache = { current: null, chain: null };
-  // Issued leases' heads awaiting their chain read (lease-chain-grants.ts)
   readonly #leaseChainGrants = new LeaseChainGrants();
-  // Whether this DO's tables exist. A fresh DO holds no storage until a
-  // genesis is accepted (Sc-7 / A-4, owner approval 2026-10-11 — AUTH_SPEC
-  // §14-3 / §11-3): materialized by init (genesis) or opsRestore. Reads and
-  // writes to an unmaterialized DO fold to the uniform 404 (§11-2) without
-  // touching storage (#runData), so a probe of an arbitrary project ID — the
-  // unauthenticated lease, an authenticated GET — leaves nothing behind.
-  //
-  // A performance cache, not the source of truth: it is `true` only when the
-  // tables are known to exist, and a `false` value is re-checked against
-  // storage before it is trusted (#latchInitialized). So a path that
-  // materialized the tables without returning through a flag-setting branch
-  // (an opsRestore whose post-commit extension defects after the tables
-  // committed) cannot strand the DO reporting not-initialized — which would
-  // 404 every read, skip evacuation, and make `GET /projects` prune live
-  // members as phantoms (handlers-membership.ts).
   #initialized: boolean;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // Read-only detection (creates nothing). A materialized DO applies any
-    // pending migration steps and re-asserts its triggers (the catch-up that
-    // used to run unconditionally); a fresh DO is left untouched until a
-    // genesis is accepted.
     this.#initialized = projectDoInitialized(ctx.storage.sql);
     if (this.#initialized) {
       ensureProjectDoTables(ctx.storage);
@@ -335,38 +170,13 @@ export class ProjectChainDO extends DurableObject<Env> {
         chainStoreLayer(ctx.storage.sql, this.#stateCache),
         dataStoreLayer(ctx.storage.sql),
         auditStoreLayer(ctx.storage.sql),
-        // The measurement point of the DO storage total guard (AUTH_SPEC
-        // §12-8 — storage-guard.ts). The ops log's once-only flag is
-        // bound to this layer (= this instance)
         storageMeterLayer(ctx.storage.sql),
-        // Lease unsealing + re-wrapping happen inside the DO (the head
-        // of programs-lease.ts: audit atomicity). A separate instance
-        // from the worker-side ServerKey, but derives the same keypair
-        // from the same secret. The DO's env-reading boundary for it:
-        // the layer's build resolves the IKM from whichever binding
-        // shape the deployment carries (a hosted Secrets Store read
-        // is async — worker-env.ts) and it is Redacted from there on
         Layer.effect(ServerKey, makeServerKeyFromEnv(env.SERVER_ENC_KEY_IKM)),
-        // Effect logs from DO programs go to console.warn / console.error
-        // with the message text only (server-logger.ts)
         ServerLoggerLive,
       ),
     );
   }
 
-  /**
-   * Invalidation of instance memory on task failure. DO storage rolls
-   * back per task, but instance memory (the parsed chain, the derived
-   * state, the audit sequence) remains. If a defect mid-write-phase left
-   * only the cache advanced, a phantom state disagreeing with the
-   * rolled-back storage would be handed out (worst case, a follow-up
-   * append to a phantom head makes a gap permanent in the stored chain
-   * and every post-restart operation defects), so on the failure path it
-   * is always discarded and the next load / append falls back to a
-   * re-read from the stored state. An acceptance rejection
-   * (DataRejected) is out of scope because it settles before the write
-   * phase (the cache has not advanced).
-   */
   #invalidateCachesOnDefect<A, E>(
     program: Effect.Effect<A, E, DoServices>,
   ): Effect.Effect<A, E, DoServices> {
@@ -384,13 +194,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /**
-   * Whether this DO's tables exist, re-checking storage when the cached flag
-   * is `false` and latching it `true` on the way (read-only — creates
-   * nothing). The re-check keeps a never-materialized DO cheap (one
-   * `sqlite_master` lookup per probe, no storage) while never stranding a DO
-   * whose tables were materialized outside a flag-setting branch.
-   */
   #latchInitialized(): boolean {
     if (this.#initialized) {
       return true;
@@ -402,18 +205,7 @@ export class ProjectChainDO extends DurableObject<Env> {
     return false;
   }
 
-  /**
-   * Run a data-plane program folded into an outcome under the permit.
-   * Reads take the permit too: it makes the membership check and the
-   * data read atomic against chain writes (the TOCTOU fix of the header
-   * comment).
-   */
   #runData<T>(program: Effect.Effect<T, DataRejectedError, DoServices>): Promise<DataOutcome<T>> {
-    // An unmaterialized DO holds no tables (Sc-7 / A-4): every read / write
-    // folds to not-initialized (the uniform 404 of §11-2) before any storage
-    // is touched. The lease / proposal family does not take this gate — their
-    // server-key-unconfigured 503 must precede the existence check (§14-3), so
-    // they reach uninitialized through the chain load instead (loadInitializedChain).
     if (!this.#latchInitialized()) {
       return Promise.resolve({ kind: "rejected", rejection: { kind: "not-initialized" } });
     }
@@ -422,16 +214,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /**
-   * A mirror accepts no write (AUTH_SPEC §11-7 ruling B): refused with
-   * `mirror-read-only` after the caller's membership (a non-member gets
-   * the uniform 404 of §11-2 — the worker checks only the token's scope,
-   * so the membership check must happen here, before the mark is
-   * consulted) and before the program's role floor and any state change.
-   * Every member may read the mark through the status endpoint, so the
-   * refusal reveals nothing a reader could not learn. Reads and leases
-   * take `#runData` as before.
-   */
   #ensureWritable(): Effect.Effect<void, DataRejectedError> {
     const sql = this.ctx.storage.sql;
     return Effect.suspend(() =>
@@ -439,13 +221,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /**
-   * {@link #runData} for the write entry points: membership → the mirror
-   * guard → the program. The mutation counter a paged export binds its
-   * cursor to is kept by the schema's triggers (the mutation triggers the
-   * do-schema.ts base step creates), not here: any row change by any path
-   * moves it.
-   */
   #runWrite<T>(
     callerUserId: UserId,
     program: Effect.Effect<T, DataRejectedError, DoServices>,
@@ -464,20 +239,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     entry: ChainEntry,
     admission: InitAdmission,
   ): Promise<InitOutcome> {
-    // Rejections (DataRejected) fold into the same rejected shape as
-    // toDataOutcome. Only init-specific branches — "already initialized"
-    // (not a rejection: the decision input of idempotent repair), "fresh
-    // initialization not admitted" (the worker's project-count limit —
-    // §11-3), and the worker-bug detector project-id-mismatch — have
-    // dedicated branches
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         this.#invalidateCachesOnDefect(
           initProgram(expectedProjectId, entry, admission, this.ctx.storage, this.#stateCache).pipe(
             Effect.map((head): InitOutcome => {
-              // The genesis committed and the tables were materialized
-              // (initProgram): record it so later reads / writes run instead
-              // of folding to not-initialized.
               this.#initialized = true;
               return {
                 kind: "initialized",
@@ -539,8 +305,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(memberRoleProgram(callerUserId, this.#stateCache));
   }
 
-  // --- Data-plane RPC (AUTH_SPEC §12) ---------------------------------
-
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   createEnvironment(
     actor: DataActor,
@@ -553,9 +317,6 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
     },
   ): Promise<DataOutcome<EnvironmentChainResultValue>> {
-    // Composite acceptance (§12-4): the chain append (CAS + verifyChain)
-    // and the data registration are made atomic in the same permit and
-    // the same synchronous block (the §6.4 composite acceptance)
     return this.#runWrite(
       actor.userId,
       createEnvironmentCompositeProgram(actor, input, this.#stateCache),
@@ -602,9 +363,6 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly entry: ChainEntry & { readonly op: "delete_environment" };
     },
   ): Promise<DataOutcome<void>> {
-    // Composite acceptance (§12-4 — 2026-10-07): the delete_environment
-    // append (CAS + verifyChain) and the data deletion in the same permit
-    // and the same synchronous block
     return this.#runWrite(
       actor.userId,
       deleteEnvironmentCompositeProgram(actor, environmentId, input, this.#stateCache),
@@ -623,7 +381,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     input: {
       readonly variableId: VariableId;
       readonly statement: MetaStatementInput;
-      /** The version-1 value of an active creation. Omitted for a declared creation (§12-5). */
       readonly value?: ValueInput;
       readonly manifest: EnvManifestInput;
     },
@@ -645,8 +402,6 @@ export class ProjectChainDO extends DurableObject<Env> {
       readonly manifest: EnvManifestInput;
     },
   ): Promise<DataOutcome<VariableVersionValue>> {
-    // The activation composite (§12-5): declared → active as the atomic
-    // acceptance of value version 1 + the statement + the manifest
     return this.#runWrite(
       actor.userId,
       activateVariableProgram(actor, environmentId, variableId, input, this.#stateCache),
@@ -673,7 +428,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     environmentId: EnvironmentId,
     variableId: VariableId,
   ): Promise<DataOutcome<VariableVersionHistoryValue>> {
-    // The version history (§12-7 — VH): metadata only, no var.read
     return this.#runData(
       variableHistoryProgram(actor, environmentId, variableId, this.#stateCache),
     );
@@ -686,7 +440,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     variableId: VariableId,
     fromVersion: number,
   ): Promise<DataOutcome<VariableVersionValuesValue>> {
-    // The version value range (§12-7 — VH): records var.read
     return this.#runData(
       variableVersionValuesProgram(actor, environmentId, variableId, fromVersion, this.#stateCache),
     );
@@ -782,8 +535,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // --- schemaPolicy configuration RPC (AUTH_SPEC §12-11) ----------------
-
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   schemaPolicyFor(actor: DataActor): Promise<DataOutcome<{ readonly schemaPolicy: SchemaPolicy }>> {
     return this.#runData(getSchemaPolicyProgram(actor, this.#stateCache));
@@ -796,8 +547,6 @@ export class ProjectChainDO extends DurableObject<Env> {
       setSchemaPolicyProgram(actor, schemaPolicy, this.#stateCache),
     );
   }
-
-  // --- Rotation-needed flag RPC (AUDIT_SPEC §4.1 / §7) ------------------
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   rotationFlags(actor: DataActor): Promise<DataOutcome<readonly EffectiveRotationFlag[]>> {
@@ -815,14 +564,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // --- Sealed value proposals RPC (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5) --
-
-  /**
-   * The workload mint (programs-proposal.ts). Like issueLease, the OIDC
-   * verification is already done on the worker side and the result is a
-   * ProposalOutcome (the lease rejection vocabulary plus the §14-5
-   * acceptance reasons), not a DataOutcome.
-   */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   proposeRotation(
     environmentId: EnvironmentId,
@@ -850,7 +591,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /** The mint's pre-flight (AUTH_SPEC §14-5 O-4 — programs-proposal.ts): the same split as proposeRotation, no value. */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   preflightRotation(
     environmentId: EnvironmentId,
@@ -897,8 +637,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // --- Project export RPCs (AUTH_SPEC §11-6 — PF3) ----------------------
-
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   exportPage(actor: DataActor, cursor: string | null): Promise<DataOutcome<ExportPageValue>> {
     return this.#runData(
@@ -916,8 +654,6 @@ export class ProjectChainDO extends DurableObject<Env> {
   exportMembers(actor: DataActor): Promise<DataOutcome<ExportMembersValue>> {
     return this.#runData(exportMembersProgram(actor, this.#stateCache));
   }
-
-  // --- Mirrors (AUTH_SPEC §11-7 — PF2; programs-mirror.ts) ------------------
 
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   mirrorStatus(actor: DataActor): Promise<DataOutcome<MirrorStatusValue>> {
@@ -941,8 +677,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(mirrorPageProgram(actor, page, this.ctx.storage, this.#stateCache));
   }
 
-  // --- Audit-event read RPC (AUDIT_SPEC §6 / §7) -----------------------
-
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   auditEvents(
     actor: DataActor,
@@ -956,20 +690,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(auditHeadProgram(actor, this.#stateCache));
   }
 
-  // --- Workload-lease RPC (AUTH_SPEC §14) ------------------------------
-
-  /**
-   * Lease authorization, unsealing, re-wrap, and audit
-   * (programs-lease.ts). The OIDC verification is already complete on
-   * the worker side; what arrives here is only the facts of a verified
-   * token (authentication and authorization separated — §14-3's "only an
-   * authentication failure is a 401" is kept structurally).
-   *
-   * Unlike the other RPCs it returns LeaseOutcome, not DataOutcome: the
-   * lease rejection vocabulary (404 / 429 / 503) does not overlap the
-   * data plane's DataRejection, and folding them would make the
-   * worker-side mapping table carry both meanings.
-   */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   issueLease(
     environmentId: EnvironmentId,
@@ -999,21 +719,11 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /**
-   * The chain half of a lease (programs-lease.ts — §14-2), so the chain and
-   * the values each get their own RPC result. It takes the single-use token
-   * issueLease returned with an ok outcome — the authorization stays in the
-   * DO (a stub holder cannot read a chain without an authorized issuance) —
-   * and returns the chain up to the head that issuance was judged against.
-   * An unknown, spent or expired token is a defect (500).
-   */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   leaseChain(chainToken: string): Promise<readonly ChainEntry[]> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
         Effect.flatMap(Clock.currentTimeMillis, (nowMs) => {
-          // A token miss is checked before the defect guard: it touches no
-          // state, so it must not drop the caches
           const head = this.#leaseChainGrants.take(chainToken, nowMs);
           return head === undefined
             ? Effect.die(new Error("unknown, spent or expired lease chain token"))
@@ -1023,21 +733,12 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // --- Ops RPC (hosted-ops.md §2-D / §2-E; not callable over HTTP) -----
-
-  /**
-   * The DO → R2 evacuation (hosted-ops.md §2-D): do-ops.ts's backupProgram
-   * under the permit (= all tables consistent).
-   */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the cron sweep calls it via the stub)
   opsBackup(input: OpsBackupInput): Promise<OpsBackupOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
       return Promise.resolve({ kind: "no-bucket" });
     }
-    // A never-materialized DO has nothing to evacuate (Sc-7 / A-4). The sweep
-    // enumerates D1 `projects`, which only an accepted genesis writes, so this
-    // is a defensive guard — reading the watermarks would fault without tables.
     if (!this.#latchInitialized()) {
       const databaseSizeBytes = this.ctx.storage.sql.databaseSize;
       return Promise.resolve({
@@ -1056,14 +757,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  /**
-   * Restore from an evacuation (under the permit). Writes **only into an
-   * empty DO** (do-snapshot-restore.ts — no overwrite path exists). After
-   * the restore, instance memory (the derived state, the audit sequence) is
-   * discarded, the cumulative hash row is extended to MAX(seq) below the
-   * storage guard's line, and the audit head is returned (for
-   * cross-checking — do-ops.ts's restoreProgram).
-   */
   // fallow-ignore-next-line unused-class-member -- a DO RPC method (the restore worker calls it via the stub)
   opsRestore(objectKey: string, etag?: string): Promise<OpsRestoreOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
@@ -1077,12 +770,6 @@ export class ProjectChainDO extends DurableObject<Env> {
         ),
       )
       .finally(() => {
-        // restoreProgram may have materialized the tables (Sc-7 / A-4) before
-        // the outcome resolved — a committed restore whose post-commit head
-        // extension then defects still leaves them. Re-check storage and latch
-        // the flag either way, so a defect cannot strand the DO reporting
-        // not-initialized. A refusal before any table was created (object
-        // missing / changed — do-ops.ts) leaves none, and the flag stays false.
         this.#latchInitialized();
       });
   }

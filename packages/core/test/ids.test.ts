@@ -4,13 +4,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { ulid } from "../src/ids.ts";
 
-// Format-invariance tests for the SecureRandom migration (Effect 4.1):
-// the expected strings below were produced by the pre-migration
-// implementation (ambient `crypto.getRandomValues` + the same encoding
-// code) fed with the same byte streams, so equality here proves the
-// service-based draw changed neither the algorithm nor the encoding.
-
-/** A SecureRandom whose draws are a fixed byte pattern. */
 const fixedRandom = (byteAt: (index: number) => number) =>
   Layer.mock(SecureRandom.SecureRandom, {
     randomBytes: (size: number) =>

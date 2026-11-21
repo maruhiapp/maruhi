@@ -1,23 +1,3 @@
-// Integration tests for `maruhi guardian add / list / remove / wards`
-// (CRYPTO_SPEC §8.3 / AUTH_SPEC §13-7 — KL3). Wraps and share sealing are
-// real crypto; the server is a wire-level mock.
-//
-// Properties pinned down (2026-09-19 DK K4 — the wrap target B is not a
-// device key but the **reserve key**):
-//  1. add takes the guardian's key from **every device** of the
-//     chain-derived current member, stands the §6.5 read-aloud ceremony
-//     (re-entering the final word) once per device, then unseals the ledger
-//     with the recovery code before registering. Registered shares open
-//     under the guardian's secret key; with `any` a single share, with `all`
-//     the XOR of all shares, decrypts B (= the ledger's reserve-key record,
-//     not ward's device key) (roundtrip)
-//  2. Non-members, self, duplicates, and a single-person `all` fail before
-//     sending
-//  3. Agent environments refuse the ceremony (don't let a non-interactive
-//     caller decide where key material gets sealed)
-//  4. list --project marks share rows disagreeing with the chain's current
-//     device set as STALE
-
 import {
   decodeHex,
   fingerprintToWords,
@@ -49,7 +29,6 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 let ward: TestUser;
-/** ward's reserve key (the B the ledger seals — a different key from the device key `ward`). */
 let reserve: TestUser;
 let alice: TestUser;
 let bob: TestUser;
@@ -101,7 +80,6 @@ function createHandler(record: (body: CreateBody) => void): MockHandler {
   });
 }
 
-/** The ledger / reserve-key record (same shape as seedSession). */
 function recordOf(user: TestUser): StoredMasterKey {
   return {
     suite: "maruhi/v1",
@@ -109,29 +87,19 @@ function recordOf(user: TestUser): StoredMasterKey {
     encSkHex: Redacted.make(user.encSkHex),
     sigPubHex: user.sigPubHex,
     sigSkSeedHex: Redacted.make(user.sigSkSeedHex),
-    // The test's `reserve` is a CLI-generated reserve key (marked — DK K16).
-    // Everything else is a device key
     ...(user === reserve ? { kind: "reserve" as const } : {}),
   };
 }
 
-/** The serialized reserve-key record (the wrap's plaintext = the value the opened wrap must equal). */
 function serializedReserve(): string {
   return serializeStoredMasterKey(recordOf(reserve));
 }
 
-/**
- * `GET /auth/recovery`: the ledger — ward's reserve-key record wrapped with
- * the recovery code (`guardian add` unseals the ledger before sealing the
- * shares — K4-2).
- */
 async function recoveryHandler(): Promise<{ handler: MockHandler; code: string }> {
   const secret = crypto.getRandomValues(new Uint8Array(32));
   const wrapped = await wrapMasterSecret({
     recoverySecret: secret,
     userId: ward.userId,
-    // JSON.stringify(record) won't work — the secret side gets wrapped in
-    // redactions (same trap as recovery.ts)
     masterSecretBlob: new TextEncoder().encode(serializedReserve()),
   });
   if (!wrapped.ok) throw new Error("test wrap failed");
@@ -161,14 +129,12 @@ async function startEnv(handlers: readonly MockHandler[], user: TestUser): Promi
   return { env, server };
 }
 
-/** The number of registration sends (for the check that must fail before sending). */
 function createCount(server: MockServer): number {
   return server.requests.filter(
     (request) => request.method === "POST" && request.path === "/auth/key-wraps/guardians",
   ).length;
 }
 
-/** The final word of the guardian's fingerprint (the §6.5 ceremony response). */
 async function lastWordOf(user: TestUser): Promise<string> {
   const bytes = decodeHex(user.fingerprintHex);
   if (bytes === null) throw new Error("fingerprint hex");
@@ -183,7 +149,6 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-/** Guardian `user` opens the share addressed to them (same shape as the server's share distribution). */
 async function openShareAs(user: TestUser, body: CreateBody): Promise<Uint8Array> {
   const share = body.shares.find((entry) => entry.guardianUserId === user.userId);
   if (share === undefined) throw new Error("share missing");
@@ -226,32 +191,23 @@ describe("maruhi guardian add", () => {
       ],
       ward,
     );
-    // Order: ceremony (the guardian's final word per device) → unsealing
-    // the ledger (recovery code)
     env.setPromptResponses([await lastWordOf(alice), ledger.code]);
     expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(0);
     const body = created as CreateBody | null;
     expect(body?.mode).toBe("any");
     expect(body?.groupId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    // One share row per guardian device (the fixture's guardian has 1
-    // device)
     expect(body?.shares.map((share) => share.guardianUserId)).toEqual([alice.userId]);
     expect(body?.shares[0]?.guardianKeyFingerprintHex).toBe(alice.fingerprintHex);
     expect(body?.shares[0]?.guardianEncPubHex).toBe(alice.encPubHex);
     if (body === null) throw new Error("no registration");
-    // any: share = the KEK itself. The wrap's contents are the ledger's
-    // reserve key, not ward's device key
     const share = await openShareAs(alice, body);
     const unwrapped = await unwrapWith(share, body);
     expect(unwrapped).toBe(serializedReserve());
     expect(unwrapped).not.toBe(env.keychain.get(masterKeyEntryName(server.origin, ward.userId)));
     expect(unwrapped).not.toContain(ward.encSkHex);
-    // The ledger is unsealed once (GET /auth/recovery)
     expect(
       server.requests.filter((r) => r.method === "GET" && r.path === "/auth/recovery"),
     ).toHaveLength(1);
-    // The ceremony display is the word list (stdout); key material and the
-    // code appear nowhere
     const logs = env.logs.join("\n");
     expect(logs).toContain(`Guardian ${alice.userId} — device key fingerprint:`);
     expect(logs).toContain("Registered guardian group");
@@ -291,7 +247,6 @@ describe("maruhi guardian add", () => {
     const joined = joinGuardianShares({ mode: "all", shares: [shareA, shareB], expectedCount: 2 });
     if (!joined.ok) throw new Error("join");
     expect(await unwrapWith(joined.value, body)).toBe(serializedReserve());
-    // A single share alone cannot open it
     await expect(unwrapWith(shareA, body)).rejects.toThrow();
   });
 
@@ -312,8 +267,6 @@ describe("maruhi guardian add", () => {
     expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(1);
     expect(createSeen).toBe(false);
     expect(env.errors.join("\n")).toContain("Guardian key fingerprint confirmation failed");
-    // If the ceremony doesn't pass, it never reaches unsealing the ledger
-    // (code entry)
     expect(server.requests.some((r) => r.path === "/auth/recovery")).toBe(false);
   });
 
@@ -348,8 +301,6 @@ describe("maruhi guardian add", () => {
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["guardian", "add", "--mode", "any", alice.userId], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("an AI agent environment was detected");
-    // The piped-stdin form of answering the ceremony prompt
-    // (non-terminal) is also refused
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdin: false });
     env.setPromptResponses([await lastWordOf(alice)]);

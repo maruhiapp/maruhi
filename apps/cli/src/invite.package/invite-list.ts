@@ -1,7 +1,3 @@
-// `maruhi invite list` / `maruhi invite revoke`: the per-row issuance and
-// acceptance verification with fingerprint-word display and the
-// issuance-pin cross-check (the group's overview lives in invite.ts).
-
 import { Effect } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
@@ -25,22 +21,15 @@ import {
   verifyIssuance,
 } from "./invite.ts";
 
-// ---------------------------------------------------------------------------
-// invite list / revoke
-// ---------------------------------------------------------------------------
-
 interface InviteListSummary {
   readonly rows: number;
-  /** The count of signature-verification failures and issuance-pin mismatches (exit 1 when > 0). */
   readonly integrityFailures: number;
 }
 
-/** The displayed status (pending past its expiry shows as expired — derived from the stored state). */
 function displayStatus(row: InvitationRow, nowMs: number): string {
   return row.status === "pending" && row.expiresAtMs <= nowMs ? "expired" : row.status;
 }
 
-/** Verifying and displaying one listing row (returns the integrity-failure count). */
 const listRowChecks = Effect.fnUntraced(function* (input: {
   readonly verified: VerifiedProject;
   readonly pins: InvitePins | null;
@@ -67,9 +56,6 @@ const listRowChecks = Effect.fnUntraced(function* (input: {
       `the server's claim for invite ${displayText(row.id)} (link key / role) does not match the local record from issuance. The row may have been swapped or the role tampered with — do not run member add with this invite`,
     );
   }
-  // Do not give "checked and passed" and "no check material" the same
-  // look (S12 — on a row missing §6.5's extra material, only the issue
-  // signature pins it)
   if (pin === "missing") {
     yield* io.log(
       "  issuance pin: none on this machine (this invite may have been issued on another device) — the link key / role / scope cross-check was not performed",

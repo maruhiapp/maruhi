@@ -1,15 +1,3 @@
-// The chain's byte cap against the DO RPC frame (CRYPTO_SPEC §6.4 / AUTH_SPEC
-// §14-2 — 2026-10-12 Sc-3a): a chain filled to the 12 MiB cap with the
-// entries of the highest serialized-to-canonical ratio still answers its
-// fetch inside one RPC result, a lease of a full environment on it answers
-// even though the response is larger than one frame (the chain and the
-// values are separate RPC results), and one more byte is a typed 422.
-// This pins the frame only: the test isolate has nodejs_compat and no memory
-// limit, so the worker's memory for the same lease is measured separately
-// (workerd with the deployed flags — AUTH_SPEC §14-2's assembly note).
-// Real workerd via @cloudflare/vitest-plugin; the fixture lives in
-// support/data-scenario.ts.
-
 import type { ChainOperation } from "@maruhi/crypto";
 import { canonicalChainEntryBytes } from "@maruhi/crypto";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -49,7 +37,6 @@ import { evictProjectDo, queryProjectDo } from "./support/project-do.ts";
 
 registerDataScenario();
 
-/** workerd refuses a DO RPC result serialized above this. */
 const RPC_FRAME_BYTES = 32 * 1024 * 1024;
 const BLOAT_ENV = "env-bloat-0001";
 const COMMITMENT = "7a".repeat(32);
@@ -71,7 +58,6 @@ async function canonicalSizeAt(seq: number, operation: ChainOperation): Promise<
 
 const checkpointSizes = new Map<number, number>();
 
-/** A tuple-less checkpoint's canonical size at `seq` (it varies only with the digit count). */
 async function checkpointSizeAt(seq: number): Promise<number> {
   const digits = String(seq).length;
   const known = checkpointSizes.get(digits);
@@ -91,14 +77,6 @@ async function storedChainBytes(): Promise<{ readonly entries: number; readonly 
   return { entries: Number(rows[0]?.["n"]), bytes: Number(rows[0]?.["bytes"]) };
 }
 
-/**
- * Appends valid `rotate_epoch` entries of BLOAT_ENV straight into DO storage
- * (verified again on the DO's next load) until the room left is exactly a
- * tuple-less checkpoint at the next seq. A rotation with a 1,024-byte reason
- * is ~1.1× its canonical size on the wire — near the worst ratio an entry of
- * that size has (CRYPTO_SPEC §6.4) — so the filled chain is a worst case for
- * the frame.
- */
 async function fillChainToCheckpointRoom(): Promise<void> {
   let used = (await storedChainBytes()).bytes;
   let epoch = 1;
@@ -111,7 +89,6 @@ async function fillChainToCheckpointRoom(): Promise<void> {
       rotateEpochOperation(BLOAT_ENV, epoch + 1, COMMITMENT, ""),
     );
     const last = left - bare <= MAX_REASON_BYTES;
-    // The last entry takes exactly what is left; the one before leaves it room
     const reasonBytes = last ? left - bare : Math.min(MAX_REASON_BYTES, left - 2 * bare - 1);
     expect(reasonBytes).toBeGreaterThanOrEqual(0);
     epoch += 1;
@@ -141,7 +118,6 @@ async function fillChainToCheckpointRoom(): Promise<void> {
       );
     }
   });
-  // Rows written outside an append do not show through the parsed-chain cache
   await evictProjectDo(projectId);
 }
 
@@ -149,9 +125,6 @@ describe("the chain cap against the RPC frame (CRYPTO_SPEC §6.4 / AUTH_SPEC §1
   it("a chain at the 12 MiB cap fits one RPC result; a full environment's lease on it exceeds one frame and still answers; one more entry is a typed 422", async () => {
     await readyProject();
     await createEnvironmentOk(fixture, BLOAT_ENV, "Bloat");
-    // The environment at its 8 MiB cap (VAR's own value tops it up — reads
-    // are never refused for that cap) plus declared statements with long
-    // descriptions: the lease's values half alone stays inside one frame
     await declareVariableOk({
       variableId: "var-declared-0001",
       name: "DECLARED",
@@ -166,9 +139,7 @@ describe("the chain cap against the RPC frame (CRYPTO_SPEC §6.4 / AUTH_SPEC §1
     await cloneVariableRows({ source: "var-declared-0001", count: 3000, prefix: "var-decl" });
 
     await fillChainToCheckpointRoom();
-    // The cap is reachable under the entry cap with these entries
     expect((await storedChainBytes()).entries).toBeLessThan(MAX_CHAIN_ENTRIES);
-    // The last room goes to an ordinary append, landing on the cap exactly
     await appendOperation(fixture, OWNER, TUPLE_LESS_CHECKPOINT);
     const stored = await storedChainBytes();
     expect(stored.bytes).toBe(MAX_CHAIN_TOTAL_CANONICAL_BYTES);

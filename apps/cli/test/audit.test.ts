@@ -1,23 +1,3 @@
-// Integration tests for `maruhi audit` (AUDIT_SPEC §6 / §7 — Phase 2 C1).
-//
-// Properties pinned down:
-//  1. list displays audit rows, and a variable's display name resolves only
-//     from verified statements. The payload's name snapshot (a server claim)
-//     is shown distinctly as the "record" and never promoted to the display
-//     name position (TCB discipline — AUDIT_SPEC §7)
-//  2. chain.* mirror rows are cross-checked against the verified chain (the
-//     shared mapping chainMirrorEvents): a match is mirror=OK, a mismatch is a
-//     warning + exit code 1. A row outside chain.* claiming a chain_seq is
-//     likewise shown with a label and counts as an integrity violation
-//     (evidence of tampering — §6)
-//  3. verify checks the mirror bijection (§1-5): omission (concealed
-//     deletion), alteration, and duplication are each detected with exit
-//     code 1
-//  4. invites / self display the D1-side rows; self annotates the implication
-//     of watch-worthy events (auth.recovery_blob_fetched — §3.1)
-//  5. Argument-shape errors (--project on self, out-of-range limit, unknown
-//     operation) are usage errors (2) before any communication
-
 import type { ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
@@ -60,7 +40,6 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-/** Base chain (genesis → environment creation → member add; no pending obligations). */
 async function baseChain(): Promise<BuiltChain> {
   return buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -71,12 +50,10 @@ async function baseChain(): Promise<BuiltChain> {
 
 type WireRow = Record<string, unknown>;
 
-/** Deterministic 32-digit hex row id (test-only — the real server assigns randomly). */
 function idOf(seq: number): string {
   return seq.toString(16).padStart(32, "0");
 }
 
-/** Assigns entries while dropping undefined ones (same shape as the wire's optionalKey). */
 function assignPresent(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(source)) {
     if (value !== undefined) {
@@ -85,7 +62,6 @@ function assignPresent(target: Record<string, unknown>, source: Record<string, u
   }
 }
 
-/** Proposal index of the verified chain (the same core derivation as the server's — input to the four-eyes rows). */
 async function proposalIndexOf(built: BuiltChain): Promise<ProposalIndex> {
   const verified = await verifyChainWithHistory(built.entries);
   if (!verified.ok) {
@@ -98,7 +74,6 @@ async function proposalIndexOf(built: BuiltChain): Promise<ProposalIndex> {
   );
 }
 
-/** Verified entry → wire mirror rows (built from the same shared mapping as the server's). */
 function wireMirrorRows(entry: ChainEntry, firstSeq: number, index: ProposalIndex): WireRow[] {
   return chainMirrorEvents(entry, BASE_TS + firstSeq, index).map((record, offset) => {
     const seq = firstSeq + offset;
@@ -127,11 +102,6 @@ function wireMirrorRows(entry: ChainEntry, firstSeq: number, index: ProposalInde
   });
 }
 
-/**
- * Mirror rows for every chain entry (audit seq runs from 1; a completed
- * approve produces 2 rows — AUDIT_SPEC §3.4 — so on a chain containing
- * four-eyes, audit seq ≠ chain seq).
- */
 async function mirrorRowsOf(built: BuiltChain): Promise<WireRow[]> {
   const index = await proposalIndexOf(built);
   const rows: WireRow[] = [];
@@ -141,12 +111,6 @@ async function mirrorRowsOf(built: BuiltChain): Promise<WireRow[]> {
   return rows;
 }
 
-/**
- * Mock of the audit-events endpoint: applies event / eventPrefix / before /
- * limit with the server's semantics (seq-descending, row-id cursor
- * resolution, unknown id → empty page). eventPrefix is a prefix match
- * (AUDIT_SPEC §7).
- */
 function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
   return (request) => {
     if (request.method !== "GET" || request.path !== `/projects/${projectId}/audit/events`) {
@@ -181,7 +145,6 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
 interface AuditServerInput {
   readonly built: BuiltChain;
   readonly rows: readonly WireRow[];
-  /** Whether the metadata pull succeeds (false = 404 — the degradation path for name resolution). */
   readonly metadataAvailable?: boolean;
 }
 
@@ -254,7 +217,6 @@ async function startEnv(handlers: readonly MockHandler[], projectId?: string): P
   return env;
 }
 
-/** A var.version_pushed row (for checking name resolution and payload display). */
 function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
   return {
     id: idOf(seq),
@@ -270,7 +232,6 @@ function pushRow(seq: number, payload?: Record<string, unknown>): WireRow {
   };
 }
 
-/** An aggregated var.read row (AUDIT_SPEC §3.3 — one row per environment per valued pull). */
 function aggregatedReadRow(seq: number, extraPayload: Record<string, unknown> = {}): WireRow {
   return {
     id: idOf(seq),
@@ -312,7 +273,6 @@ describe("maruhi audit (list)", () => {
 
   it("an aggregated var.read shows a count summary; --expand-reads expands it to one line per variable", async () => {
     const built = await baseChain();
-    // seq=5 carries a payload (authMethod) other than the variable list
     const rows = [
       ...(await mirrorRowsOf(built)),
       aggregatedReadRow(4),
@@ -324,17 +284,11 @@ describe("maruhi audit (list)", () => {
     const summary = env.logs.join("\n");
     const readLine = env.logs.find((line) => line.startsWith("seq=4\t"));
     expect(readLine).toContain("read=2 variables");
-    // The listing (payload) is neither folded into the single line as
-    // recorded= nor expanded
     expect(readLine).not.toContain("recorded=");
-    // A payload other than the listing still shows under recorded=
-    // (listing excluded)
     const withMethod = env.logs.find((line) => line.startsWith("seq=5\t"));
     expect(withMethod).toContain('recorded={"authMethod":"github_oauth"}');
     expect(withMethod).not.toContain('"variables"');
     expect(summary).not.toContain("var=ALPHA");
-    // The aggregated-form guidance is a Note (stderr) — not mixed into the
-    // list (stdout)
     expect(env.errors.join("\n")).toContain("--expand-reads");
 
     const expanded = await makeTestEnv();
@@ -346,14 +300,10 @@ describe("maruhi audit (list)", () => {
     expect(await runCli(["audit", "--expand-reads"], expanded.layer)).toBe(0);
     const logs = expanded.logs.join("\n");
     expect(logs).toContain("read=2 variables");
-    // Expansion lines: display names come from verified statements (va =
-    // ALPHA); an absent variable shows only its id
     expect(logs).toContain("- var=ALPHA (va)\tepoch=1\tversion=2");
     expect(logs).toContain("- var=vb\tepoch=1\tversion=1");
     expect(expanded.errors.join("\n")).not.toContain("--expand-reads");
 
-    // With --var, the matching variable's entries are attached inline (no
-    // expansion)
     const filtered = await makeTestEnv();
     seedSession(filtered, servers[servers.length - 1]?.origin ?? "", owner);
     await seedConfig(filtered, {
@@ -391,14 +341,11 @@ describe("maruhi audit (list)", () => {
     expect(await runCli(["audit"], env.layer)).toBe(0);
     const line = env.logs.find((entry) => entry.startsWith("seq=4\t"));
     expect(line).toContain("flags=2 variables");
-    // The enumeration is summarized, not dumped; the rest of the payload remains
     expect(line).not.toContain('"variables"');
     expect(line).toContain('recorded={"triggerChainSeq":3,"trigger":"remove_member"}');
-    // The epoch column is the exposure bound (labelled exposureEpoch), and there is no var= (aggregate)
     expect(line).toContain("exposureEpoch=1");
     expect(line).not.toContain("\tvar=");
 
-    // With --var, the matched variable's basis is attached inline
     const filtered = await makeTestEnv();
     seedSession(filtered, servers[servers.length - 1]?.origin ?? "", owner);
     await seedConfig(filtered, {
@@ -412,23 +359,17 @@ describe("maruhi audit (list)", () => {
 
   it("displays rows, resolves names from verified statements, and cross-checks mirror rows OK", async () => {
     const built = await baseChain();
-    // The payload's name snapshot is a server claim — never promoted to the
-    // display-name position
     const rows = [...(await mirrorRowsOf(built)), pushRow(4, { name: "EVIL_NAME" })];
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
 
     expect(await runCli(["audit"], env.layer)).toBe(0);
     const logs = env.logs.join("\n");
-    // Newest first (seq descending)
     const positions = [4, 3, 2, 1].map((seq) => logs.indexOf(`seq=${seq}\t`));
     expect(positions.every((index) => index >= 0)).toBe(true);
     expect(positions).toEqual([...positions].toSorted((a, b) => a - b));
-    // Mirror cross-check (rows matching the shared mapping are OK)
     expect(logs).toContain("chain.genesis");
     expect(logs).toContain("chain.member_added");
     expect(logs).toContain("mirror=OK");
-    // Display names come only from verified statements. The payload's
-    // snapshot appears only inside "recorded="
     expect(logs).toContain("var=ALPHA (va)");
     expect(logs).not.toContain("var=EVIL_NAME");
     expect(logs).toContain("EVIL_NAME");
@@ -489,8 +430,6 @@ describe("maruhi audit (list)", () => {
 
   it("passes --event and --before / --limit through to the query unchanged", async () => {
     const built = await baseChain();
-    // Plant a row at seq=9 and request earlier rows (seq < 9) via the row-id
-    // cursor
     const rows = [...(await mirrorRowsOf(built)), pushRow(4), pushRow(9)];
     const handlers = await makeAuditServer({ built, rows });
     const server = await MockServer.start([...handlers]);
@@ -512,7 +451,6 @@ describe("maruhi audit (list)", () => {
       before: idOf(9),
     });
     const logs = env.logs.join("\n");
-    // The cursor row itself (seq=9) is excluded; only the seq=4 row returns
     expect(logs).toContain("seq=4\t");
     expect(logs).not.toContain("seq=9\t");
     expect(logs).toContain("var.version_pushed");
@@ -533,8 +471,6 @@ describe("maruhi audit verify (mirror bijection check — §1-5 / §6)", () => {
 
   it("detects an omitted mirror row (concealed deletion)", async () => {
     const built = await baseChain();
-    // Drop the mirror of seq=3 (add_member) — an omission invisible in
-    // principle to per-row cross-checking
     const rows = (await mirrorRowsOf(built)).filter((row) => row["seq"] !== 3);
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -598,8 +534,6 @@ describe("maruhi audit verify (mirror bijection check — §1-5 / §6)", () => {
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // A forged row claiming a point far beyond head (3) — must not be
-    // counted as "unverified" and reported OK
     rows.push({ ...template, id: idOf(50), seq: 50, chainSeq: 50000 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -615,9 +549,6 @@ describe("maruhi audit verify (mirror bijection check — §1-5 / §6)", () => {
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // Fetching by exact match of known mirror names would never retrieve
-    // this row (no omission, no duplication) and it would look OK — fetch by
-    // prefix match and drop it as an unknown op
     rows.push({ ...template, id: idOf(9), seq: 9, event: "chain.role_granted" });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -662,8 +593,6 @@ describe("maruhi audit verify (mirror bijection check — §1-5 / §6)", () => {
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // The shape where the chain grew one entry right after syncing
-    // (chain_seq = head + 1)
     rows.push({ ...template, id: idOf(4), seq: 4, chainSeq: 4 });
     const env = await startEnv(await makeAuditServer({ built, rows }), built.projectId);
     expect(await runCli(["audit", "verify"], env.layer)).toBe(1);
@@ -692,13 +621,6 @@ const approveOp = (proposalHashHex: string): ChainOperation => ({
 });
 
 describe("maruhi audit verify — four-eyes application rows (AUDIT_SPEC §3.4 — K5)", () => {
-  /**
-   * A chain where, under a policy (required), an owner proposes removing a
-   * member and an approver stacks an approve. With required = 2 the second
-   * owner's single vote completes it; with required = 3 it stays pending (an
-   * uncompleted approve). The propose hash is referenced after building once
-   * (signing is deterministic, so the same prefix yields the same hash).
-   */
   async function fourEyesChain(requiredApprovals: 2 | 3): Promise<BuiltChain> {
     const owner2 = await makeTestUser("user-owner-3333");
     const owner3 = await makeTestUser("user-owner-4444");
@@ -722,8 +644,6 @@ describe("maruhi audit verify — four-eyes application rows (AUDIT_SPEC §3.4 �
   it("bijection OK including the completed approve's 2 rows (chain.approved + application row)", async () => {
     const built = await fourEyesChain(2);
     const rows = await mirrorRowsOf(built);
-    // 8 entries ↔ 9 rows (the seq-8 approve yields chain.approved +
-    // chain.member_removed)
     expect(rows).toHaveLength(built.entries.length + 1);
     expect(rows.filter((row) => row["chainSeq"] === 8).map((row) => row["event"])).toEqual([
       "chain.approved",
@@ -769,8 +689,6 @@ describe("maruhi audit verify — four-eyes application rows (AUDIT_SPEC §3.4 �
   it("detects an application row attached to an uncompleted approve as an extra row", async () => {
     const built = await fourEyesChain(3);
     const rows = await mirrorRowsOf(built);
-    // 1 vote under required = 3: only chain.approved (completed = false) is
-    // correct
     expect(rows).toHaveLength(built.entries.length);
     const approved = rows.find((row) => row["event"] === "chain.approved");
     if (approved === undefined) {
@@ -815,8 +733,6 @@ describe("maruhi audit verify — continuity of rows beyond head (a chain_seq ca
     if (template === undefined) {
       throw new Error("fixture is missing the add_member mirror row");
     }
-    // 3 rows at chain_seq = head + 1 (even a completed approve caps at 2
-    // rows — AUDIT_SPEC §3.4)
     for (const seq of [4, 5, 6]) {
       rows.push({ ...template, id: idOf(seq), seq, chainSeq: 4 });
     }
@@ -854,8 +770,6 @@ describe("maruhi audit invites / self", () => {
       onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
         status: 200,
         json: {
-          // D1 responses carry no seq (AUDIT_SPEC §7 — the global counter
-          // is not disclosed)
           events: [
             {
               id: idOf(12),
@@ -909,7 +823,6 @@ describe("maruhi audit invites / self", () => {
       onRequest("GET", "/auth/audit/events", () => ({
         status: 200,
         json: {
-          // D1 responses carry no seq (AUDIT_SPEC §7)
           events: [
             {
               id: idOf(2),
@@ -933,7 +846,6 @@ describe("maruhi audit invites / self", () => {
     const logs = env.logs.join("\n");
     expect(logs).toContain("auth.recovery_blob_fetched");
     expect(logs).toContain("auth.token_created");
-    // The watch-worthy event's implication is a Note (stderr)
     expect(env.errors.join("\n")).toContain("reissue your recovery code");
   });
 });

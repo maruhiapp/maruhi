@@ -1,9 +1,3 @@
-// Tests for the connector frame and the github-app connector
-// (proxy-connector.ts — PF4 ruling P8): the JWT GitHub receives verifies
-// under the App's public key with the claims GitHub requires, the token is
-// cached and re-minted before expiry, PKCS#1 and PKCS#8 keys both import,
-// and failures name the connector and variable but never an input.
-
 import { createVerify, generateKeyPairSync } from "node:crypto";
 
 import { Clock, Effect, Layer } from "effect";
@@ -39,7 +33,6 @@ interface SeenCall {
   readonly headers: Record<string, string>;
 }
 
-/** A fake GitHub: records the call, verifies nothing itself, answers as told. */
 function fakeGithub(answer: (call: SeenCall, index: number) => Response) {
   const calls: SeenCall[] = [];
   const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
@@ -54,12 +47,6 @@ function fakeGithub(answer: (call: SeenCall, index: number) => Response) {
   return { calls, fetch: fetchImpl };
 }
 
-/**
- * The connector's deps for a test: an `HttpClient` built on the fake
- * GitHub's fetch and a `TestClock` impl — the same objects the mint /
- * revoke steps are run with. `setTime` writes the instant the JWT and the
- * refresh margin are read at.
- */
 async function connectorDeps(github: { fetch: typeof fetch }, apiBase?: string) {
   const deps = await Effect.runPromise(
     Effect.gen(function* () {
@@ -76,7 +63,6 @@ async function connectorDeps(github: { fetch: typeof fetch }, apiBase?: string) 
   const clock = deps.clock;
   return {
     deps: { ...deps, apiBase } satisfies ConnectorDeps,
-    /** Sets the TestClock impl's current instant (the deps' clock object). */
     setTime: (ms: number) =>
       Effect.runPromise(TestClock.setTime(ms).pipe(Effect.provideService(Clock.Clock, clock))),
   };
@@ -125,7 +111,6 @@ describe("github-app connector", () => {
       deps,
     });
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_0");
-    // The call GitHub saw
     const call = github.calls[0];
     expect(call?.url).toBe("https://github.test/app/installations/987654/access_tokens");
     expect(call?.method).toBe("POST");
@@ -142,24 +127,20 @@ describe("github-app connector", () => {
     verifier.update(decoded.signingInput);
     expect(verifier.verify(PUBLIC, decoded.signature)).toBe(true);
 
-    // Cached: a second resolve within the hour does not call GitHub
     now += 30 * 60 * 1000;
     await setTime(now);
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_0");
     expect(github.calls).toHaveLength(1);
-    // Re-minted inside the five-minute margin before expiry
     now += 26 * 60 * 1000;
     await setTime(now);
     expect(dec.decode(await credential.resolve())).toBe("ghs_minted_1");
     expect(github.calls).toHaveLength(2);
-    // Both the current and the previous token are known for scrubbing (the old one may still be valid)
     expect(
       credential
         .known()
         .map((bytes) => dec.decode(bytes))
         .toSorted(),
     ).toEqual(["ghs_minted_0", "ghs_minted_1"]);
-    // Teardown revokes both with GitHub (authenticated by the token itself); nothing is held afterwards
     await credential.release?.();
     const revocations = github.calls.slice(2);
     expect(revocations.map((revocation) => `${revocation.method} ${revocation.url}`)).toEqual([
@@ -241,7 +222,6 @@ describe("github-app connector", () => {
     await expect(refused.resolve()).rejects.toThrow(
       "connector github-app for GH_TOKEN: GitHub answered 404 (Integration not found)",
     );
-    // A failure is not cached: the next resolve tries again
     await expect(refused.resolve()).rejects.toThrow(/404/);
     expect(github.calls).toHaveLength(2);
 
@@ -281,7 +261,6 @@ describe("github-app connector", () => {
     await expect(badInstallation.resolve()).rejects.toThrow(
       "input installationId must be the numeric installation ID",
     );
-    // GitHub was not called for the two malformed inputs
     expect(github.calls).toHaveLength(2);
   });
 
@@ -345,7 +324,6 @@ describe("github-app connector", () => {
       deps,
     });
     expect(dec.decode(await credential.resolve())).toBe("ghs_no_expiry");
-    // No known expiry: the token stays cached (no second mint)
     expect(dec.decode(await credential.resolve())).toBe("ghs_no_expiry");
     expect(github.calls).toHaveLength(1);
     await credential.release?.();
@@ -429,7 +407,6 @@ describe("github-app connector", () => {
     await credential.resolve();
     expect(credential.known()).toHaveLength(2);
     await expect(credential.release?.()).rejects.toThrow(/revo/i);
-    // Both revocations were attempted; nothing stays held
     expect(github.calls.filter((call) => call.method === "DELETE")).toHaveLength(2);
     expect(credential.known()).toEqual([]);
   });

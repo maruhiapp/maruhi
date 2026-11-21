@@ -1,130 +1,53 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // ADR-0012's self-host path: a deploy must work from a plain
-  // config file alone. Deploys moved to `cf` (cloudflare.config.ts
-  // is the deployment source of truth — `cf deploy` / `cf dev`), but
-  // this file stays: @cloudflare/vitest-plugin reads only wrangler
-  // configs (vitest.config.ts configPath), the e2e / unit topology
-  // tests read it via unstable_readConfig, and cf's delegated
-  // bundler consumes it through wrangler.config.ts
-  // (assetsDirectory). scripts/check-hosted-config.ts asserts
-  // cloudflare.config.ts mirrors it, so it is maintained as the
-  // test-harness mirror of the deployment config.
   "name": "maruhi-server",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-09",
-  // Both Node compat layers off, whatever the date implies (the reason is
-  // at COMPATIBILITY_FLAGS in cloudflare.config.ts)
   "compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
-  // Publish on the workers.dev subdomain (the self-host default
-  // URL. Even when routes assigns a custom domain, the OAuth
-  // callback URL is derived from the origin)
   "workers_dev": true,
-  // Per-version preview URLs are disabled: don't multiply the
-  // origins of auth endpoints (the OAuth callback is pinned to a
-  // single deploy URL)
   "preview_urls": false,
-  // Serve the Web dashboard (apps/web) build output from the same
-  // Worker (W2 — ruling BM: docs/notes/session-43.md). The session
-  // cookie (__Host-), CSP connect-src 'self', and the OAuth
-  // callback (${origin}/) each require the dashboard and the API to
-  // share one origin, so they're bundled into a single Worker.
-  // `bun run deploy` fronts the web build (a deploy missing the
-  // assets fails in wrangler on the missing directory — never
-  // silently ships an API-only worker)
   "assets": {
     "directory": "../web/dist/public",
-    // The API's path space (every api-schema endpoint = /auth,
-    // /projects, /invites prefixes) always goes to the Worker. It
-    // is cleanly separated from the SPA's route space (/dashboard
-    // etc.) (ruling BO). Anything unlisted goes to the asset layer
-    // (_headers / _redirects / SPA fallback — the same serving
-    // semantics as apps/web).
-    // /invites/* (the accept POST — §15-2) is required: without it
-    // the _redirects /invite* catch-all (session-41 BF) swallows
-    // each POST as a 301 (measured — session-43 §9's defect fix)
     "run_worker_first": ["/auth/*", "/projects", "/projects/*", "/invites", "/invites/*"],
     "not_found_handling": "single-page-application",
-    // Explicit pin of a default (session-41 ruling BH): the
-    // extension-less canonical URL /invite → invite.html (AUTH_SPEC
-    // §15-3) depends on this value. Make the implicit dependence on
-    // the default a configuration
     "html_handling": "auto-trailing-slash",
   },
   "durable_objects": {
     "bindings": [{ "name": "PROJECT_CHAIN", "class_name": "ProjectChainDO" }],
   },
-  // Per-source-IP best-effort rate limiting (deepsec M5/R7,
-  // AUTH_SPEC §4-1).
-  // A per-colo memory-based limit available on every plan; bounds
-  // the expensive unauthenticated surfaces (CLI login's start /
-  // verify / approve / poll, OAuth callback's GitHub calls, lease's
-  // DO creation) even on a default deploy.
-  // period may only be 10 or 60; when changing it, also align
-  // IP_RATE_LIMIT_PERIOD_SECONDS in src/worker-env.ts (the 429's
-  // retryAfterSeconds).
-  // The values are the same as the WAF recommendations in
-  // docs/SELF_HOSTING.md. If legitimate traffic under shared
-  // egress (an office NAT, shared runners) hits 429s, raise limit
-  // (per-colo counting makes the effective cap looser than
-  // nominal). For stronger protection (global counting), keep
-  // using the WAF rules in that document
   "ratelimits": [
-    // CLI login start (AUTH_SPEC §4-1 (1) drafting value: 10/min/IP)
     {
       "name": "CLI_START_RATE_LIMIT",
       "namespace_id": "1001",
       "simple": { "limit": 10, "period": 60 },
     },
     { "name": "LEASE_RATE_LIMIT", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } },
-    // callback is the browser's interactive login path (including
-    // the CLI browser leg). Looser than start (10) since concurrent
-    // logins bunch up behind one office NAT (deepsec R7)
     {
       "name": "OAUTH_CALLBACK_RATE_LIMIT",
       "namespace_id": "1003",
       "simple": { "limit": 30, "period": 60 },
     },
-    // CLI login poll (AUTH_SPEC §4-1 (5) — the happy path polls at
-    // 5-second intervals = 12/min. 30/min leaves room for
-    // concurrent flows and clock skew)
     {
       "name": "CLI_POLL_RATE_LIMIT",
       "namespace_id": "1004",
       "simple": { "limit": 30, "period": 60 },
     },
-    // Pre-verification of a signup start carrying an invite code
-    // (AUTH_SPEC §3 — 2026-09-01 H1. Only code-bearing starts are
-    // covered — the plain login path is unlimited)
     {
       "name": "SIGNUP_START_RATE_LIMIT",
       "namespace_id": "1005",
       "simple": { "limit": 10, "period": 60 },
     },
-    // CLI login verify (AUTH_SPEC §4-3 — the browser leg's entry.
-    // The flow-signing key is resolved (get-or-create) before vsig
-    // verification, so an unauthenticated flood reaches D1 writes.
-    // 30/min like the callback this leg leads into)
     {
       "name": "CLI_VERIFY_RATE_LIMIT",
       "namespace_id": "1006",
       "simple": { "limit": 30, "period": 60 },
     },
-    // CLI login approve (AUTH_SPEC §4-3 — the approval ticket is the
-    // only credential, so every well-formed unauthenticated POST
-    // runs the decision CAS against D1; the limit bounds that
-    // amplification)
     {
       "name": "CLI_APPROVE_RATE_LIMIT",
       "namespace_id": "1007",
       "simple": { "limit": 30, "period": 60 },
     },
   ],
-  // The DO class declaration uses `exports` (the successor to
-  // wrangler's legacy `migrations` array — once a Worker is
-  // deployed with exports it cannot go back to migrations). The
-  // operator (env.hosted) deleted and recreated the DO namespace
-  // on 2026-09-26 (docs/notes/dk-design.md §22-4)
   "exports": {
     "ProjectChainDO": { "type": "durable-object", "storage": "sqlite" },
   },
@@ -132,62 +55,16 @@
     {
       "binding": "DB",
       "database_name": "maruhi",
-      // Self-host: replace with the ID from `cf d1 create --name
-      // maruhi`
       "database_id": "00000000-0000-4000-8000-000000000000",
       "migrations_dir": "drizzle",
-      // drizzle-kit v1's folder layout (drizzle/<name>/migration.sql)
       "migrations_pattern": "drizzle/*/migration.sql",
     },
   ],
-  // The GitHub OAuth App's GITHUB_CLIENT_ID and
-  // GITHUB_CLIENT_SECRET are both registered as Workers Secrets
-  // (`cf workers secrets update` — the procedure is in
-  // docs/SELF_HOSTING.md). client_id is public information, but
-  // unifying the registration path under secret makes editing this
-  // file (committing it to a fork) and redeploying unnecessary
-  // (AUTH_SPEC §3-2). A server stood up without them returns 503
-  // SetupIncomplete on the auth endpoints (handlers-auth.ts)
   "triggers": {
-    // First cron (daily): sweep expired session rows (rows never
-    // presented aren't removed by the resolve-time sweep). Second
-    // cron (hourly): ops foundation H3 — the DO → R2 evacuation
-    // sweep and tripwire evaluation (src/index.ts branches on the
-    // cron string; keep the string manually in sync with
-    // src/ops/ops-policy.ts's OPS_HOURLY_CRON). On a default deploy
-    // without the evacuation binding (env.hosted's
-    // OPS_BACKUP_BUCKET), the hourly job is nearly a no-op — just a
-    // few D1 reads (docs/SELF_HOSTING.md "Backups and
-    // operations")
     "crons": ["17 3 * * *", "23 * * * *"],
   },
-  // The hosted environment (the operator's deploy —
-  // docs/notes/hosted-ops.md §2-F) — the `hosted` mode of
-  // cloudflare.config.ts, `cf deploy --mode hosted`. The self-host
-  // default (top level) is left unchanged, so a one-shot
-  // `cf deploy` on an account without an R2 contract still works.
-  // Non-inheritable keys (durable_objects / d1_databases /
-  // ratelimits / r2_buckets) must be re-declared per wrangler's
-  // rules — drift from the top level is checked by
-  // scripts/check-hosted-config.ts (CI 8c). Secrets: the four
-  // values (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET /
-  // SERVER_ENC_KEY_IKM, plus OPS_ALERT_WEBHOOK_URL — optional) live
-  // in the account's Secrets Store and reach the hosted worker as
-  // Secrets Store bindings declared in cloudflare.config.ts and
-  // alchemy.run.ts (ADR-0012 revision 3). This mirror declares no
-  // store bindings: the test harness injects the dummy string
-  // values from .dev.vars instead, and src/worker-env.ts resolves
-  // both shapes.
   "env": {
     "hosted": {
-      // The operator's serving domains (2026-09-03 owner ruling:
-      // product origin = my.maruhi.app, apex maruhi.app = LP +
-      // docs [/docs — the L1 revision; a separate Worker
-      // `maruhi-site`, apps/site/cloudflare.config.ts], maruhi.dev is a
-      // 301). The dashboard's origin is TCB, so it's kept apart
-      // from the LP. workers.dev is disabled, pinning the auth
-      // endpoints' origin to one (the OAuth callback / __Host-
-      // cookie / the CLI's server URL are bound to it)
       "routes": [{ "pattern": "my.maruhi.app", "custom_domain": true }],
       "workers_dev": false,
       "durable_objects": {
@@ -234,41 +111,17 @@
         {
           "binding": "DB",
           "database_name": "maruhi",
-          // The operator account's (maruhi) real DB (hosted-ops.md
-          // §7 O3 — set 2026-09-03; the ID is not secret)
           "database_id": "c45d4f84-3142-46cf-ab3b-c9571ca7eed0",
           "migrations_dir": "drizzle",
           "migrations_pattern": "drizzle/*/migration.sql",
         },
       ],
-      // The DO → R2 evacuation destination (hosted-ops.md §2-D).
-      // The bucket is created by the operator (`cf r2 buckets
-      // create --name maruhi-ops-backup` + a lifecycle rule —
-      // hosted-ops.md §7 O2). The worker only uses put / get
       "r2_buckets": [{ "binding": "OPS_BACKUP_BUCKET", "bucket_name": "maruhi-ops-backup" }],
-      // Workers Logs (retention of static log lines —
-      // hosted-ops.md §1). **Invocation logs are disabled**: the
-      // default Fetch invocation log embeds the request URL (path
-      // + query) in its body, so /projects/:id (capability —
-      // AUTH_SPEC §11-2) and /auth/github/callback?code=… would
-      // sit in the log store for 7 days (PR #137 Cursor security
-      // review). Only static console lines are kept. Logpush for
-      // request logs is not enabled either (hosted-design.md
-      // §5-1).
-      // scripts/check-hosted-config.ts checks
-      // invocation_logs: false.
-      // redact_query_string (wrangler 4.128) is defense-in-depth:
-      // if invocation logs or traces are ever enabled, URL queries
-      // (OAuth codes etc.) still drop out of logs/traces. The
-      // path-side capability is only protected by
-      // invocation_logs: false
       "observability": {
         "enabled": true,
         "redact_query_string": true,
         "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 },
       },
-      // Evacuating a large DO (JSON + gzip) can exceed the DO's
-      // default 30s CPU (hosted-ops.md §4-2). The cap is 5 minutes
       "limits": { "cpu_ms": 300000 },
     },
   },

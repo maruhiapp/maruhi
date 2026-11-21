@@ -17,25 +17,15 @@ permissions:
 jobs:
   pullfrog:
     runs-on: ubuntu-26.04
-    # A hung agent run would otherwise hold the provider keys below,
-    # id-token: write and GITHUB_TOKEN for GitHub's 6-hour default. The
-    # action stops itself at its `timeout` input's 1-hour default and reports
-    # the failure; this bound leaves headroom for checkout and its post step
     timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
     steps:
-      # External actions are pinned by commit SHA (same discipline as
-      # release.yml. This is a privileged path that passes many provider API
-      # keys via env, so it rules out upstream compromise through a mutable
-      # tag). Updates are done by replacing the SHA, not the tag
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 1
-          # Do not leave GITHUB_TOKEN in .git/config on the agent-running job
-          # (same discipline as ci.yml / release.yml / installer.yml)
           persist-credentials: false
       - name: Run agent
         uses: pullfrog/pullfrog@0657d542f2e34565c6254d5c84581313e631cd90 # v0.1.57
@@ -53,26 +43,3 @@ jobs:
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-
-          # for Amazon Bedrock (https://docs.pullfrog.com/bedrock)
-          # AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          # AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          # AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # AWS_REGION: us-east-1
-          # BEDROCK_MODEL_ID: <bedrock-model-id>
-
-          # for Google Vertex AI (https://docs.pullfrog.com/vertex)
-          # VERTEX_SERVICE_ACCOUNT_JSON: >-
-          #   ${{ secrets.VERTEX_SERVICE_ACCOUNT_JSON }}
-          # GOOGLE_CLOUD_PROJECT: my-project
-          # VERTEX_LOCATION: global
-          # VERTEX_MODEL_ID: <vertex-model-id>
-
-          # for any OpenAI-compatible endpoint — LiteLLM, Cloudflare AI Gateway,
-          # self-hosted vLLM (https://docs.pullfrog.com/openai-compatible)
-          # OPENAI_COMPATIBLE_BASE_URL: https://litellm.example.com/v1
-          # OPENAI_COMPATIBLE_API_KEY: ${{ secrets.OPENAI_COMPATIBLE_API_KEY }}
-          # OPENAI_COMPATIBLE_MODEL: <model-id>
-          # both limits are required — set them to the real limits of that model
-          # OPENAI_COMPATIBLE_CONTEXT: "128000"
-          # OPENAI_COMPATIBLE_MAX_OUTPUT: "16384"

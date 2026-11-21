@@ -1,15 +1,3 @@
-// Integration tests for `maruhi member add` (CRYPTO_SPEC §6.2 / §6.5 / §7, AUTH_SPEC §12-6 / §15).
-//
-// Properties pinned here:
-//  1. add_member is built from the listing's acceptance block (key, user_id;
-//     role from the invite row). §6.5's independent verification, issuance-pin
-//     match, and FP ceremony (--expect-fingerprint / last-word re-entry /
-//     agent refusal) all stand before the append
-//  2. Backfill: wraps all environments × all epochs to the new member; 409 =
-//     already registered, resumed idempotently (same key already a member → skip the append)
-//  3. Re-adding (past membership under another key) deletes the 409 slot then
-//     re-registers to repair (key-history gate — a rerun with the same key never deletes)
-
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -75,10 +63,6 @@ afterEach(async () => {
 
 type Acceptance = AcceptanceFixture;
 
-/**
- * The issued invites per project (with the inviter's issuance signature).
- * Prepared by the acceptanceFor / issuedFor calls so invitationRow can synchronously carry the issuance text.
- */
 const issuedByProject = new Map<string, IssuedInviteFixture>();
 
 async function issuedFor(projectId: string): Promise<IssuedInviteFixture> {
@@ -96,7 +80,6 @@ async function issuedFor(projectId: string): Promise<IssuedInviteFixture> {
   return issued;
 }
 
-/** The accepter's own proper acceptance block (with the §6.5 acceptance signature + link signature). */
 async function acceptanceFor(projectId: string, invitee: TestUser): Promise<Acceptance> {
   return acceptanceFixture({ projectId, issued: await issuedFor(projectId), invitee });
 }
@@ -115,7 +98,6 @@ interface AddServerState {
   readonly counters: { appendAttempts: number; registerAttempts: number };
 }
 
-/** Per-method handler for the dek_wraps route (/environments/:id/deks). */
 function onDeksRoute(
   projectId: string,
   method: string,
@@ -132,30 +114,16 @@ function onDeksRoute(
   };
 }
 
-/**
- * Stateful mock for the member-add flow. Simulates dek_wraps slot occupancy:
- * registering into an (environment:epoch:recipient) present in `occupiedSlots`
- * returns 409 (§12-6's no-overwrite), and deletion frees the slot. A batch
- * registration gets 409 if even one slot is occupied (atomic acceptance).
- */
 async function makeAddServer(input: {
   readonly built: BuiltChain;
   readonly invitation: Readonly<Record<string, unknown>>;
   readonly ownDeks: readonly WireRecipientDek[];
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
-  /**
-   * Slot → the stored recipient enc public key (hex — the 409's
-   * `storedRecipientEncPubHex`, AUTH_SPEC §12-6). An unlisted slot is the shape
-   * where the same key as the one being registered occupies it.
-   */
   readonly occupiedSlotEncPub?: Readonly<Record<string, string>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
-  /** Injection into chain appends (e.g. 409). undefined = accept. */
   readonly onAppend?: (call: number) => MockResponse | undefined;
-  /** When onAppend injects, the chain is replaced with this shape from then on (a concurrent append). */
   readonly chainAfterConflict?: BuiltChain;
-  /** Injection into dek_wraps registration (call-count based). undefined = normal processing. */
   readonly onRegister?: (call: number) => MockResponse | undefined;
 }): Promise<AddServerState> {
   const projectId = input.built.projectId;
@@ -306,7 +274,6 @@ async function startAddEnv(
   return { ...env, serverOrigin: server.origin };
 }
 
-/** Reads the fingerprint book (KF) file contents. */
 async function readBook(
   env: TestEnv,
 ): Promise<Record<string, Record<string, { fingerprints: Record<string, unknown> }>>> {
@@ -354,7 +321,6 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
 
-    // add_member payload = the acceptance block's key + the invite row's role
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "add_member") throw new Error("add_member entry missing");
@@ -363,12 +329,10 @@ describe("maruhi member add", () => {
       encPubHex: acceptor.encPubHex,
       sigPubHex: acceptor.sigPubHex,
       role: "member",
-      // Signs with the invite row's scope (the K2 CLI issues only all) — AUTH_SPEC §15-2
       scopeKind: "all",
       scopeEnvironmentIds: [],
     });
 
-    // Backfill: wraps epochs 1-2 to the new member (accepted as a single batch)
     expect(state.registerBodies).toHaveLength(1);
     const wraps = state.registerBodies[0]?.deks ?? [];
     expect(wraps.map((wrap) => [wrap.epoch, wrap.recipientUserId])).toEqual([
@@ -390,7 +354,6 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: createEnvironmentOp("env-prod", dek2) },
       { actor: inviter, operation: addScopedMemberOp(devAdmin, "admin", [ENV_ID]) },
     ]);
-    // The invite row is all (issuer = owner). A dev-only admin runs add
     const state = await makeAddServer({
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
@@ -407,7 +370,6 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(1);
     expect(env.errors.join("\n")).toContain("does not contain the invite's scope");
-    // Neither the ceremony (agent refusal) nor the append is reached
     expect(env.errors.join("\n")).not.toContain("AI agent environment");
     expect(state.appendedEntries).toHaveLength(0);
   });
@@ -418,7 +380,6 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: inviter, operation: createEnvironmentOp("env-prod", dek2) },
     ]);
-    // The issuance text covers the scope (CRYPTO_SPEC §6.5), so the acceptance block is built from the listed issuance text
     issuedByProject.set(
       built.projectId,
       await issueInviteFixture({
@@ -473,10 +434,8 @@ describe("maruhi member add", () => {
     expect(entry.payload.role).toBe("member");
     expect(entry.payload.scopeKind).toBe("listed");
     expect(entry.payload.scopeEnvironmentIds).toEqual([ENV_ID]);
-    // prod is outside the target scope — no wrap is made (making one gets the server to return 422 scope-out-of-range)
     expect(state.registerBodies.map((body) => body.environmentId)).toEqual([ENV_ID]);
     expect(env.logs.join("\n")).toContain("in the member's scope × every epoch");
-    // A chain built by the same steps gets the same projectId — do not leak the listed issuance text into other tests
     issuedByProject.delete(built.projectId);
   });
 
@@ -486,7 +445,6 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
     ]);
-    // A chain grown by another member's append concurrent with the send (an extension of the same prefix)
     const concurrent = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -524,22 +482,18 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
 
-    // The append is attempted twice (409 → re-sync + re-sign → accepted). The accepted entry is a child of the new head
     expect(state.counters.appendAttempts).toBe(2);
     expect(state.appendedEntries).toHaveLength(1);
     const entry = state.appendedEntries[0];
     if (entry?.op !== "add_member") throw new Error("add_member entry missing");
     expect(entry.seq).toBe(concurrent.entries.length + 1);
     expect(entry.payload.targetUserId).toBe(acceptor.userId);
-    // The backfill completes too
     expect(
       state.registerBodies.flatMap((body) => body.deks.map((wrap) => wrap.recipientUserId)),
     ).toEqual([acceptor.userId]);
   });
 
   it("when re-registration fails after a repair-path deletion, fails while making explicit that the slot is empty", async () => {
-    // Delete → re-register is not atomic: a failure in between leaves the target
-    // with no wrap for that epoch. Buried in generic wording, that goes unnoticed
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -572,7 +526,6 @@ describe("maruhi member add", () => {
       ],
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
       occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
-      // Call order: 0 = batch (409) → 1 = epoch-1 single (409) → delete → 2 = re-register
       onRegister: (call) => (call === 2 ? { status: 500, json: {} } : undefined),
     });
     const env = await startAddEnv(state, built.projectId);
@@ -580,7 +533,6 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(1);
-    // The delete already ran = the slot is empty
     expect(state.removeBodies).toEqual([
       {
         environmentId: ENV_ID,
@@ -632,7 +584,6 @@ describe("maruhi member add", () => {
     expect(state.appendedEntries).toHaveLength(1);
     expect(env.logs.join("\n")).toContain(`role:    member (will be granted to this member)`);
 
-    // Agent environment: no --expect-fingerprint is refused (never let it stand in for the ceremony)
     const state2 = await makeAddServer({
       built,
       invitation: invitationRow(built.projectId, acceptance),
@@ -666,7 +617,6 @@ describe("maruhi member add", () => {
           signer: inviter,
         }),
       ],
-      // The previous run already registered (membership under the acceptance key = no repair needed)
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
     });
     const env = await startAddEnv(state, built.projectId);
@@ -676,7 +626,6 @@ describe("maruhi member add", () => {
     ).toBe(0);
     expect(state.appendedEntries).toHaveLength(0);
     expect(state.registerBodies).toHaveLength(0);
-    // Membership under the same key never triggers delete (repair) (the 409's stored key = the acceptance key)
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("already a member with the same key");
@@ -684,7 +633,6 @@ describe("maruhi member add", () => {
   });
 
   it("re-adding (past membership under another key): deletes the 409 slot then re-registers to repair to the new key", async () => {
-    // The old key identity for the same user_id (past membership)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -715,7 +663,6 @@ describe("maruhi member add", () => {
           signer: inviter,
         }),
       ],
-      // The old-key wrap from the past membership occupies the epoch-1 slot
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
       occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
     });
@@ -725,7 +672,6 @@ describe("maruhi member add", () => {
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
 
-    // epoch 1 is deleted → re-registered (repair); epoch 2 registers normally
     expect(state.removeBodies).toEqual([
       {
         environmentId: ENV_ID,
@@ -742,7 +688,6 @@ describe("maruhi member add", () => {
     const registered = state.registerBodies.flatMap((body) =>
       body.deks.map((wrap) => [wrap.epoch, wrap.recipientEncPubHex] as const),
     );
-    // The re-registered epoch-1 wrap is addressed to the **new key** (the substance of the repair)
     expect(registered).toContainEqual([1, acceptor.encPubHex]);
     expect(registered).toContainEqual([2, acceptor.encPubHex]);
     const logs = env.logs.join("\n");
@@ -751,10 +696,6 @@ describe("maruhi member add", () => {
   });
 
   it("does not delete when the 409's stored enc public key matches the acceptance key — even with a different-key membership history (blocks mis-deletion)", async () => {
-    // A rerun of "past membership under another key + the immediately preceding
-    // member add partially completed under the current key". The 409 carries the
-    // stored enc public key (= the current key), so an exact comparison detects
-    // already-registered (AUTH_SPEC §12-6 supplement)
     const oldKeys = await makeTestUser(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -762,7 +703,6 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: addMemberOp(oldKeys, "member") },
       { actor: inviter, operation: removeMemberOp(oldKeys) },
       { actor: inviter, operation: rotateEpochOp(ENV_ID, 2, dek2) },
-      // Re-adding under the current key was already accepted (the previous run interrupted) — resume backfill only
       { actor: inviter, operation: addMemberOp(acceptor, "member") },
     ]);
     const slot = `${ENV_ID}:1:${acceptor.userId}`;
@@ -788,7 +728,6 @@ describe("maruhi member add", () => {
           signer: inviter,
         }),
       ],
-      // The previous run already registered epoch 1 **under the current key** (partial completion)
       occupiedSlots: [slot],
       occupiedSlotEncPub: { [slot]: acceptor.encPubHex },
     });
@@ -797,7 +736,6 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
-    // A match = already registered (idempotent). Not a single delete (mis-deletion) fires
     expect(state.removeBodies).toHaveLength(0);
     const logs = env.logs.join("\n");
     expect(logs).toContain("1 already registered");
@@ -805,9 +743,6 @@ describe("maruhi member add", () => {
   });
 
   it("repairs when the 409's stored enc public key mismatches the acceptance key, regardless of key history", async () => {
-    // The key history has no other key, but the 409's field declares another
-    // key. The verdict does not depend on the key history: it is decided by an
-    // exact comparison with the field
     const strangerKeys = await makeTestUser("user-someone-else");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
@@ -835,7 +770,6 @@ describe("maruhi member add", () => {
     expect(
       await runCli(["member", "add", "--expect-fingerprint", acceptor.fingerprintHex], env.layer),
     ).toBe(0);
-    // A mismatch = repair (delete → re-register). Independent of the key-history gate
     expect(state.removeBodies).toEqual([
       {
         environmentId: ENV_ID,
@@ -858,7 +792,6 @@ describe("maruhi member add", () => {
   });
 
   it("a completed row can resume with an explicit id; a rerun without id guides toward that path", async () => {
-    // The shape where add_member already ran (the server updated the row to completed) + the backfill was interrupted
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -877,8 +810,6 @@ describe("maruhi member add", () => {
       }),
     ];
 
-    // No id: a completed row is never auto-selected (past members' rows
-    // accumulate), but the error guides toward the resume path (explicit id)
     const state1 = await makeAddServer({ built, invitation: completedRow, ownDeks });
     const env1 = await startAddEnv(state1, built.projectId);
     expect(
@@ -887,7 +818,6 @@ describe("maruhi member add", () => {
     expect(env1.errors.join("\n")).toContain("pass it explicitly: `maruhi member add <invite-id>`");
     expect(state1.appendedEntries).toHaveLength(0);
 
-    // Explicit id: completed row + same-key membership → no append; resume backfill only
     const state2 = await makeAddServer({ built, invitation: completedRow, ownDeks });
     const env2 = await startAddEnv(state2, built.projectId);
     expect(
@@ -911,17 +841,14 @@ describe("maruhi member add", () => {
     const acceptance = await acceptanceFor(built.projectId, acceptor);
 
     for (const [invitation, fragment] of [
-      // role tampering (covered by the issuance signature — fails issuance-text verification)
       [
         invitationRow(built.projectId, acceptance, { role: "admin" }),
         "issue signature that does not verify",
       ],
-      // key swapping (breaks the declared-key binding of both signatures — the link signature is reported first)
       [
         invitationRow(built.projectId, { ...acceptance, inviteeEncPubHex: "aa".repeat(32) }),
         "the link signature failed verification",
       ],
-      // tampering of the acceptance signature only
       [
         invitationRow(built.projectId, {
           ...acceptance,
@@ -940,7 +867,6 @@ describe("maruhi member add", () => {
       expect(state.appendedEntries, fragment).toHaveLength(0);
     }
 
-    // A server declaration whose issuance pin and link_pub disagree (row substitution)
     const state2 = await makeAddServer({
       built,
       invitation: invitationRow(built.projectId, acceptance),
@@ -977,9 +903,6 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
     ]);
-    // The shape where an attacker declares the inviter's public key verbatim in
-    // their acceptance (the signature is self-bound, so it cannot be made without
-    // the inviter's secret key — only the early consensus-rule check is under test here, so we build a "key reuse" acceptance signed with the inviter's own key)
     const sock = await acceptanceFixture({
       projectId: built.projectId,
       issued: await issuedFor(built.projectId),
@@ -1044,7 +967,6 @@ describe("maruhi member add", () => {
   });
 
   describe("the identity-backing source (IV2 — fulfillment shape 4)", () => {
-    /** Adds an impersonated GitHub signing-key list to a server state with an accepted invite + one environment. */
     async function backedState(
       built: BuiltChain,
       registeredKeys: readonly string[],
@@ -1096,7 +1018,6 @@ describe("maruhi member add", () => {
       expect(env.logs.join("\n")).toContain(
         "Acceptance key verified: it is registered as a signing key on github.com/bob",
       );
-      // A successful machine match is not recorded to the book (the book records human out-of-band confirmation — ruling D ②)
       await expect(readBook(env)).rejects.toThrow();
 
       const state2 = await backedState(built, [sshLineOf(acceptor)]);
@@ -1154,7 +1075,6 @@ describe("maruhi member add", () => {
       if (!words.ok) throw new Error("words");
       const built = await chain();
 
-      // Unregistered + empty answer → stops without appending
       const state = await backedState(built, [sshLineOf(inviter)]);
       const env = await backedEnv(state, built.projectId);
       env.setPromptResponses([""]);
@@ -1165,7 +1085,6 @@ describe("maruhi member add", () => {
       );
       expect(state.appendedEntries).toHaveLength(0);
 
-      // Unregistered + yes → to the ceremony (last word)
       const state2 = await backedState(built, [sshLineOf(inviter)]);
       const env2 = await backedEnv(state2, built.projectId);
       env2.setPromptResponses(["yes", words.value[words.value.length - 1] ?? ""]);
@@ -1174,7 +1093,6 @@ describe("maruhi member add", () => {
       expect(env2.prompts[1]).toContain("type the last of the 12 words");
       expect(state2.appendedEntries).toHaveLength(1);
 
-      // Unreachable (cap) → note + ceremony (no two-way choice)
       const state3 = await backedState(built, [], 403);
       const env3 = await backedEnv(state3, built.projectId);
       env3.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
@@ -1183,7 +1101,6 @@ describe("maruhi member add", () => {
       expect(env3.errors.join("\n")).toContain("could not be fetched");
       expect(state3.appendedEntries).toHaveLength(1);
 
-      // identityBacking = none → no match (note + ceremony)
       const state4 = await backedState(built, [sshLineOf(acceptor)]);
       const env4 = await backedEnv(state4, built.projectId);
       await seedConfig(env4, {
@@ -1224,20 +1141,15 @@ describe("maruhi member add", () => {
     });
     const env = await startAddEnv(state, built.projectId);
 
-    // Run 1: the ceremony (last-word re-entry) → the success is recorded to the book
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(1);
     const recorded = await readBook(env);
-    // Added to the set (DK — old records are not erased; they remain as the same person's other devices)
     expect(
       Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
     ).toContain(acceptor.fingerprintHex);
     expect(env.errors.join("\n")).toContain("recorded the verified fingerprint");
 
-    // Run 2 (already a member → backfill-only rerun): a book hit exempts the
-    // 12-word read-out re-run, but the explicit yes confirmation of the grant
-    // itself remains. The two read-out-match instruction lines are not printed on a hit (no exemption note right after the instruction)
     const logsBeforeSecondRun = env.logs.length;
     env.setPromptResponses(["yes"]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
@@ -1247,7 +1159,6 @@ describe("maruhi member add", () => {
     expect(secondRunLogs).toContain("not required again");
     expect(secondRunLogs).not.toContain("reads to you out of band");
 
-    // Run 3 (agent environment): a book hit does not allow standing in (the flag is required)
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["member", "add"], env.layer)).toBe(1);
     expect(env.prompts).toHaveLength(2);
@@ -1255,9 +1166,6 @@ describe("maruhi member add", () => {
       "Refused to run the acceptance-key confirmation ceremony",
     );
 
-    // Run 4 (non-interactive — stdin is a pipe): a book hit does not advance to
-    // the yes confirmation; it returns to the full ceremony (last-word re-entry)
-    // — a blind `printf yes |` cannot pass (the primary boundary is the terminal)
     env.setAgent({ isAgent: false });
     env.setTerminal({ stdin: false });
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
@@ -1266,8 +1174,6 @@ describe("maruhi member add", () => {
     expect(env.prompts[2]).toContain("type the last of the 12 words");
     expect(env.errors.join("\n")).toContain("stdin is not an interactive terminal");
 
-    // Run 5 (stdout redirected): the boundary is stdin AND stdout (&&) — pins a
-    // single-sided implementation mistake
     env.setTerminal({ stdin: true, stdout: false });
     env.setPromptResponses([words.value[words.value.length - 1] ?? ""]);
     expect(await runCli(["member", "add"], env.layer)).toBe(0);
@@ -1316,8 +1222,6 @@ describe("maruhi member add", () => {
       );
     };
 
-    // Interactive environment: the warning + ceremony are not skipped. The
-    // success overwrites the book with the new fingerprint (reflecting a legitimate key update via `maruhi key generate`)
     const state = await makeAddServer({ built, invitation, ownDeks });
     const env = await startAddEnv(state, built.projectId);
     await seedStaleBook(env);
@@ -1326,12 +1230,10 @@ describe("maruhi member add", () => {
     expect(env.prompts).toHaveLength(1);
     expect(env.errors.join("\n")).toContain("is not among the one verified");
     const recorded = await readBook(env);
-    // Added to the set (DK — old records are not erased; they remain as the same person's other devices)
     expect(
       Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
     ).toContain(acceptor.fingerprintHex);
 
-    // Agent environment + mismatch + no flag = refused as before (never auto-passes)
     const state2 = await makeAddServer({ built, invitation, ownDeks });
     const env2 = await startAddEnv(state2, built.projectId);
     await seedStaleBook(env2);
@@ -1363,8 +1265,6 @@ describe("maruhi member add", () => {
       ],
     });
     const env = await startAddEnv(state, built.projectId);
-    // Stale record (the shape of re-running with the flag right after a
-    // legitimate key update): the flag matches the actual fingerprint, so "the out-of-band check is required again" is not shown; the record is overwritten
     await writeFile(
       env.fingerprintBookPath,
       JSON.stringify({
@@ -1384,7 +1284,6 @@ describe("maruhi member add", () => {
     ).toBe(0);
     expect(env.errors.join("\n")).not.toContain("is not among the one verified");
     const recorded = await readBook(env);
-    // Added to the set (DK — old records are not erased; they remain as the same person's other devices)
     expect(
       Object.keys(recorded[env.serverOrigin]?.[acceptor.userId]?.fingerprints ?? {}),
     ).toContain(acceptor.fingerprintHex);

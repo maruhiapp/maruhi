@@ -1,6 +1,3 @@
-// Helpers shared across command groups (discipline: see commands/index.ts).
-// A leaf: of the other commands/ files it imports only lazy.ts, itself a leaf.
-
 import type { UserId } from "@maruhi/core";
 import type { Role } from "@maruhi/crypto";
 import { Clock, Effect, Stdio } from "effect";
@@ -31,38 +28,9 @@ import {
 } from "../sync.package/index.ts";
 import { normalizeHttpOrigin, openEnvironment } from "./lazy.ts";
 
-// P-6: the heavy implementation graph (context / api / session and the op
-// modules) is imported lazily inside the bodies that use it, so that
-// parsing / help / version never pay its module cost. `import()` inside an
-// `Effect.promise` resolves only when the command handler actually runs.
-// Each load reads its names off the module inside the `.then` — the only
-// shape fallow credits per export (pinned by test/lazy-imports.test.ts).
-// Every context.ts and session.ts function the commands call is wrapped
-// once in lazy.ts, as are the two rotation helpers several commands share
-// (reportRotationChecklist, sweepRotateFor), so a command imports them from
-// there and calls them directly. That parsing, help and version load none
-// of context / api / session / chain-sync is checked on the running CLI by
-// test/startup-loads.test.ts.
-
-/** The guidance attached to a run that forgot `--` (there is exactly one way to pass the run target). */
 const RUN_TERMINATOR_HINT =
   ". Write the command to run after `--` (example: `maruhi run -- printenv MY_VAR`)";
 
-/**
- * Settles the command list `maruhi run` executes (**only what follows
- * `--`**). The parser merges the positional arguments before and after
- * `--` into one array (measured: upstream's `parseArgs` produces
- * `[...result.arguments, ...afterEndOfOptions]`). So on the declaration
- * alone, `maruhi run stray -- printenv` would disguise as running `stray`.
- * As the implementation of ADR-0016 decision 8 (`--` is required, judged
- * by reading `Stdio.args`), it also checks **that the count after `--`
- * matches**.
- *
- * The count is derived from **the array the parser resolved and argv's
- * position** (never a copy of the declaration — it would silently drift
- * when a value-taking flag is added). The contents never appear in
- * diagnostics.
- */
 export const commandAfterTerminator = Effect.fn("commands-shared.commandAfterTerminator")(
   function* (
     parsed: readonly string[],
@@ -70,9 +38,6 @@ export const commandAfterTerminator = Effect.fn("commands-shared.commandAfterTer
     const stdio = yield* Stdio.Stdio;
     const argv = yield* stdio.args;
     const terminator = argv.indexOf("--");
-    // On the no-`--` branch, the variadic arguments stay as extra
-    // positional arguments (`--env prod`'s `prod` was eaten as the flag's
-    // value)
     const stray = terminator < 0 ? parsed.length : parsed.length - (argv.length - terminator - 1);
     if (stray > 0) {
       return yield* Effect.fail(
@@ -85,11 +50,6 @@ export const commandAfterTerminator = Effect.fn("commands-shared.commandAfterTer
   },
 );
 
-/**
- * After `config set mirror`: a fallback that needs a login while the server
- * is down is no fallback (ruling E revision), so the member is told now when
- * no session for the mirror is in the keychain.
- */
 export const noteMirrorSession = Effect.fn("commands-shared.noteMirrorSession")(function* (
   raw: string,
 ): Effect.fn.Return<void, CliError, CliServices> {
@@ -104,7 +64,6 @@ export const noteMirrorSession = Effect.fn("commands-shared.noteMirrorSession")(
   }
 });
 
-/** Format check of the flag taking a GitHub login (`--github` / `--from`) (unspecified = null). */
 export function parseGithubLoginFlag(
   flagName: string,
   value: string | undefined,
@@ -121,17 +80,11 @@ export function parseGithubLoginFlag(
       );
 }
 
-/** The backing-source setting (CRYPTO_SPEC §6.5 — unset = github-signing-keys). */
 export const loadIdentityBacking: Effect.Effect<IdentityBacking, CliError, ConfigStore> =
   Effect.gen(function* () {
     return identityBackingOf(yield* loadCliConfig);
   });
 
-/**
- * §7: a duty environment outside the performer's scope cannot be rotated
- * — a note, not a failure (the always-on warning keeps displaying it, and
- * an env rotate by a member whose scope covers it converges it).
- */
 function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<void, never, CliIo> {
   if (outOfScope.length === 0) {
     return Effect.void;
@@ -142,15 +95,6 @@ function warnOutOfScopeMandates(outOfScope: readonly string[]): Effect.Effect<vo
   );
 }
 
-/**
- * The proposal of issuance trigger (iii) (CRYPTO_SPEC §6.3): when a pull /
- * push success detects staleness of the baseline checkpoint (over 7 days,
- * or never issued = over 7 days since genesis), emit the proposal **as a
- * 1-line Note**. A failed proposal judgment never overturns the command
- * body's success (the proposal is a SHOULD attachment). On push, the
- * anchor-update proposal is bundled into the end of the same line (DP5
- * ruling C — never split into 2 lines).
- */
 export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckpointRefresh")(
   function* (
     context: Pick<ProjectContext, "client" | "verified" | "session">,
@@ -176,18 +120,11 @@ export const proposeCheckpointRefresh = Effect.fn("commands-shared.proposeCheckp
   },
 );
 
-/** A value write's sync, decided before the write is sent: the sync config, and what it means for the written variable. */
 interface WriteSync {
   readonly setup: PushSyncSetup;
   readonly decision: PushSyncDecision;
 }
 
-/**
- * Decides a value write's sync before the write is sent (push, var
- * rollback, var rotate): null when no sync config was read (none at the
- * default path, or --no-sync). A disagreement with an explicitly given
- * config's `project` is a misspelling (2), and the write is not sent.
- */
 export function decideWriteSync(
   setup: PushSyncSetup | null,
   context: EnvironmentContext,
@@ -205,13 +142,6 @@ export function decideWriteSync(
       );
 }
 
-/**
- * Opens the environment a value write goes to (push, var rollback), with
- * its sync. The sync config is read first, **before any network**, so a
- * broken file or an explicitly given other project's config is never
- * found behind the write (same as SY2 stage 2 2b's ruling B), and the
- * sync is decided before the write is sent (decideWriteSync).
- */
 export const openWriteEnvironment = Effect.fn("commands-shared.openWriteEnvironment")(function* (
   values: CommonFlags & {
     readonly config?: string | undefined;
@@ -228,15 +158,6 @@ export const openWriteEnvironment = Effect.fn("commands-shared.openWriteEnvironm
   return { context, sync: yield* decideWriteSync(setup, context, values.name) };
 });
 
-/**
- * After a successful value write (push, var rollback, var rotate):
- * issuance trigger (iii) (CRYPTO_SPEC §6.3), which detects the baseline
- * checkpoint's staleness (proposeCheckpointRefresh — the anchor-update
- * proposal rides the same route; the ruling is docs/notes/session-35.md),
- * then the decided sync: applied directly to the targets carrying
- * `onPush`, or CI launched. A failed sync stays a warning and the exit
- * code stays the write's (only the evidence fails — sync-push.ts).
- */
 export const finishWrite = Effect.fn("commands-shared.finishWrite")(function* (
   context: EnvironmentContext,
   sync: WriteSync | null,
@@ -247,11 +168,6 @@ export const finishWrite = Effect.fn("commands-shared.finishWrite")(function* (
   }
 });
 
-/**
- * Four-eyes (K6-K): `--expires <duration>` → the proposal's expiry and
- * clock. Never read on an operation the policy doesn't target, but a
- * malformed format drops as usage (2) before any communication.
- */
 export const proposalInputOf = Effect.fn("commands-shared.proposalInputOf")(function* (
   expires: string | undefined,
 ): Effect.fn.Return<ProposalInput, CliError> {
@@ -263,7 +179,6 @@ export const proposalInputOf = Effect.fn("commands-shared.proposalInputOf")(func
   return { nowMs, expiresAtMs: nowMs + parsed.lifetimeMs };
 });
 
-/** The wording of a proposal's remaining vote count ("needs N more owner approval(s)" — ruling P8). */
 export function describeNeeded(view: ProposalView): string {
   if (view.needed === null) {
     return "the policy is off, so it cannot be approved (withdraw it)";
@@ -272,11 +187,6 @@ export function describeNeeded(view: ProposalView): string {
   return `needs ${countNoun(more, "more owner approval")} (${view.votes} of ${view.required} recounted so far)`;
 }
 
-/**
- * Reporting that it was proposed (or was already proposed) (K6-A — a
- * shape never mistaken for "appended"). States that nothing was applied
- * and who does what next.
- */
 export const reportProposed = Effect.fn("commands-shared.reportProposed")(function* (
   io: CliIoShape,
   proposal: ProposedSummary,
@@ -299,14 +209,6 @@ export const reportProposed = Effect.fn("commands-shared.reportProposed")(functi
   return 0;
 });
 
-/**
- * Reporting the sweep result (the §7 all-environment scan) and deriving
- * the exit code (shared by server revoke / member remove / change-role).
- * `alreadyRotatedBasis` phrases "past which point an epoch was confirmed
- * rotated" (revoke = the revocation, member = the duty entry). The report
- * shape and §7's "never silently skip a failed rotate" discipline are
- * kept in one place — held twice, only one would get fixed.
- */
 export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome")(function* (
   sweep: SweepOutcome & {
     readonly skippedDeleted: readonly string[];
@@ -334,16 +236,12 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
     }
   }
   for (const failure of sweep.failed) {
-    // §7: never silently skip a rotate refusal of an environment
-    // believed active (never make selective rotation blocking by a
-    // malicious server invisible)
     yield* logWarning(
       `rotation of environment ${displayText(failure.environmentId)} failed: ${failure.message} — resolve the cause and re-run ${options.rerunCommand} to resume (an environment deleted on the verified chain is never rotated, so this one is live)`,
     );
     exitCode = 1;
   }
   if (sweep.rotated.some((item) => item.summary.mode === "rotated")) {
-    // The anchor-update proposal — emitted as one line across the whole sweep
     const { ANCHOR_STALE_AFTER_ROTATION } = yield* Effect.promise(() =>
       import("../checkpoint.package/index.ts").then((m) => ({
         ANCHOR_STALE_AFTER_ROTATION: m.ANCHOR_STALE_AFTER_ROTATION,
@@ -354,7 +252,6 @@ export const reportSweepOutcome = Effect.fn("commands-shared.reportSweepOutcome"
   return exitCode;
 });
 
-/** member add's result report and exit code (a backfill failure = a partial completion). */
 export const reportMemberAdd = Effect.fn("commands-shared.reportMemberAdd")(function* (
   io: CliIoShape,
   summary: Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed"> & {
@@ -381,7 +278,6 @@ export const reportMemberAdd = Effect.fn("commands-shared.reportMemberAdd")(func
   return 1;
 });
 
-/** Reporting change-role's post-application stage (shared by the direct append and the approver's fulfillment [approval approve]). */
 export const reportRoleChangeFulfilment = Effect.fn("commands-shared.reportRoleChangeFulfilment")(
   function* (
     io: CliIoShape,
@@ -410,16 +306,11 @@ export const reportRoleChangeFulfilment = Effect.fn("commands-shared.reportRoleC
   },
 );
 
-/** Reporting change-role's widening backfill (a failure = a partial completion → 1). */
 const reportScopeBackfill = Effect.fn("commands-shared.reportScopeBackfill")(function* (
   io: CliIoShape,
   summary: RoleChangeFulfilment,
   rerunCommand: string,
 ): Effect.fn.Return<number, never, CliIo> {
-  // The note of the widenings remaining outside scope is emitted even
-  // when no backfill exists within my scope (Cursor Bugbot's catch: the
-  // main path is a listed admin re-running after someone else's
-  // widening)
   if (summary.widenedOutOfScopeEnvironmentIds.length > 0) {
     yield* logWarning(
       `${countNoun(summary.widenedOutOfScopeEnvironmentIds.length, "environment")} widened earlier for this member (${summary.widenedOutOfScopeEnvironmentIds.map(displayText).join(", ")}) ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "is" : "are"} outside your scope, so you cannot backfill ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} — a member whose scope includes ${summary.widenedOutOfScopeEnvironmentIds.length === 1 ? "it" : "them"} re-runs \`maruhi member change-role\` with the member's current scope to resume`,
@@ -439,7 +330,6 @@ const reportScopeBackfill = Effect.fn("commands-shared.reportScopeBackfill")(fun
   return summary.backfill.failed.length === 0 ? 0 : 1;
 });
 
-/** The explanation line of change-role's duties (demotion / narrowing) (the sweep report's preamble). */
 const reportChangeRoleMandates = Effect.fn("commands-shared.reportChangeRoleMandates")(function* (
   io: CliIoShape,
   summary: RoleChangeFulfilment,

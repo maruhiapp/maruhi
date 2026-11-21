@@ -1,5 +1,3 @@
-// `maruhi token` (discipline: see commands/index.ts).
-
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 

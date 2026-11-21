@@ -18,7 +18,6 @@ function initPageActions(root: HTMLElement): () => void {
       checkIcon.classList.remove("hidden");
       label.textContent = "Copied";
     } else {
-      // An error after a recent success shows the copy icon again, not the check.
       copyIcon.classList.remove("hidden");
       checkIcon.classList.add("hidden");
       label.textContent = "Couldn't copy";
@@ -38,8 +37,6 @@ function initPageActions(root: HTMLElement): () => void {
     });
     markdown.catch(() => {});
     try {
-      // Hand the clipboard a pending item inside the click: Safari refuses a
-      // write that starts after the fetch resolves.
       if (typeof ClipboardItem === "function") {
         await navigator.clipboard.write([new ClipboardItem({ "text/plain": markdown })]);
       } else {

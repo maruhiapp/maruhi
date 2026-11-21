@@ -1,7 +1,3 @@
-// `maruhi invite create`: the pre-issuance role / scope checks -> the issue
-// signature -> link assembly -> the issuance pin -> the one-time link
-// display (the group's overview lives in invite.ts).
-
 import {
   InviteConflictError,
   InvitePendingLimitError,
@@ -39,13 +35,8 @@ import { describeScope, requireScopeEnvironmentsExist, scopeContains } from "../
 import type { MasterKeys } from "../session.ts";
 import { reportIssued } from "./invite.ts";
 
-// ---------------------------------------------------------------------------
-// invite create
-// ---------------------------------------------------------------------------
-
 interface InviteCreateSummary {
   readonly id: string;
-  /** The issued link (contains the link key's seed — never unwrapped except for display). */
   readonly link: Redacted.Redacted<string>;
   readonly role: InviteRole;
   readonly expiresAtMs: number;
@@ -64,7 +55,6 @@ function ensureInviteLinkDisplayAllowed(
   });
 }
 
-/** The wording for an issuance acceptance error (translates a reason code into an operational procedure). */
 function issueErrorToCliError(error: unknown): CliError {
   if (error instanceof InvitePendingLimitError) {
     return cliError(
@@ -77,7 +67,6 @@ function issueErrorToCliError(error: unknown): CliError {
     );
   }
   if (error instanceof InviteConflictError) {
-    // id / link key are random, so a collision effectively never happens — if it does, re-running draws a fresh one
     return cliError(
       "The server already has an invite with the same id or link key (an astronomically unlikely collision). Re-run `maruhi invite create` to draw a new one",
     );
@@ -85,14 +74,6 @@ function issueErrorToCliError(error: unknown): CliError {
   return toCliError(error);
 }
 
-/**
- * Pre-issuance checks (before communicating): the inviter's role rules
- * (the same level as §6.2: issuing requires admin or above, role=admin
- * requires owner) and that the local master key matches one's own key on
- * the chain (otherwise the issuance fails the invitee's and one's own
- * later verification). Returns oneself on the chain (the issuance's
- * inviter key).
- */
 const ensureCanIssue = Effect.fn("invite-create.ensureCanIssue")(function* (input: {
   readonly verified: VerifiedProject;
   readonly sessionUserId: UserId;
@@ -106,12 +87,6 @@ const ensureCanIssue = Effect.fn("invite-create.ensureCanIssue")(function* (inpu
       cliError("Only admins and above can issue invites (AUTH_SPEC §15-2)"),
     );
   }
-  // The local key must be one of the inviter's device keys (2026-09-19
-  // DK — the signer is per device). Only once the device is resolved is
-  // the effective permission defined (person ∩ device cap — §6.2), so
-  // the permission check runs afterwards (issuing from a cap-narrowed
-  // device would create a trap on both sides of the ceremony where the
-  // post-acceptance add_member falls to consensus — do not issue)
   const device = ownDeviceByKeys(
     inviter,
     input.masterKeys.record.encPubHex,
@@ -137,16 +112,6 @@ const ensureCanIssue = Effect.fn("invite-create.ensureCanIssue")(function* (inpu
       ),
     );
   }
-  // scope (2026-09-15 ES K4 — design record K4-G): check before
-  // communicating that every `--env` id exists on the chain
-  // (`unknown-environment`) and that the effective scope contains the
-  // invite's scope (`scope-not-contained` — principle 1: the
-  // environment set whose permission add_member changes = the new
-  // scope). The server does not check (AUTH_SPEC §15-2), but even if it
-  // passed, the post-acceptance add_member would fall to a consensus
-  // rule = a trap sending the invitee through the ceremony for nothing,
-  // so do not issue (no escape hatch is kept — ask an all-scope admin /
-  // owner instead)
   yield* requireScopeEnvironmentsExist(input.verified, input.scope);
   if (!scopeContains(permission.scope, input.scope)) {
     return yield* Effect.fail(
@@ -158,7 +123,6 @@ const ensureCanIssue = Effect.fn("invite-create.ensureCanIssue")(function* (inpu
   return inviter;
 });
 
-/** The issuance's material (id, seed, link public key) and the issue signature. */
 interface SignedIssuance {
   readonly inviteId: string;
   readonly seed: Uint8Array;
@@ -166,11 +130,9 @@ interface SignedIssuance {
   readonly issueSignatureHex: string;
 }
 
-/** Assign the id → generate the seed → derive the link key → issue signature (CRYPTO_SPEC §6.5). */
 const signIssuance = Effect.fn("invite-create.signIssuance")(function* (input: {
   readonly verified: VerifiedProject;
   readonly inviter: ChainMember;
-  /** The inviter's signing device (its keys — the local master-key record — go into the issuance). */
   readonly inviterKeys: { readonly encPubHex: string; readonly sigPubHex: string };
   readonly role: InviteRole;
   readonly scope: ScopePayloadFields;
@@ -204,24 +166,15 @@ const signIssuance = Effect.fn("invite-create.signIssuance")(function* (input: {
   return { inviteId, seed, linkPubHex, issueSignatureHex: signed };
 });
 
-/**
- * Issuing an invite + issue signature + link assembly + saving the
- * issuance pin. Issuance authorization is enforced by the server, but
- * role rules are dropped locally before communicating (for clear
- * wording).
- */
 export const inviteCreateOp = Effect.fn("invite-create.inviteCreateOp")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly origin: string;
   readonly role: InviteRole;
-  /** The scope to grant (`--env` repetition → listed, omitted = all — AUTH_SPEC §15-3 / design record ruling K). */
   readonly scope: MemberScope;
   readonly sessionUserId: UserId;
   readonly masterKeys: MasterKeys;
-  /** The addressee's GitHub login (`--github` — the backing source's check target. Kept only on the issuance pin). */
   readonly expectedGithubLogin: string | null;
-  /** One's own GitHub login (the link's `il=` — material for the invitee-side backing check). */
   readonly inviterLogin: string | null;
 }): Effect.fn.Return<
   InviteCreateSummary,
@@ -230,20 +183,9 @@ export const inviteCreateOp = Effect.fn("invite-create.inviteCreateOp")(function
 > {
   const io = yield* CliIo;
   const pinStore = yield* PinStore;
-  // An invite link's seed is displayed as the link (that is the
-  // function), but under an AI agent environment display = persisting
-  // into the transcript, a path leaking to a third party (the agent
-  // platform, logs) before it is handed over a person-to-person
-  // channel. Since a seed cannot be re-displayed, "issue without
-  // displaying" is not an option — issuance itself is refused
   yield* ensureInviteLinkDisplayAllowed(io);
   const inviter = yield* ensureCanIssue(input);
-  // The same scope goes onto all four places: the issuance, the issue
-  // body, the link, and the issuance pin (2026-09-15 ES K4 — `--env`
-  // repetition = listed, omitted = all. Generated ascending with no
-  // duplicates — scope.ts)
   const scope: ScopePayloadFields = scopePayloadFieldsOf(input.scope);
-  // The issuing device = the local key (ensureCanIssue already checked it is one of the inviter's device keys)
   const inviterKeys = {
     encPubHex: input.masterKeys.record.encPubHex,
     sigPubHex: input.masterKeys.record.sigPubHex,
@@ -291,11 +233,6 @@ export const inviteCreateOp = Effect.fn("invite-create.inviteCreateOp")(function
       issueSignatureHex: signed.issueSignatureHex,
     },
   });
-  // The issuance pin (SHOULD): extra material cross-checked at member
-  // add against the server's claimed row (link_pub / role) + retaining
-  // the addressee login (pins.ts). The seed is not saved. A save
-  // failure does not fail an already-established issuance (the link can
-  // be shown only once)
   yield* pinStore
     .saveIssuedPin(input.verified.projectId, signed.inviteId, {
       linkPubHex: signed.linkPubHex,

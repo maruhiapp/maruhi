@@ -1,4 +1,2 @@
-# Resolve this directory as an independent project (not part of the root workspaces).
-# Same technique as spikes/ (see docs/notes/spike-c.md).
 [install]
 exact = true

@@ -1,5 +1,3 @@
-// `maruhi agent` and `agent status` (discipline: see commands/index.ts).
-
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
@@ -7,12 +5,6 @@ import { AGENT_COMMAND_REQUIRED, agentOp, agentStatusOp, parseKeyTtl } from "../
 import { singleValued } from "./flags.ts";
 import { commandAfterTerminator } from "./shared.ts";
 
-/**
- * `maruhi agent -- <command>` (KL2 — agent.ts). Same "only what follows
- * `--` is the run target" declaration as run. Carries no flags (it touches
- * neither the server nor keys — it just spawns the child and prepares the
- * holder).
- */
 export const agentConfig = {
   "key-ttl": singleValued(
     "key-ttl",
@@ -30,7 +22,6 @@ export const agentConfig = {
   ),
 };
 
-/** `maruhi agent status`: no flags (session presence is decided by the environment variable). */
 export const agentStatusConfig = {};
 
 export function makeAgentCommands(onExitCode: (code: number) => void) {
@@ -44,7 +35,6 @@ export function makeAgentCommands(onExitCode: (code: number) => void) {
     "agent",
     agentConfig,
     Effect.fn("commands-agent.agent")(function* (values) {
-      // A path with neither communication nor keys, but the `--` discipline is the same as run's (a misspelling drops first)
       const command = yield* commandAfterTerminator(values.command);
       const keyTtl =
         values["key-ttl"] === undefined

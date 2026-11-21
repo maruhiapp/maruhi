@@ -1,26 +1,3 @@
-// Shared implementation of chain-entry signing and append (CRYPTO_SPEC
-// §6.1 / §6.4).
-//
-// - signEntryAtHead signs an entry with a member's device key right after
-//   the verified view's head. The ops that sign that way call it,
-//   including the composite env create / rotate / rm and checkpoint, which
-//   keep their own retries. device-ops.ts's add_device and revoke_device
-//   are the exception: they resolve the actor device first, for their cap
-//   and role checks, and sign with signChainEntry directly.
-// - appendWithRetry is the loop of the ops that append one entry through
-//   the chain-append API, checkpoint aside (it keeps its own retry):
-//   membership (add_member / remove_member / change_role, through
-//   member.ts's appendWithCas), devices (add_device / revoke_device —
-//   device-ops.ts), server disclosure (grant_server / revoke_server —
-//   server-grant / server-revoke) and four-eyes (propose / withdraw /
-//   set_approval_policy — approval.ts; approve — approval-approve.ts).
-//   "Sign right after the current head → append under the parent-head CAS
-//   → on a head conflict (409), resync with the extension check, redo the
-//   op's pre-checks and sign again" (retry.ts's retryOnConflict).
-//   appendOperationWithRetry is that loop for an entry signEntryAtHead
-//   signs. The pre-checks, and what a concurrent run's change means for
-//   the op, belong to each op.
-
 import { ChainHeadConflictError } from "@maruhi/api-schema";
 import { cryptoEffect, type UserId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, SigningKeyPair } from "@maruhi/crypto";
@@ -34,15 +11,8 @@ import { cliError, type CliError } from "./errors.ts";
 import { toCliError } from "./failure.ts";
 import { retryOnConflict } from "./retry.ts";
 
-/** The attempts of a chain append's head-conflict retry. */
 const MAX_APPEND_ATTEMPTS = 5;
 
-/**
- * Signs one entry with the signer's key right after the verified view's
- * current head. The actor (user_id + key FP) is resolved from the
- * verified view's current member set (a non-member cannot sign). A
- * signing failure reads "Failed to sign the <op> entry".
- */
 export const signEntryAtHead = Effect.fn("chain-append.signEntryAtHead")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
@@ -53,7 +23,6 @@ export const signEntryAtHead = Effect.fn("chain-append.signEntryAtHead")(functio
   if (actor === undefined) {
     return yield* Effect.fail(cliError("Not a chain-derived member"));
   }
-  // The signing device = that person's valid device matching the signing key at hand (K4-16 — device-key.ts)
   const device = yield* ownDeviceBySigningKey(input.verified, actor, input.signingKeyPair);
   const timestampMs = yield* Clock.currentTimeMillis;
   const signed = yield* cryptoEffect(() =>
@@ -72,11 +41,6 @@ export const signEntryAtHead = Effect.fn("chain-append.signEntryAtHead")(functio
   return signed;
 });
 
-/**
- * Append under the parent-head CAS. A head conflict is returned as
- * `ChainHeadConflictError` unchanged (appendWithRetry's classify retries
- * it). Anything else is mapped to a CliError.
- */
 function appendEntry(
   client: MaruhiClient,
   verified: VerifiedProject,
@@ -93,34 +57,19 @@ function appendEntry(
     );
 }
 
-/** The client an append goes through, and the resync a head conflict runs. */
 interface AppendContext {
   readonly client: MaruhiClient;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
 }
 
-/** What an append's retry ends with: its last state, and the entry it appended (null when the last attempt appended none). */
 interface AppendOutcome<S> {
   readonly state: S;
   readonly entry: ChainEntry | null;
 }
 
-/**
- * Appends one entry under the parent-head CAS, retrying on a head
- * conflict. Each attempt signs the state's entry at the state's view
- * (`sign`; null = nothing to append, so the attempt succeeds without one)
- * and appends it. After a head conflict the view is resynced with the
- * extension check (nothing is re-signed onto a shortened or forked chain —
- * chain-sync.ts's resyncExtended), and `recheck` redoes the op's
- * pre-checks on it and returns the next attempt's state. The resync and
- * `recheck` run after the last attempt's conflict too, so a definite
- * error they fail with is reported rather than the exhausted wording
- * (retry.ts).
- */
 export function appendWithRetry<S extends { readonly verified: VerifiedProject }>(
   context: AppendContext,
   input: {
-    /** The op name the exhausted wording uses (e.g. "remove_member"). */
     readonly op: string;
     readonly initial: S;
     readonly sign: (state: S) => Effect.Effect<ChainEntry | null, CliError>;
@@ -144,12 +93,6 @@ export function appendWithRetry<S extends { readonly verified: VerifiedProject }
   });
 }
 
-/**
- * appendWithRetry for an entry signEntryAtHead signs: `operation`, signed
- * with the signer's key right after each attempt's view. A state for which
- * `settled` holds appends nothing (a concurrent run already made the
- * change, or closed what the op targets).
- */
 export function appendOperationWithRetry<S extends { readonly verified: VerifiedProject }>(
   context: AppendContext & {
     readonly signerUserId: UserId;

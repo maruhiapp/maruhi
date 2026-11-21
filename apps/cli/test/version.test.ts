@@ -1,8 +1,3 @@
-// Pins the version's single source (apps/cli/package.json). Releases are
-// premised on the release workflow checking tag ↔ package.json agreement,
-// so the regression wall is "the package.json version shows up verbatim
-// in `--version`".
-
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -19,9 +14,6 @@ describe("the CLI version (single source = package.json)", () => {
   });
 
   it("the SemVer check doesn't pass shapes npm rejects (leading zeros etc.)", () => {
-    // A lax check would first get bounced at npm publish — after the
-    // GitHub Release already exists — leaving Release and npm disagreeing
-    // (release.yml's version-check is the same shape)
     for (const bad of ["01.2.3", "1.2", "1.2.3-", "1.2.3-01", "v1.2.3"]) {
       expect(bad).not.toMatch(SEMVER_PATTERN);
     }
@@ -34,8 +26,6 @@ describe("the CLI version (single source = package.json)", () => {
     const result = spawnSync("bun", ["src/bin.ts", "--version"], {
       cwd: cliRoot,
       encoding: "utf8",
-      // spawnSync blocks the event loop, so vitest's timeout can't fire.
-      // On a hang, kill the child and fail the test
       timeout: 10_000,
     });
     expect(result.status).toBe(0);

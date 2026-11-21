@@ -1,33 +1,3 @@
-// Checks for CRYPTO_SPEC §4.3 (the environment manifest).
-// Ed25519 is an RFC 8032 deterministic signature, so the signing direction is
-// verified byte-for-byte against the vectors too.
-// For the verification-rule kind (kind = "authorization"), pin that "the
-// signature is valid but is rejected by the §4.3 / §6.3 history verification
-// with expected_reason" via verifyDistributedEnvManifest against the history
-// index built by verifyChainWithHistory.
-//
-// Manifest-specific pinning points (differences from metadata-signature):
-// - computeVariablesDigest reproduces the variables_digest LP canonical form
-//   (empty set, single, tombstone, byte ascending) (the digests section)
-// - Epoch consistency of the checkpoint binding (§4.3 (2)): the two
-//   composite-issuance positives (manifest-v1-create / manifest-rotate) pass
-//   against the derived chains that carry the boundary checkpoint tuples
-//   (checkpoint-boundary-* in chain-entries.json), while the same data
-//   against the canonical chain lacking a checkpoint is rejected by the
-//   composite-head-without-checkpoint-* negatives. Also negatives: failing
-//   the exact-match binding (checkpoint-binding-mismatch), equivocation by
-//   differing tuples on the same coordinate, and consistency rule 1
-//   (checkpoint-regressed)
-// - epoch-regression (an advanced manifestVersion stamped with the old
-//   epoch after a rotate) is rejected under predecessor-included
-//   verification — the core negative of this mechanism
-// - digest-* (missing, tombstone hidden, order violation) is rejected by
-//   recomputation over the verify-side set
-// - Rejection of a false attestation whose tuple epoch field contradicts
-//   the manifest content (hash does match) is pinned with a runtime-signed
-//   chain (bindingEpochChecks — an implementation that only compares hashes
-//   fails here)
-
 import type {
   ChainEntry,
   ChainHistoryIndex,
@@ -171,12 +141,10 @@ function predecessorOf(vector: ManifestVector) {
     : { signedBytesHashHex: base.signed_bytes_sha256_hex, epoch: base.context.epoch };
 }
 
-/** The envMeta expectation self-matches the context (the fixture env meta is correct — negatives overwrite it via verify_env_meta). */
 function envMetaOf(context: EnvManifestContext) {
   return { metaVersion: context.envMetaVersion, sigHashHex: context.envMetaSigHashHex };
 }
 
-/** The digests section: pins the variables_digest LP canonical form (§4.3). */
 async function digestChecks(c: Checks): Promise<void> {
   for (const digestCase of manifestVectors.digests) {
     const computed = await computeVariablesDigest("maruhi/v1", entriesOf(digestCase.entries));
@@ -185,8 +153,6 @@ async function digestChecks(c: Checks): Promise<void> {
       computed.ok && computed.value === digestCase.variables_digest_hex,
       computed.ok ? undefined : JSON.stringify(computed.error),
     );
-    // Normalized to canonical form regardless of input order (byte
-    // ascending is the function's internal convention)
     const reversed = await computeVariablesDigest(
       "maruhi/v1",
       entriesOf(digestCase.entries.toReversed()),
@@ -196,8 +162,6 @@ async function digestChecks(c: Checks): Promise<void> {
       reversed.ok && reversed.value === digestCase.variables_digest_hex,
     );
   }
-  // A duplicate variable_id violates the "one latest form per variable"
-  // invariant = InvalidInput
   const single = manifestVectors.digests.find((d) => d.name === "single-entry");
   if (single !== undefined && single.entries.length === 1) {
     const duplicated = await computeVariablesDigest(
@@ -211,14 +175,7 @@ async function digestChecks(c: Checks): Promise<void> {
   }
 }
 
-/** Discriminativeness of the surrogate boundary and rejection of the numeric/hex boundaries (the split of duties is ruling G of session-34.md). */
 async function digestBoundaryChecks(c: Checks): Promise<void> {
-  // The surrogate-pair-boundary vector is actually a discriminating pair
-  // (UTF-16 code-unit order = JS plain string comparison orders differently
-  // from byte ascending). This is the only meta-check of ruling G
-  // (session-34.md), so a missing vector is a failure, not a skip (do not
-  // leave a shape where a rename or deletion stays green with only fewer
-  // PASSes)
   const surrogate = manifestVectors.digests.find((d) => d.name === "surrogate-boundary-order");
   if (surrogate === undefined) {
     c.push(
@@ -234,12 +191,6 @@ async function digestBoundaryChecks(c: Checks): Promise<void> {
       utf16Sorted.join(" ") !== canonicalIds.join(" "),
     );
   }
-  // Rejection of numeric/hex boundaries (the split of duties that JSON
-  // vectors do not express is a session-34.md ruling): a non-integer /
-  // MAX_SAFE_INTEGER + 1 metaVersion, and same-length uppercase hex (the
-  // canonical form is lowercase hex — an implementation that accepts and
-  // lowercases would create multiple canonical forms for one value, so
-  // rejection is the spec's expected behavior)
   const validEntry: VariablesDigestEntry = {
     variableId: testVariableId("var-bounds-0001"),
     status: "active",
@@ -266,7 +217,6 @@ async function digestBoundaryChecks(c: Checks): Promise<void> {
   }
 }
 
-/** Two checks: the signing direction (deterministic re-signing) and the low-level verification direction. */
 async function signAndVerifyChecks(
   c: Checks,
   name: string,
@@ -274,8 +224,6 @@ async function signAndVerifyChecks(
   signatureHex: string,
   issuerKeyFingerprintHex: string,
 ): Promise<void> {
-  // Sign with the issuer's device (user_id, FP) seed (2026-09-19 DK —
-  // signers are per-device)
   const signer = await importVectorSigner(context.issuerUserId, issuerKeyFingerprintHex);
   if (signer === null) {
     c.push(`env-manifest ${name}: issuer keys`, false, "signer keys missing or failed to import");
@@ -294,20 +242,11 @@ async function signAndVerifyChecks(
   c.push(`env-manifest ${name}: raw signature verify`, verified.ok);
 }
 
-/** Prerequisite chains for verification (name → verified history index). */
 type Histories = Readonly<Record<string, ChainHistoryIndex>>;
 
-/**
- * The two composite-issuance positives are verified under checkpoint
- * binding (§4.3 (2)), so the comparison targets are the derived chains that
- * carry the boundary checkpoint tuples. Everything else uses the canonical
- * chain (strict — no tuples).
- */
 const POSITIVE_CHAIN: Readonly<Record<string, string>> = {
   "manifest-v1-create": "checkpoint-boundary-create",
   "manifest-rotate": "checkpoint-boundary-rotate",
-  // Second-device issuance (2026-09-19 DK): the comparison target is the
-  // device-key derived chain (strict path)
   "manifest-second-device-issuer-in-scope": "device-ops",
 };
 
@@ -328,8 +267,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       `env-manifest ${vector.name}: signed bytes hash`,
       hash.ok && hash.value === vector.signed_bytes_sha256_hex,
     );
-    // Recomputation from the vector's entries (canonical form) matches the
-    // signed digest
     const digest = await computeVariablesDigest(context.suite, entriesOf(vector.entries));
     c.push(
       `env-manifest ${vector.name}: digest recomputation`,
@@ -343,9 +280,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       vector.issuer_key_fingerprint_hex,
     );
 
-    // History-based composite verification (§4.3 / §6.3): predecessor
-    // included when prev_base exists. manifest-v1-create / manifest-rotate
-    // (the epoch consistency of composite issuance) also pass through here
     const distributed = await verifyDistributedEnvManifest({
       history,
       context,
@@ -361,7 +295,6 @@ async function vectorChecks(c: Checks, histories: Histories): Promise<void> {
       distributed.ok ? undefined : JSON.stringify(distributed.error),
     );
   }
-  // Re-confirm the data of the tombstone-including digest (§4.3)
   const del = byName.get("manifest-var-delete");
   c.push(
     "env-manifest manifest-var-delete: digest includes the tombstone",
@@ -383,8 +316,6 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
       envMeta: envMetaOf(context),
       predecessor: predecessorOf(branch),
     });
-    // Each branch passes all checks on its own (prevention is impossible —
-    // the evidence-recording of §14.2-5)
     c.push(`env-manifest fork ${branch.name}: verifies individually`, result.ok);
     if (result.ok) {
       hashes.push(result.value.signedBytesHashHex);
@@ -396,7 +327,6 @@ async function forkChecks(c: Checks, history: ChainHistoryIndex): Promise<void> 
   );
 }
 
-/** Verify-side envMeta (unset = the vector context's own env_meta field). */
 function verifyEnvMetaOf(negative: ManifestNegative, context: EnvManifestContext) {
   if (negative.verify_env_meta === undefined) {
     return envMetaOf(context);
@@ -407,7 +337,6 @@ function verifyEnvMetaOf(negative: ManifestNegative, context: EnvManifestContext
   };
 }
 
-/** Verify-side predecessor (the floor / anchor of the stored previous manifest — unset means no check). */
 function predecessorAnchorOf(negative: ManifestNegative) {
   if (negative.predecessor === undefined) {
     return undefined;
@@ -418,10 +347,6 @@ function predecessorAnchorOf(negative: ManifestNegative) {
   };
 }
 
-// Exhaustiveness pinning of the reason space (consideration 7 — checked by
-// support.ts's reasonCoverageChecks): the Record type enforces sync with the
-// union at compile time (same shape as META_REASON_COVERAGE in
-// metadata-signature.ts).
 const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
   "signature-invalid": true,
   "issuer-unknown": true,
@@ -443,7 +368,6 @@ const MANIFEST_REASON_COVERAGE: Record<ManifestInvalidReason, true> = {
   "epoch-regressed": true,
 };
 
-/** Verification-rule negative: the signature is valid but history verification rejects it with expected_reason. */
 async function ruleNegativeCheck(
   c: Checks,
   negative: ManifestNegative,
@@ -465,9 +389,6 @@ async function ruleNegativeCheck(
     context,
     issuerKeyFingerprintHex: negative.issuer_key_fingerprint_hex ?? "",
     signatureHex: negative.signature_hex,
-    // verify_entries = the set the verify side recomputes with (expresses
-    // missing / tombstone-hidden / order-violating forms). Unset = the
-    // vector's canonical set
     entries: entriesOf(negative.verify_entries ?? negative.entries ?? []),
     envMeta: verifyEnvMetaOf(negative, context),
     predecessor: predecessorAnchorOf(negative),
@@ -482,7 +403,6 @@ async function ruleNegativeCheck(
   );
 }
 
-/** Tamper/transplant negative: canonicalization reproduces the vector's verify-side byte string, and the original signature fails. */
 async function tamperNegativeCheck(
   c: Checks,
   negative: ManifestNegative,
@@ -526,7 +446,6 @@ async function negativeChecks(
       await tamperNegativeCheck(c, negative, exercised);
     }
   }
-  // Pin the kind vocabulary (a third value would escape both sieves)
   c.push(
     "env-manifest negative: kind vocabulary is exhaustive",
     [...seenKinds].every((kind) => kind === "signature" || kind === "authorization"),
@@ -546,14 +465,11 @@ async function invalidInputChecks(c: Checks): Promise<void> {
     { name: "bad manifest version", context: { ...baseContext, manifestVersion: 0 } },
     { name: "bad env meta version", context: { ...baseContext, envMetaVersion: 0 } },
     { name: "bad head seq", context: { ...baseContext, chainHeadSeq: 0 } },
-    // Numeric boundary: §2.1 decimal-stringification is non-negative safe
-    // integers only
     { name: "fractional epoch", context: { ...baseContext, epoch: 1.5 } },
     {
       name: "unsafe integer manifest version",
       context: { ...baseContext, manifestVersion: Number.MAX_SAFE_INTEGER + 1 },
     },
-    // Same-length uppercase hex (the canonical form is lowercase hex)
     {
       name: "uppercase digest",
       context: { ...baseContext, variablesDigestHex: "AB".repeat(32) },
@@ -589,8 +505,6 @@ async function invalidInputChecks(c: Checks): Promise<void> {
         verified.error.kind === "InvalidInput",
     );
   }
-  // A check only on the signing side (the verify side instead rejects
-  // asymmetrically with a reason code — same shape as meta-sign)
   const coupledPrev = await signEnvManifest({
     context: { ...baseContext, manifestVersion: 1, prevManifestSigHashHex: "ab".repeat(32) },
     signingKey: pair.privateKey,
@@ -645,24 +559,6 @@ async function roundtripChecks(c: Checks): Promise<void> {
   c.push("env-manifest: roundtrip wrong context rejected", !wrongContext.ok);
 }
 
-/**
- * Rejection of a false attestation whose tuple epoch field contradicts the
- * manifest content (the hash does match). A shape vectors cannot express
- * (the tuple epoch is fixed by the chain consensus rules to the epoch
- * current at entry time, so producing a contradiction requires building a
- * chain that "re-attests the old manifest's hash under the new epoch after
- * a rotate") is pinned with a runtime-signed chain of vector keys: an
- * implementation that does not compare **both** (epoch, hash) — one that
- * only compares hashes — fails here.
- */
-/**
- * Material for bindingEpochChecks: canonical chain seq 1-3 (through
- * create_environment) + rotate (epoch 2) + a false-attestation checkpoint
- * of "epoch 2, manifestVersion 1, hash(manifest-v1-create)", assembled and
- * verified with runtime signing of vector keys. Under the chain consensus
- * rules the tuple epoch matches the epoch current at entry time (2), so it
- * is valid.
- */
 async function falseAttestationHistory(
   manifestSigHashHex: string,
 ): Promise<{ ok: true; history: ChainHistoryIndex } | { ok: false; detail: string }> {
@@ -719,8 +615,6 @@ async function falseAttestationHistory(
           epoch: 2,
           manifestVersion: 1,
           manifestSigHashHex,
-          // The tuple content is unverifiable by chain verification (§6.2)
-          // — a formally valid 64 hex
           valuesDigestHex: "ab".repeat(32),
         },
       ],

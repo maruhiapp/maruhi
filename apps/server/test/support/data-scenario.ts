@@ -1,9 +1,3 @@
-// Shared scenario for data-plane integration tests.
-//
-// fixture / varStatements are exported as ESM live bindings; each test file
-// registers its beforeEach (reset + re-seed) via registerDataScenario() and
-// then writes its describe blocks.
-
 import type { EncryptedPayload } from "@maruhi/api-schema";
 import { beforeEach, expect } from "vite-plus/test";
 
@@ -38,16 +32,13 @@ export const VAR = testVariableId("var-database-url");
 
 export let fixture: DataFixture;
 
-/** Latest statement + author per variable (material for the prev chain of renames / deletions). */
 export let varStatements: Map<
   string,
   { statement: WireVariableMetaStatement; authorUserId: string }
 >;
 
-/** Called once at the top of each test file: registers the fixture's beforeEach. */
 export function registerDataScenario(): void {
   beforeEach(async () => {
-    // Device-key substitution (useDeviceKey) does not carry over across tests
     resetDeviceKeys();
     fixture = await setupDataProject();
     varStatements = new Map();
@@ -56,12 +47,6 @@ export function registerDataScenario(): void {
 
 export const token = (userId: string): string => tokenOf(fixture.tokens, userId);
 
-/**
- * Sign and return the manifest bundled with a variable meta op (create /
- * rename / delete) (§12-5), computed from the verified statement's hash (on
- * success, `record` advances the record). issuer must match the actor
- * performing the op (§12-5 (1)).
- */
 export async function manifestForStatement(
   statement: WireVariableMetaStatement,
   authorUserId: string,
@@ -84,7 +69,6 @@ function recordManifestState(environmentId: string, state: EnvManifestState): vo
   fixture.manifests.set(environmentId, state);
 }
 
-/** Sign and record the statement bundled with variable creation (metaVersion 1). */
 export async function variableStatementFor(
   authorUserId: string,
   variableId: string,
@@ -101,7 +85,6 @@ export async function variableStatementFor(
   });
 }
 
-/** Layout-v3 schema fields (wire shape — required is a boolean; maxAgeDays null = no declaration). */
 export interface WireSchemaFields {
   readonly varType: "" | "string" | "number" | "boolean" | "url";
   readonly required: boolean;
@@ -109,7 +92,6 @@ export interface WireSchemaFields {
   readonly maxAgeDays: number | null;
 }
 
-/** Carrier fields for a v3 statement (layoutVersion 3 + the schema fields). */
 export function v3Fields(schema: Partial<WireSchemaFields> = {}): {
   readonly layoutVersion: number;
   readonly varType: WireSchemaFields["varType"];
@@ -126,14 +108,12 @@ export function v3Fields(schema: Partial<WireSchemaFields> = {}): {
   };
 }
 
-/** Sign a variable's next statement (rename / schema re-issuance / deletion / activation) from the latest recorded one. */
 export async function nextVariableStatement(input: {
   readonly variableId: string;
   readonly name: string;
   readonly status: "active" | "deleted" | "declared";
   readonly authorUserId: string;
   readonly environmentId?: string;
-  /** Layout-v3 carrier fields (v3Fields(...) — omitted = v1 statement). */
   readonly v3?: ReturnType<typeof v3Fields>;
 }): Promise<WireVariableMetaStatement> {
   const last = varStatements.get(input.variableId);
@@ -159,12 +139,6 @@ export async function nextVariableStatement(input: {
   });
 }
 
-/** Variable rename and deletion share sendVariableStatement below. */
-/**
- * Sends a variable statement with its manifest (PATCH for rename, DELETE
- * for deletion). On 204, advances the recorded statement and the manifest
- * record.
- */
 async function sendVariableStatement(
   method: "PATCH" | "DELETE",
   variableId: string,
@@ -199,7 +173,6 @@ export async function renameVariableRequest(
   return sendVariableStatement("PATCH", variableId, actorUserId, statement);
 }
 
-/** Variable deletion (DELETE with a status-deleted statement). On 204, advances the record. */
 export async function deleteVariableRequest(
   variableId: string,
   actorUserId: string,
@@ -210,7 +183,6 @@ export async function deleteVariableRequest(
   }
   const statement = await nextVariableStatement({
     variableId,
-    // A deleted statement's name keeps the immediately preceding active name (§4.2)
     name: last.statement.name,
     status: "deleted",
     authorUserId: actorUserId,
@@ -218,11 +190,6 @@ export async function deleteVariableRequest(
   return sendVariableStatement("DELETE", variableId, actorUserId, statement);
 }
 
-/**
- * Unsigned dummy statement for tests that only need to pass Schema (400 /
- * 403 / 404 are decided before signature verification) — a formally valid
- * zero signature.
- */
 export function unsignedVariableStatement(
   variableId: string,
   name: string,
@@ -241,11 +208,6 @@ export function unsignedVariableStatement(
   };
 }
 
-/**
- * Unsigned dummy manifest for tests that only need to pass Schema (400 /
- * 403 / 404 are decided before signature verification) — a formally valid
- * zero signature.
- */
 export function unsignedManifest(environmentId = ENV): WireEnvironmentManifest {
   return {
     suite: "maruhi/v1",
@@ -262,13 +224,6 @@ export function unsignedManifest(environmentId = ENV): WireEnvironmentManifest {
   };
 }
 
-/**
- * Fake ciphertext for acceptance-policy tests (the server cannot decrypt
- * the contents). The value signature (§12-5) is verified by the server, so
- * even a fake is signed correctly with the caller's real key (writerUserId
- * must match the subject of the PAT used for the request). The declared
- * head is the current head (fixture.head).
- */
 export async function fakePayload(
   writerUserId: string,
   aad: WireEncryptedPayload["aad"],
@@ -284,9 +239,6 @@ export async function fakePayload(
       aad: brandedAad(aad),
       nonceHex: "00".repeat(12),
       ciphertextHex: "ab".repeat(options?.ciphertextBytes ?? 48),
-      // The default prev for version > 1 is a dummy 64-hex (for tests
-      // rejected at an earlier stage than the prev check — CAS etc. Tests
-      // that reach the prev check pass a real hash)
       prevValueSigHashHex:
         options?.prevValueSigHashHex ?? (aad.version === 1 ? "" : "cd".repeat(32)),
       chainHeadHashHex: fixture.head.hashHex,
@@ -296,12 +248,6 @@ export async function fakePayload(
   )) as EncryptedPayload;
 }
 
-/**
- * Unsigned fake for tests that are certain never to reach signature
- * verification (Schema 400 / AAD 422 / non-member 404). STRANGER has no
- * vector key and cannot sign for real — carry a formally valid zero
- * signature.
- */
 export function unsignedPayload(aad: WireEncryptedPayload["aad"]): EncryptedPayload {
   return {
     suite: "maruhi/v1",
@@ -315,7 +261,6 @@ export function unsignedPayload(aad: WireEncryptedPayload["aad"]): EncryptedPayl
   };
 }
 
-/** Wire `aad` (plain strings) -> the branded value-context fields crypto expects. */
 const brandedAad = (aad: WireEncryptedPayload["aad"]): EncryptedPayload["aad"] => ({
   projectId: testProjectId(aad.projectId),
   environmentId: testEnvironmentId(aad.environmentId),
@@ -337,7 +282,6 @@ export const aadFor = (
   ...overrides,
 });
 
-/** Variable creation (real encryption + MEMBER's value signature + bundled metaVersion-1 statement). */
 export async function createVariableOk(
   dek: Uint8Array,
   variableId: string,
@@ -370,10 +314,6 @@ export async function createVariableOk(
   return value;
 }
 
-/**
- * Sign and return a layout-v3 creation statement (metaVersion 1 — active =
- * with bundled value / declared = valueless declaration).
- */
 export async function variableStatementV3For(input: {
   readonly authorUserId: string;
   readonly variableId: string;
@@ -396,7 +336,6 @@ export async function variableStatementV3For(input: {
   });
 }
 
-/** declared creation (the valueless declaration composite — §12-5). On a 204/200-equivalent success, advances the record. */
 export async function declareVariableRequest(input: {
   readonly variableId: string;
   readonly name: string;
@@ -427,7 +366,6 @@ export async function declareVariableRequest(input: {
   return response;
 }
 
-/** The success shape of declared creation (§12-5 — stored version 0). */
 export async function declareVariableOk(input: {
   readonly variableId: string;
   readonly name: string;
@@ -447,10 +385,6 @@ export async function declareVariableOk(input: {
   });
 }
 
-/**
- * The activation composite (§12-5 — declared → active: value version 1 +
- * status-active v3 statement + manifest). On 200, advances the record.
- */
 export async function activateVariableRequest(input: {
   readonly variableId: string;
   readonly actorUserId: string;
@@ -459,12 +393,6 @@ export async function activateVariableRequest(input: {
   readonly epoch?: number;
   readonly name?: string;
   readonly schema?: Partial<WireSchemaFields>;
-  /**
-   * The value's version (default 1 = a legitimate activation). Anything
-   * other than 1 is for negatives — reproducing the bypass shape "send
-   * latest + 1 to an active variable" (if the helper pinned 1, the property
-   * "cannot target an active variable" could not be verified).
-   */
   readonly version?: number;
   readonly prevValueSigHashHex?: string;
 }): Promise<Response> {
@@ -511,7 +439,6 @@ export async function activateVariableRequest(input: {
   return response;
 }
 
-/** Set schemaPolicy (PUT — §12-11. The default actor is OWNER = chain role owner). */
 export async function setSchemaPolicyOk(
   policy: "enabled" | "locked",
   actorUserId = OWNER,
@@ -522,7 +449,6 @@ export async function setSchemaPolicyOk(
   expect(response.status).toBe(204);
 }
 
-/** A complete wrap set for a dummy DEK (recipients, epoch, and signer selectable). */
 export const wrapsFor = (
   environmentId: string,
   recipients: readonly string[],
@@ -538,7 +464,6 @@ export const wrapsFor = (
     signerUserId,
   });
 
-/** The entry hash of a stored chain row (for building the declared head's exact pair). */
 export async function hashOf(seq: number): Promise<string> {
   const rows = await queryProjectDo(
     projectId,
@@ -548,13 +473,6 @@ export async function hashOf(seq: number): Promise<string> {
   return String(rows[0]?.["entry_hash_hex"]);
 }
 
-/**
- * Clones `source` (of ENV) into `count` variables by direct SQL — the rows a
- * pull or a lease serializes, without signing each one (reads re-verify
- * nothing). With `valueBytes`, every clone's versions carry a fresh random
- * ciphertext of that size; without, only the variable and its statements are
- * cloned (a declared source stays declared).
- */
 export async function cloneVariableRows(input: {
   readonly source: string;
   readonly count: number;

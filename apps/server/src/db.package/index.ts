@@ -1,10 +1,3 @@
-// The public surface of db.package (the ImportLint boundary).
-//
-// Only the repository services' Context tags, the shape types consumers
-// need, and the construction functions are re-exported from here.
-// Drizzle table definitions (schema.ts) and query types never leave the
-// boundary (ADR-0006).
-
 export {
   D1AuditRepo,
   type D1StoredAuditEventRow,

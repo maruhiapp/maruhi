@@ -1,20 +1,3 @@
-// Repository of the master-key wrap ledger (AUTH_SPEC §13-6–13-10 — KL3).
-//
-// - Drizzle types and queries stay inside this file (within the
-//   db.package boundary). The public shapes are the domain types in
-//   ../key-wrap-domain.ts and Effect only
-// - Audit (the 9 KL3 events of AUDIT_SPEC §3.1) is recorded in the same
-//   batch as the record operation. Rejections (429 / 404 / 409 / 422)
-//   are not recorded (what was not accepted is not recorded — §13-10)
-// - The §13-8 fixed windows are counted by **a single conditional
-//   UPSERT** on `key_wrap_windows` (user × kind) (same design as
-//   RecoveryRepo.recordFetch: a two-stage read → write lets concurrent
-//   requests read the same count and counting stalls). Allowance =
-//   RETURNING yields 1 row; audit is bundled 1:1 with allowance via an
-//   INSERT…SELECT guarded by `changes() = 1`
-// - Wraps and segments are opaque to the server; this file does not
-//   interpret their contents
-
 import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 import { and, count, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
@@ -50,23 +33,11 @@ import {
 
 type Db = ReturnType<typeof drizzle>;
 
-// D1 access goes through the shared tryD1 adapter (errors.ts —
-// ADR-0006). Every method pipes `Effect.orDie` at its boundary: the
-// public repository types keep an empty error channel because the
-// handlers turning D1FailureError into typed errors belong to other
-// lanes. An unexpected D1 failure stays a defect = a 500, as before.
-// Only domain-level branches are returned as values
-
-/** The §13-8 fixed-window length (all 1 hour). */
 const KEY_WRAP_WINDOW_MS = 60 * 60 * 1000;
-/** Aggregate cap for blob fetches (§13-8 — §13-3's 5 per hour, reinterpreted as summed over kinds). */
 export const KEY_BLOB_FETCH_LIMIT = 5;
-/** Handoff-request cap (§13-8: 5 per hour per ward). */
 export const HANDOFF_REQUEST_LIMIT = 5;
-/** Approval-window cap (§13-8: 20 segment fetches + approvals per hour per approver). */
 export const APPROVAL_LIMIT = 20;
 
-/** Grace before opportunistic deletion of expired requests (rows more than 1 hour past expiry are deleted). */
 const HANDOFF_SWEEP_GRACE_MS = 60 * 60 * 1000;
 
 export interface GuardianShareInput {
@@ -81,20 +52,12 @@ export interface GuardianShareInput {
 export interface HandoffApprovalInput {
   readonly source: string;
   readonly shareIndex: number;
-  /** Decoded from the approval request (written to the `auth.key_handoff_approved` audit row). */
   readonly approverKeyFingerprintHex: KeyFingerprintHex;
   readonly encHex: string;
   readonly ciphertextHex: string;
 }
 
 export interface KeyWrapRepoShape {
-  // --- Fixed windows (§13-8)----------------------------------------------
-  /**
-   * Consumes one window. When `audit` is given, it is recorded in the
-   * same batch only on allowance (rejections are not recorded). A path
-   * that bundles the record with another insert, like approvals, omits
-   * this.
-   */
   readonly consumeWindow: (input: {
     readonly userId: UserId;
     readonly kind: KeyWrapWindowKind;
@@ -102,10 +65,8 @@ export interface KeyWrapRepoShape {
     readonly nowMs: number;
     readonly audit?: D1AuditEventInput;
   }) => Effect.Effect<KeyWrapWindowDecision>;
-  /** Window reset (recovery-code reissue — a new blob does not inherit the attempt history against the old one). */
   readonly resetWindow: (userId: UserId, kind: KeyWrapWindowKind) => Effect.Effect<void>;
 
-  // --- Class S (passkey-prf)------------------------------------------------
   readonly passkeyInsert: (input: {
     readonly userId: UserId;
     readonly wrapId: string;
@@ -124,8 +85,6 @@ export interface KeyWrapRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
 
-  // --- Class G (guardian groups)-------------------------------------------
-  /** Returns the user_ids that do not exist (guardian existence check). */
   readonly missingUsers: (userIds: readonly UserId[]) => Effect.Effect<readonly UserId[]>;
   readonly guardianCreate: (input: {
     readonly userId: UserId;
@@ -148,13 +107,11 @@ export interface KeyWrapRepoShape {
     nowMs: number,
     actor: D1AuditActor,
   ) => Effect.Effect<boolean>;
-  /** The guardian's own segments as the guardian sees them (optionally narrowed by ward). */
   readonly sharesOfGuardian: (
     guardianUserId: UserId,
     wardUserId?: UserId,
   ) => Effect.Effect<readonly WardShareRecord[]>;
 
-  // --- Class H (handoff)----------------------------------------------------
   readonly handoffCreate: (input: {
     readonly requestId: string;
     readonly userId: UserId;
@@ -162,7 +119,6 @@ export interface KeyWrapRepoShape {
     readonly nowMs: number;
     readonly actor: D1AuditActor;
   }) => Effect.Effect<"created" | "conflict">;
-  /** Returns only requests that have not expired. */
   readonly handoffFind: (
     requestId: string,
     nowMs: number,
@@ -177,7 +133,6 @@ export interface KeyWrapRepoShape {
     readonly actor: D1AuditActor;
   }) => Effect.Effect<"created" | "conflict" | "exceeded">;
   readonly handoffApprovals: (requestId: string) => Effect.Effect<readonly HandoffApprovalRecord[]>;
-  /** Records the first fetch (1 or more) exactly once as auth.key_handoff_collected. */
   readonly handoffMarkCollected: (
     requestId: string,
     approvalCount: number,
@@ -185,20 +140,12 @@ export interface KeyWrapRepoShape {
     actor: D1AuditActor,
   ) => Effect.Effect<void>;
   readonly handoffDelete: (requestId: string, userId: UserId) => Effect.Effect<boolean>;
-  /** Opportunistic deletion of requests past expiry + grace (approvals are removed by cascade). */
   readonly handoffSweep: (nowMs: number) => Effect.Effect<void>;
-  /** The login snapshot for display (github). */
   readonly loginOf: (userId: UserId) => Effect.Effect<string | null>;
 }
 
 export class KeyWrapRepo extends Context.Service<KeyWrapRepo, KeyWrapRepoShape>()("KeyWrapRepo") {}
 
-/**
- * Folds a column of device rows into logical segments (one per
- * share_index — one guardian) (2026-09-19 DK: the same share_index
- * appears once per guardian's device. Audit designation / revocation
- * events are per guardian).
- */
 function logicalShares<T extends { readonly shareIndex: number; readonly guardianUserId: UserId }>(
   rows: readonly T[],
 ): readonly T[] {
@@ -235,11 +182,6 @@ function toShare(row: {
 }
 
 export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
-  // Conditional INSERT…SELECT for an audit row, bundled into the batch of
-  // the write it records: the row goes in only when `condition` holds over
-  // `source` — when the write took effect (the changes() chain, e.g.
-  // guardianCreate: "a group row was inserted"; guardianDelete: "a group
-  // row was deleted"), so the write and its audit row are 1:1
   const guardedAuditInsert = (
     event: D1AuditEventInput,
     nowMs: number,
@@ -317,11 +259,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   return {
     consumeWindow: ({ userId, kind, limit, nowMs, audit }) =>
       tryD1(async () => {
-        // The window-expiry check uses the difference between the
-        // INSERT…ON CONFLICT excluded row (= this call's nowMs) and the
-        // existing row: expired → reset; within the window → increment
-        // only when count < limit. If WHERE is false nothing is updated
-        // and RETURNING yields 0 rows = refusal
         const expired = sql`excluded.window_start - ${keyWrapWindows.windowStart} >= ${KEY_WRAP_WINDOW_MS}`;
         const upsert = db
           .insert(keyWrapWindows)
@@ -375,12 +312,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
 
     passkeyInsert: ({ userId, wrapId, params, wrap, limit, nowMs, actor }) =>
       tryD1(async () => {
-        // Cap check and insert in the same INSERT…SELECT…WHERE
-        // (concurrent registrations cannot overrun — same shape as the
-        // invitations pending cap)
-        // The cap and the id collision (client-assigned — the AAD binds
-        // wrap_id) are tested in the same WHERE; on 0 rows, the id's
-        // existence distinguishes conflict / limit
         const underLimit = sql<boolean>`(select count(*) from ${masterKeyWraps} where ${masterKeyWraps.userId} = ${userId}) < ${limit} and not exists (select 1 from ${masterKeyWraps} where ${masterKeyWraps.id} = ${wrapId})`;
         const results = await db.batch([
           db
@@ -469,9 +400,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
     guardianCreate: ({ userId, groupId, mode, wrap, shares, limit, nowMs, actor }) =>
       tryD1(async () => {
         const underLimit = sql<boolean>`(select count(*) from ${guardianGroups} where ${guardianGroups.userId} = ${userId}) < ${limit} and not exists (select 1 from ${guardianGroups} where ${guardianGroups.id} = ${groupId})`;
-        // The group row goes through a capped INSERT…SELECT; the segment
-        // rows and the audit enter only when "a group row was inserted
-        // (changes() = 1)" in the same batch. D1 batches are atomic
         const groupInsert = db
           .insert(guardianGroups)
           .select(
@@ -489,12 +417,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(underLimit),
           )
           .returning({ id: guardianGroups.id });
-        // Segments are inserted only when "the preceding statement
-        // inserted 1 row" (the changes() chain: if the group row does not
-        // go in, the first segment yields 0 rows and the rest stay at 0).
-        // Conditioning on the id's existence would, on a client-assigned
-        // id collision, try to append segments to the existing group and
-        // end in a PK violation = defect
         const created = sql`changes() = 1`;
         const shareInserts = shares.map((share) =>
           db.insert(guardianShares).select(
@@ -517,12 +439,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
               .where(created),
           ),
         );
-        // The audit row is also bundled in the same batch (same shape as
-        // passkeyInsert): it enters via INSERT…SELECT only when the group
-        // row went in (the changes() chain still at 1). 0 rows on cap /
-        // collision → 0 audit rows. Splitting into a second batch would
-        // open a "row exists but no audit" window, and a retry after
-        // failure would create a second group under a different id
         const audited = and(
           eq(guardianGroups.id, groupId),
           eq(guardianGroups.userId, userId),
@@ -534,8 +450,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
             actor,
             payload: { kind: "guardian", groupId, mode, recipientCount: shares.length },
           },
-          // Designation is one event per logical segment (guardian) —
-          // not per device row (2026-09-19 DK)
           ...logicalShares(shares).map((share): D1AuditEventInput => ({
             event: "auth.guardian_designated",
             actor,
@@ -573,11 +487,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
         if (group === null) {
           return false;
         }
-        // Since another party may delete between findGroup and the
-        // batch, audit rows enter via INSERT…SELECT only when "a group
-        // row was deleted (changes() = 1)" (same shape as passkeyDelete).
-        // The losing delete yields 0 rows and its audit 0 rows = a 1:1
-        // event record.
         const deleted = sql`changes() = 1`;
         const auditEvents: D1AuditEventInput[] = [
           {
@@ -626,7 +535,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
                   eq(guardianGroups.userId, wardUserId),
                 ),
           )
-          // Device rows in FP order (makes the head row of distribution deterministic — design record §8 K3-10)
           .orderBy(guardianGroups.createdAt, guardianShares.guardianKeyFingerprintHex);
         const wardIds = [...new Set(rows.map((r) => r.wardUserId))];
         const logins =
@@ -699,12 +607,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       }).pipe(Effect.orDie),
     handoffApprove: ({ requestId, wardUserId, approverUserId, approval, limit, nowMs, actor }) =>
       tryD1(async () => {
-        // The cap is a declaration of the acceptance policy (§13-8). The
-        // effective bound is carried structurally by the PK `(request_id,
-        // source, share_index)` plus the handler's role check (limit = 1
-        // + group count × segment cap = the maximum reachable row count),
-        // so even with a race window in this read-then-write the row
-        // count cannot exceed limit
         const existing = await db
           .select({ n: count() })
           .from(keyHandoffApprovals)
@@ -757,9 +659,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
       }).pipe(Effect.orDie),
     handoffMarkCollected: (requestId, approvalCount, nowMs, actor) =>
       tryD1(async () => {
-        // Sets collected_at only while it is NULL, and records audit
-        // exactly that once (does not keep writing "a restore happened"
-        // on every poll)
         await db.batch([
           db
             .update(keyHandoffRequests)
@@ -797,7 +696,6 @@ export function makeKeyWrapRepo(db: Db): KeyWrapRepoShape {
   };
 }
 
-/** The approval insert row (guardian segments only — the old device-path blob column was removed under DK K4). */
 function approvalRow(
   requestId: string,
   approverUserId: UserId,

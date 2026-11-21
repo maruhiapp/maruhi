@@ -1,10 +1,3 @@
-// Handlers for the mirror API (AUTH_SPEC §11-7 — PF2).
-//
-// Token scope: read for the status, admin for the mark, the promotion and
-// the pages; the chain role floors and every judgment are the DO's
-// (programs-mirror.ts). Session principals are refused (outside §5's
-// allowlist); non-members get the uniform 404.
-
 import { maruhiApi } from "@maruhi/api-schema";
 import { HttpApiBuilder } from "effect/http-api";
 

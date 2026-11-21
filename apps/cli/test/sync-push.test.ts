@@ -1,17 +1,3 @@
-// Tests for the sync that follows `maruhi push` (SY2 phase 3 —
-// sync-push.ts): for each target carrying `onPush` in the repository
-// config, either apply directly as the push's cleanup (values on stdin
-// only, the receipt advances) or kick off CI via `gh workflow run`
-// (neither values nor variable names on argv; the receipt is untouched).
-//
-// Properties pinned down: the push report comes first, a cleanup failure
-// is a warning and the exit code stays push's, only evidence is a
-// failure, `--no-sync` never reads the config, production is never
-// applied directly (the config forbids it), a config for a different
-// project (explicit = 2 / default path = nothing happens), a push from a
-// non-source environment / a variable not carried does nothing, and no
-// double launch.
-
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -180,7 +166,6 @@ interface Fixture {
   readonly server: MockServer;
 }
 
-/** The preview target `web` (direct apply). `project` is required for push-time sync. */
 function previewTarget(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     preset: "vercel",
@@ -242,7 +227,6 @@ async function startFixture(input: {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/** `printf %s "$VALUE" | maruhi push ALPHA --env prod [...args]`. */
 function push(fixture: Fixture, value: string, ...args: string[]): Promise<number> {
   return pushNamed(fixture, "ALPHA", value, ...args);
 }
@@ -265,7 +249,6 @@ function allOutput(env: TestEnv): string {
   return [...env.logs, ...env.errors].join("\n");
 }
 
-/** The value appears nowhere on stdout / stderr / argv / environment variables (stdin is out of scope). */
 function expectNoSecretLeak(env: TestEnv): void {
   const shown = [
     allOutput(env),
@@ -280,7 +263,6 @@ function stdinText(call: ExecCall): string {
   return decoder.decode(call.stdin);
 }
 
-/** Requests to the receipts environment (did cleanup read/write it). */
 function receiptsRequests(fixture: Fixture): number {
   return fixture.server.requests.filter((request) =>
     request.path.includes(`/environments/${RECEIPTS_ENV}/`),
@@ -320,7 +302,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     });
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     const out = fixture.env.logs.join("\n");
-    // Order: the push report → the cleanup
     expect(out.indexOf(PUSHED_LINE)).toBeGreaterThanOrEqual(0);
     expect(out.indexOf("Syncing target web after the push")).toBeGreaterThan(
       out.indexOf(PUSHED_LINE),
@@ -332,8 +313,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(out).toContain(
       "Applied to target web: 1 variable written, 0 deleted. Receipt saved as version 2 of sync-receipt:web in environment sync-receipts",
     );
-    // The vendor CLI ran once, the value is stdin verbatim, and argv is
-    // names and options only
     const calls = fixture.env.execCalls;
     expect(calls.map((call) => call.command)).toEqual([
       ["vercel", "env", "add", "ALPHA", "preview", "--force", "--non-interactive"],
@@ -345,8 +324,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
       target: "web",
       variables: { ALPHA: 4, BETA: 1 },
     });
-    // No sync-related warning (the reserve-key-absence warning belongs
-    // to syncing itself with keys present — DK K4-9)
     expect(fixture.env.errors.join("\n")).not.toMatch(
       /sync config|synced|Warning: (?!no reserve key)/,
     );
@@ -398,21 +375,14 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
   it("targets naming a runner in the default-path config (command / workflow.command) aren't run, with a note (an explicit --config would run them)", async () => {
     const fixture = await startFixture({
       config: config({
-        // naming a command = don't run it from the default path
         tool: previewTarget({ command: "tools/vercel" }),
-        // no naming = runs even from the default path
         web: previewTarget(),
-        // naming gh's runner = don't run it from the default path
         ci: previewTarget({
           options: { environment: "production" },
           onPush: "workflow",
           workflow: { file: "maruhi-sync.yml", command: "tools/gh" },
         }),
-        // writing the default's own spelling is still 'naming it' (the
-        // check is whether the config wrote a runner)
         spelled: previewTarget({ command: "vercel" }),
-        // an unnamed workflow = the gh on PATH runs even from the
-        // default path
         dispatch: previewTarget({
           options: { environment: "production" },
           onPush: "workflow",
@@ -430,20 +400,15 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(errors).toContain("Note: target ci names the program to run");
     expect(errors).toContain("Note: target spelled names the program to run");
     expect(errors).not.toContain("Note: target dispatch names");
-    // Only web (the vercel on PATH) and dispatch (the gh on PATH) ran
     expect(fixture.env.execCalls.map((call) => call.command[0])).toEqual(["vercel", "gh"]);
     expect(await decryptReceipt(fixture, "web")).toMatchObject({
       variables: { ALPHA: 4, BETA: 1 },
     });
 
-    // An explicit --config = the user pointed at that file: named
-    // runners run too
     const explicit = await startFixture({
       config: config({ tool: previewTarget({ command: "tools/vercel" }) }),
     });
     expect(await pushWithConfig(explicit, NEW_VALUE)).toBe(0);
-    // The first run has no receipt, so ALPHA and BETA — 2 calls, both
-    // named runners
     expect(explicit.env.execCalls.map((call) => call.command[0])).toEqual([
       "tools/vercel",
       "tools/vercel",
@@ -463,13 +428,10 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
 
   it("with no config in cwd it's the traditional push (reads nothing, says nothing)", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
-    // cwd is the repo root (no maruhi.sync.json)
     expect(await push(fixture, NEW_VALUE)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain(PUSHED_LINE);
     expect(fixture.env.execCalls).toEqual([]);
     expect(receiptsRequests(fixture)).toBe(0);
-    // No sync-related note / warning (the existing floor/checkpoint
-    // notes are push's own)
     expect(fixture.env.errors.join("\n")).not.toMatch(
       /sync config|synced|Warning: (?!no reserve key)/,
     );
@@ -507,8 +469,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     });
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     expect(fixture.env.logs.join("\n")).toContain(PUSHED_LINE);
-    // The --config is explicit, so the 'no target to sync' note appears,
-    // but it says nothing about the other project
     expect(fixture.env.errors.join("\n")).toContain("no target in the sync config copies");
     expect(fixture.env.errors.join("\n")).not.toContain("different project");
   });
@@ -519,7 +479,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     process.chdir(fixture.configDir);
     expect(await push(fixture, NEW_VALUE)).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("The sync config maruhi.sync.json is invalid");
-    // Read before any network: not even the environment is opened
     expect(fixture.server.requests).toEqual([]);
     expect(fixture.source.writes).toEqual([]);
   });
@@ -527,11 +486,8 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
   it("no onPush target carrying from the pushed environment does nothing (an explicit --config gets a note)", async () => {
     const fixture = await startFixture({
       config: config({
-        // A target syncing from a different environment, and one not
-        // carrying this variable
         other: previewTarget({ environment: "staging" }),
         beta: previewTarget({ variables: ["BETA"] }),
-        // A target without onPush (manual only)
         manual: previewTarget({ onPush: undefined }),
       }),
     });
@@ -543,7 +499,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(fixture.env.execCalls).toEqual([]);
     expect(receiptsRequests(fixture)).toBe(0);
 
-    // On the default path, no note either
     const quiet = await startFixture({
       config: config({ manual: previewTarget({ onPush: undefined }) }),
     });
@@ -560,8 +515,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     });
     expect(await pushWithConfig(fixture, NEW_VALUE)).toBe(0);
     const errors = fixture.env.errors.join("\n");
-    // The project has no checkpoint, so issuance trigger (iii) proposes one,
-    // with the anchor refresh (CRYPTO_SPEC §6.3)
     const proposal = errors.indexOf(
       "Note: this project's checkpoint baseline is more than 7 days behind (or was never issued). Run `maruhi project checkpoint` to refresh the rollback-detection baseline (CRYPTO_SPEC §6.3). If this project commits a repository anchor for CI",
     );
@@ -601,12 +554,10 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(errors).toContain(
       "The next `maruhi sync plan web` shows the pushed variable as pending; `maruhi sync apply web` or CI delivers it",
     );
-    // The vendor's output is scrubbed before being shown
     expect(errors).toContain("  vercel: nope [redacted]");
     expectNoSecretLeak(fixture.env);
     expect(fixture.receipts.writes).toEqual([]);
 
-    // The mark = the receipt's lag: the next plan reports pending
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -623,14 +574,11 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
     expect(errors).toContain(
       "Warning: the push is done, but target web could not be synced (vercel could not be started while writing ALPHA (delivered before that: 0 variables written, 0 deleted). Cannot start vercel (ENOENT): is it installed and on PATH.",
     );
-    // Nothing arrived, so no receipt is written
     expect(fixture.receipts.writes).toEqual([]);
   });
 
   it("an uncarryable value (Vercel's trailing newline) is a warning and the value is never sent", async () => {
     const fixture = await startFixture({ config: config({ web: previewTarget() }) });
-    // push drops one trailing newline, so what arrives is 'a line +
-    // one newline' = the shape Vercel drops
     expect(await pushWithConfig(fixture, `${NEW_VALUE}\n\n`)).toBe(0);
     expect(fixture.env.errors.join("\n")).toContain(
       "Warning: the push is done, but target web could not be synced (Variable ALPHA is a single line ending with a newline",
@@ -650,8 +598,6 @@ describe("maruhi push → direct apply (onPush: apply)", () => {
       config: config({ web: previewTarget() }),
       receipts: [newer],
     });
-    // First establish the receipts environment's floor via plan, then
-    // have the server re-serve an older version (a rollback)
     expect(
       await runCli(["sync", "plan", "web", "--config", fixture.configPath], fixture.env.layer),
     ).toBe(0);
@@ -701,8 +647,6 @@ describe("maruhi push → CI trigger (onPush: workflow)", () => {
     expect(out).toContain(
       `Triggered workflow maruhi-sync.yml for target web (\`gh workflow run\` in ${fixture.configDir}). CI applies it with \`maruhi ci sync\` and keeps no receipt, so the next local \`maruhi sync plan web\` still shows the pushed variable as pending`,
     );
-    // One-way: the receipts environment is neither read nor written,
-    // and the result isn't awaited
     expect(receiptsRequests(fixture)).toBe(0);
     expect(fixture.receipts.writes).toEqual([]);
   });

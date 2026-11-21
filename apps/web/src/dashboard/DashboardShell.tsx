@@ -1,46 +1,5 @@
 "use client";
 
-// The app shell (DP3 ruling A amendment 1 — docs/notes/web-design-pass.md
-// §5). Every authenticated screen (S4–S9, S11) renders inside this shell.
-// The shape follows the Astryx templates:
-//
-// - Frame = `astryx template shell-side-nav` / `AppShellSideNavOnly`:
-//   AppShell + SideNav (header = ㊙ logo + maruhi, body = destinations,
-//   footer = account [user id → Account audit, Sign out]). collapsible.
-//   At mobile width (AppShell's md) the SideNav moves into the
-//   AppShell-generated drawer (the skip link and the main landmark are
-//   also AppShell's)
-// - Page = `table-page` / `LayoutHeaderWithActions`: a back link + h1 +
-//   description (+ tabs) in Layout(auto)'s header slot, the body in the
-//   content slot. The whole page scrolls (the header is not fixed —
-//   DP3 amendment 5: separate heading from body with whitespace, not a
-//   line. An unfixed header would overlap the body and be unreadable, so
-//   the fixing goes too)
-// - Sign-in = `astryx template login`: Center (full viewport height) +
-//   logo + Card (heading, description, primary button)
-//
-// The session state (`GET /auth/me`) is held in one place by the shell.
-// A 401 lands every screen on the same sign-in screen, and the body
-// renders only when ok (children fetch after me is confirmed — accepting
-// the one-round-trip serialization to avoid a shape where the body
-// flashes in and disappears on a 401). Sign-out is POST /auth/logout +
-// the CSRF header (api.ts attaches it uniformly). The display-
-// discipline caveat (ServerReportedNote) is placed once by the shell at
-// the bottom of the page. All wording is English (ADR-0017).
-//
-// Two-layer structure (DP3 amendment 11): `DashboardLayout` is the
-// component of the pathless parent route (routes.ts's
-// dashboardShellRoute); it holds session state + AppShell + SideNav and
-// renders child routes into `Outlet`. Never remounting across screen
-// transitions means no /auth/me re-fetch, no re-appearance of "Checking
-// your session", and no loss of the sidebar's collapsed state.
-// `DashboardShell` is the page frame each screen uses (Layout's header
-// = heading, content = body). Each screen declares the sidebar's
-// current location and the project child item via `destination` /
-// `project`, raised to the parent through context (a `useLocation`
-// derived from the URL is not used because Location's `.hash` would
-// enter the bundle and trip the AUTH_SPEC §15-3 tripwire [the word
-// "hash" is banned]).
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Banner } from "@astryxdesign/core/Banner";
 import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
@@ -79,60 +38,31 @@ import { SECTION_GAP, ServerReportedNote } from "./sections.tsx";
 import { SessionExpiredContext } from "./session-expiry.ts";
 import type { Me } from "./types.ts";
 
-/** The sidebar's destinations (selection state = aria-current="page"). The project screen sits under Projects. */
 type ShellDestination = "projects" | "tokens" | "devices" | "account";
 
-/** The parent level (the head of the breadcrumbs. The current location is the project's shortened ID or the title — moved to `Breadcrumbs` in amendment 7). */
 interface BackLink {
   label: string;
   href: string;
 }
 
-// Brand assets (DP1 — apps/web/public). The inverted version = the ㊙
-// mark in white on a vermilion disc = same shape as the favicon.
-// The sidebar heading and the sign-in screen share the same file. The
-// color does not follow the theme — pinned to vermilion (looking the
-// same as the favicon on the browser tab)
 const LOGO_INVERTED_SRC = "/logo-inverted.svg";
-// 24px, balancing the heading's character height (bold 16px). Sign-in
-// places it above the heading, so 40px
 const SIDE_NAV_LOGO_PX = 24;
 const SIGN_IN_LOGO_PX = 40;
 
-// The body's max width (one value shared by every page — it does not
-// vary per page). Astryx's `settings` template is 1440, `detail-page`
-// is 1000. 1200 exactly fills a 1440px notebook (region 1180) and sits
-// centered at 1920px
 const CONTENT_WIDTH = 1200;
 
-// The separator discipline (DP3 amendment 5 — ruling O): boundaries
-// between heading, section, and body are marked by whitespace
-// (SECTION_GAP), not lines. Lines appear only inside a collection
-// (table rows, the audit rows' hairlines) and on the tab row (TabList
-// hasDivider — the tab underline doubles as the only boundary between
-// header and body)
-
-/** The open project (shown as the current location under the sidebar's Projects child item). */
 interface CurrentProject {
   id: string;
   label: string;
 }
 
-/** The sidebar's state (current location + the open project). Each screen declares it; the parent shell holds it. */
 interface ShellNav {
   destination: ShellDestination;
   project: CurrentProject | undefined;
 }
 
-// The declaration path from a child route (screen) to the parent
-// (shell). The value is a useState setter (stable identity)
 const ShellNavContext = createContext<((nav: ShellNav) => void) | undefined>(undefined);
 
-/**
- * A screen declares its destination and project to the shell. Applied
- * before paint (layout effect) so the first frame after a transition
- * never retains the previous screen's selection state.
- */
 function useShellNav(destination: ShellDestination, project: CurrentProject | undefined): void {
   const setNav = useContext(ShellNavContext);
   const projectId = project?.id;
@@ -148,19 +78,8 @@ function useShellNav(destination: ShellDestination, project: CurrentProject | un
   }, [setNav, destination, projectId, projectLabel]);
 }
 
-// The static shell's (Root.tsx) <title>. Restored when leaving the
-// dashboard (an SPA transition to the RSC Home)
 const BASE_DOCUMENT_TITLE = "maruhi";
 
-/**
- * The per-screen document.title (`<screen name> — maruhi`). Because an
- * SPA transition never changes the static shell's <title>, it is set
- * on the client side so assistive tech, tabs, and history can tell
- * screens apart.
- * On unmount it restores the static shell's value (within one commit
- * the old screen's cleanup runs before the new screen's setup, so the
- * destination's value is never overwritten).
- */
 function useDocumentTitle(title: string): void {
   useEffect(() => {
     document.title = `${title} — ${BASE_DOCUMENT_TITLE}`;
@@ -176,8 +95,6 @@ type AuthState =
   | { status: "ok"; me: Me }
   | { status: "failed"; failure: ApiFailure };
 
-// The destination catalog (in display order). Paths go only through
-// routes.ts's spaPaths (ruling CA)
 const DESTINATIONS: ReadonlyArray<{
   id: ShellDestination;
   label: string;
@@ -219,7 +136,6 @@ function NavItems({
   );
 }
 
-/** The sidebar (the `shell-side-nav` template's shape: header / destinations / account footer). */
 function DashboardSideNav({
   current,
   project,
@@ -250,7 +166,7 @@ function DashboardSideNav({
       }
       footer={
         <SideNavSection title="Account" isHeaderHidden>
-          {/* Displays the internal user_id (ULID). Doubles as the destination for Account audit (the self axis) */}
+          {}
           <SideNavItem
             label={me.userId}
             icon={UserCircleIcon}
@@ -274,16 +190,6 @@ function DashboardSideNav({
   );
 }
 
-/**
- * The sign-in screen (the `astryx template login` shape. Credentials
- * are GitHub OAuth only).
- * Rendered outside AppShell, so the main landmark is given to
- * Center(div) via role.
- * When `signedOutNow` (just signed out, or switched on the spot by a
- * screen's 401), the previously focused element disappears and focus
- * falls to body, so it is moved to the heading (not stolen on the
- * initial render [opened without a session]).
- */
 function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
   useDocumentTitle("Sign in");
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -332,13 +238,6 @@ function SignInScreen({ signedOutNow }: { signedOutNow: boolean }): ReactNode {
   );
 }
 
-/**
- * The page heading (the `detail-page` template's PageHeader shape):
- * breadcrumbs → h1 → description → tabs. The breadcrumbs are Astryx
- * `Breadcrumbs` (parent level = link, current location = aria-current).
- * The tabs' (TabList hasDivider) underline doubles as the boundary
- * between header and body (ruling O).
- */
 function PageHeader({
   backLink,
   crumb,
@@ -369,11 +268,6 @@ function PageHeader({
   );
 }
 
-/**
- * The session state (loading / signed-out / ok / failed). me exists
- * only when ok. Sign-out falls to signed-out (signedOutNow) on either
- * success or a 401.
- */
 function useSession(): {
   auth: AuthState;
   reload: () => void;
@@ -405,29 +299,20 @@ function useSession(): {
       }
     });
   }, []);
-  // A screen's fetch returned a 401 (session-expiry.ts). Land on the
-  // same screen as just after a sign-out
   const expire = useCallback(() => setAuth({ status: "signed-out", signedOutNow: true }), []);
   return { auth, reload, signOut, expire };
 }
 
 interface PageProps {
   destination: ShellDestination;
-  /** The open project (the sidebar's child item + the breadcrumbs' current location). */
   project?: CurrentProject | undefined;
   backLink?: BackLink;
   title: string;
   intro?: ReactNode;
-  /** Tabs (a TabList) placed at the end of the header slot. The caller owns the body switching. */
   tabs?: ReactNode;
   children: ReactNode;
 }
 
-/**
- * The frame for session-checking / failure (no nav — only the status
- * display centered). Outside AppShell, so the main landmark is given
- * to Center(div) via role. `title` is the document.title.
- */
 function StatusFrame({ title, children }: { title: string; children: ReactNode }): ReactNode {
   useDocumentTitle(title);
   return (
@@ -439,15 +324,6 @@ function StatusFrame({ title, children }: { title: string; children: ReactNode }
   );
 }
 
-/**
- * The parent of the authenticated screens (the component of the
- * pathless route `dashboardShellRoute`). Confirms the session and only
- * when ok renders the child route (`Outlet`) inside AppShell +
- * SideNav. signed-out shows the sign-in screen; loading / failed show
- * the status frame (no nav). When a screen's fetch returns a 401
- * (SessionExpiredContext — session-expiry.ts) it drops to signed-out
- * on the spot.
- */
 export function DashboardLayout(): ReactNode {
   const { auth, reload, signOut, expire } = useSession();
   if (auth.status === "loading") {
@@ -472,7 +348,6 @@ export function DashboardLayout(): ReactNode {
   );
 }
 
-/** The post-sign-in frame: the sidebar (current location as declared by the child route) + the child route. */
 function SignedInFrame({ me, onSignOut }: { me: Me; onSignOut: () => void }): ReactNode {
   const [nav, setNav] = useState<ShellNav>({ destination: "projects", project: undefined });
   return (
@@ -494,14 +369,6 @@ function SignedInFrame({ me, onSignOut }: { me: Me; onSignOut: () => void }): Re
   );
 }
 
-/**
- * The per-screen page frame (rendered into `DashboardLayout`'s Outlet).
- * `title` is the page's h1 (AppShell renders no heading, so the header
- * slot's heading becomes the page's h1). `backLink` is the way back to
- * the parent level, `intro` the 1–2 lines right under the heading,
- * `tabs` the TabList at the end of the header. `destination` /
- * `project` are the declaration to the sidebar (useShellNav).
- */
 export function DashboardShell({
   destination,
   project,
@@ -531,7 +398,7 @@ export function DashboardShell({
       }
       content={
         <LayoutContent>
-          {/* The gap from the header is whitespace, not a line (ruling O): the header's own bottom margin 16px + 24px = 40px */}
+          {}
           <VStack gap={SECTION_GAP} paddingBlockStart={6}>
             {children}
             <ServerReportedNote />

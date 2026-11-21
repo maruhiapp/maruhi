@@ -1,10 +1,6 @@
-// Unit test of the display derivation of the aggregated var.read
-// shape (src/dashboard/audit-read.ts).
 import { testVariableId } from "@maruhi/crypto/test-support";
 import { describe, expect, it } from "vite-plus/test";
 
-// The canonical implementation (web carries no package dependencies,
-// so only tests reference the source by relative path)
 import { auditReadVariablesOf } from "../../../../packages/core/src/audit.ts";
 import {
   aggregatedReadVariables,
@@ -173,7 +169,6 @@ describe("labels", () => {
     expect(readSummaryLabel([entry("a", 1), entry("b", 2), entry("c", 1)])).toBe(
       "read 3 variables",
     );
-    // The version value range (VH): several versions of one variable
     expect(readSummaryLabel([entry("a", 2), entry("a", 3), entry("a", 4)])).toBe(
       "read 3 versions of 1 variable",
     );

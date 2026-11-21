@@ -1,17 +1,3 @@
-// Integration tests for the data-plane API (AUTH_SPEC §12) — composite
-// acceptance of the environment manifest (AUTH_SPEC §12-5 = CRYPTO_SPEC
-// §4.3).
-// Verifies the HttpApi via SELF and DO SQLite on @cloudflare/vitest-plugin
-// (real workerd environment).
-//
-// What is pinned: composite acceptance together with meta ops /
-// manifestVersion CAS (the 409 carries only the latest number) /
-// server-side digest recomputation / retention of only the latest one
-// copy / bundling into both pull modes (tombstones included — the
-// manifest is a required response field) / the missing-row invariant
-// violation (a defect, never an omission or a v1 acceptance) / cascade
-// on environment deletion.
-
 import type { ChainEntry } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -92,7 +78,6 @@ async function manifestRows(): Promise<readonly Record<string, unknown>[]> {
 describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC §4.3)", () => {
   it("issues v1 on creation and re-issues on every meta op, keeping only the latest row (§12-5 / §12-8)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    // Right after creation: manifestVersion 1, empty variable set, epoch 1
     expect(await manifestRows()).toEqual([
       {
         environment_id: ENV,
@@ -103,20 +88,17 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       },
     ]);
 
-    // Variable creation → v2 (the new variable joins the set). The row is replaced, not accumulated (retention is the latest copy only)
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const afterCreate = await manifestRows();
     expect(afterCreate.length).toBe(1);
     expect(afterCreate[0]).toMatchObject({ manifest_version: 2, epoch: 1, issuer_user_id: MEMBER });
 
-    // rename → v3, delete → v4 (tombstone-including digest), environment rename → v5
     expect((await renameVariableRequest(VAR, "DB_URL", MEMBER)).status).toBe(204);
     expect((await deleteVariableRequest(VAR, MEMBER)).status).toBe(204);
     expect((await renameEnvironmentRequest(fixture, ENV, "App2", MEMBER)).status).toBe(204);
     const rows = await manifestRows();
     expect(rows.length).toBe(1);
     expect(rows[0]).toMatchObject({ manifest_version: 5, epoch: 1 });
-    // The digest from v4 onward is the tombstone-including set (an attestation that matched the server's recomputation)
     const recorded = fixture.manifests.get(ENV);
     if (recorded === undefined) throw new Error("missing recorded manifest");
     expect(recorded.entries).toEqual([
@@ -138,7 +120,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         environmentId: ENV,
         epoch: 1,
         manifestVersion: 3,
-        // The digest of the tombstone-including set (§12-7 — the same level in both modes)
         variablesDigestHex: fixture.manifests.get(ENV)?.manifest.variablesDigestHex,
         issuerUserId: MEMBER,
       });
@@ -150,7 +131,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
   it("recomputes the digest server-side: omitting the new variable or the tombstone is 422 manifest-digest-mismatch (§12-5 (7))", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
 
-    // The variable-creation manifest does not contain the new variable's entry (left as the empty set)
     const statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
     const emptyDigest = await nextEnvironmentManifest(fixture, {
       environmentId: ENV,
@@ -170,7 +150,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       _tag: "ManifestRejected",
       reason: "manifest-digest-mismatch",
     });
-    // Atomicity: none of the variable row, statement row, or manifest row advances
     const rows = await queryProjectDo(
       projectId,
       "SELECT 1 FROM variables WHERE environment_id = ? AND variable_id = ?",
@@ -180,7 +159,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     expect(rows.length).toBe(0);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1 });
 
-    // The deletion manifest drops the tombstone (back to the empty set)
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const last = varStatements.get(VAR);
     if (last === undefined) throw new Error("missing recorded statement");
@@ -210,9 +188,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
 
   it("rejects a manifest bound to a stale env-meta statement (422 manifest-digest-mismatch — §12-5 (7))", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A form where the environment-rename manifest copies the old
-    // envMeta (metaVersion 1) does not match the recomputation after the
-    // rename is applied (metaVersion 2)
     const staleEnvMeta = await nextEnvironmentManifest(fixture, {
       environmentId: ENV,
       epoch: 1,
@@ -251,7 +226,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     const staleEpoch = await signEnvManifestAs(MEMBER, projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
-      // The current epoch is 1 — a manifest baking in 2 fails the epoch-consistency check
       epoch: 2,
       manifestVersion: 2,
       variablesDigestHex: await digestOf([
@@ -287,9 +261,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
   it("enforces the manifestVersion CAS with the number only (409 §12-5 (6))", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // The latest is 2. Attesting 4 (with a dummy prev) → 409
-    // currentManifestVersion 2. The winner's hash is not carried (the
-    // §12-5 409 discipline)
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -321,7 +292,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       currentManifestVersion: 2,
     });
     expect(Object.keys(body).filter((key) => key.toLowerCase().includes("hash"))).toEqual([]);
-    // In the same transaction as the metaVersion CAS: the statement row does not advance either
     const rows = await queryProjectDo(
       projectId,
       "SELECT meta_version FROM variable_meta_statements WHERE environment_id = ? AND variable_id = ? ORDER BY meta_version",
@@ -335,7 +305,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     await createEnvironmentOk(fixture, ENV, "App");
     const statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
     const { manifest } = await manifestForStatement(statement, OWNER);
-    // MEMBER carries in a manifest signed by OWNER → the verification key is the calling principal
     const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement,
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -350,13 +319,11 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
 
   it("requires the manifest on every meta-op path (400 schema) and checks its coordinates (422)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // A missing manifest is a wire-Schema 400
     const missing = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
     });
     expect(missing.status).toBe(400);
-    // A coordinate mismatch (manifestEnvironmentId) is a 422 from the worker's self-consistency check
     const wrongEnv = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: await variableStatementFor(MEMBER, VAR, "DATABASE_URL"),
       value: await fakePayload(MEMBER, aadFor(1, 1)),
@@ -368,7 +335,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
 
   it("re-issues the manifest with the new epoch on rotation and retries after a head-CAS conflict (§12-4)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // Parent-head CAS failure (409): the manifest is not accepted and the record does not advance
     const conflicted = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -386,11 +352,9 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     expect(conflicted.status).toBe(409);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 1, epoch: 1 });
 
-    // Retry (both the entry and the manifest are re-signed against the current head — the fixture handles it)
     await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
     expect((await manifestRows())[0]).toMatchObject({ manifest_version: 2, epoch: 2 });
 
-    // A rotate composite whose manifest epoch disagrees with new_epoch is a 422 at the in-composite consistency check
     const mismatched = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 3,
@@ -418,14 +382,10 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
 
   it("requires the creation and rotation composites' manifests to declare the pre-append head (§12-4)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    // An existing but stale head: the creation entry below the current
-    // boundary checkpoint
     const staleHead = { seq: fixture.head.seq - 1, hashHex: await hashOf(fixture.head.seq - 1) };
     const headBefore = fixture.head.seq;
     const rowsBefore = await manifestRows();
 
-    // Creation: the statement declares the current head, the manifest is
-    // valid in every field but its declared head
     const otherEnv = "env-app-0002";
     const statement = await createEnvironmentStatement({
       authorUserId: OWNER,
@@ -455,8 +415,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     expect(created.status).toBe(422);
     expect(((await created.json()) as { field: string }).field).toBe("manifestChainHead");
 
-    // Rotation: the manifest is the legitimate next one, signed against
-    // the stale head
     const rotated = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -481,8 +439,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     expect(rotated.status).toBe(422);
     expect(((await rotated.json()) as { field: string }).field).toBe("manifestChainHead");
 
-    // Atomicity: neither refusal leaves anything on the chain or in the
-    // manifest rows
     const chain = await requestJson("GET", "/chain", token(READER));
     expect(((await chain.json()) as { headSeq: number }).headSeq).toBe(headBefore);
     expect(await manifestRows()).toEqual(rowsBefore);
@@ -491,27 +447,16 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
   it("answers every read surface with a server fault when the stored manifest row is missing (0.28-draft)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    // Outside the creation composite an environment always has a stored
-    // manifest (§12-4's atomic write — the only writers are the creation
-    // composite, meta ops and rotate, the only deleter the deletion
-    // cascade). A live manifest-less environment can only come from a
-    // corrupted DO or a crafted snapshot — an invariant violation,
-    // refused as a defect (500), never a 200 that omits the field
     await queryProjectDo(
       projectId,
       "DELETE FROM environment_manifests WHERE environment_id = ?",
       ENV,
     );
-    // Each rejected DO RPC below makes workerd log an "uncaught
-    // exception" line even though the worker catches it — expected.
-    // Any defect would answer the same 500, so after each HTTP surface
-    // the direct call on the instance pins which one fires
     const missingRow = "environment manifest row missing";
 
     for (const path of [`/environments/${ENV}/pull`, `/environments/${ENV}/pull/metadata`]) {
       const response = await requestJson("GET", path, token(READER));
       expect(response.status, path).toBe(500);
-      // The defect body carries no environment data
       const body = await response.text();
       expect(body).not.toContain(ENV);
       expect(body).not.toContain("manifestVersion");
@@ -527,9 +472,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       ),
     ).rejects.toThrow(missingRow);
 
-    // A meta operation is refused the same way (the CAS's latest-0
-    // state exists only inside the creation composite — never accepted
-    // as v1)
     const statement = await nextVariableStatement({
       variableId: VAR,
       name: "DB_URL",
@@ -564,7 +506,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
           { userId: MEMBER },
           testEnvironmentId(ENV),
           testVariableId(VAR),
-          // The test wire types widen suite to string (the request Schema narrows it)
           toMetaStatementInput(statement as Parameters<typeof toMetaStatementInput>[0]),
           toManifestInput({
             ...metaManifest,
@@ -574,9 +515,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       ),
     ).rejects.toThrow(missingRow);
 
-    // So is the rotate composite (a single DEK for both the wrap and
-    // the commitment — the member-directed wrap must open to the DEK
-    // the chain's commitment names)
     const nextDek = makeDek();
     const rotation = {
       environmentId: ENV,
@@ -617,9 +555,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       ),
     ).rejects.toThrow(missingRow);
 
-    // Refused without writing: no manifest row, no meta statement
-    // advance, and the chain does not move (the rotate's entry pair is
-    // not appended)
     expect(await manifestRows()).toEqual([]);
     const metaRows = await queryProjectDo(
       projectId,
@@ -636,9 +571,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
   });
 
   it("routes a stale v1 against an initialized environment to the CAS 409", async () => {
-    // A stale v1 against an initialized environment (latest 2) falls to
-    // the CAS 409 (carrying currentManifestVersion), joining the
-    // legitimate client's re-fetch / re-sign loop
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const statement = await nextVariableStatement({
@@ -656,7 +588,6 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       envMetaVersion: 1,
       envMetaSigHashHex: "cd".repeat(32),
       prevManifestSigHashHex: "",
-      // The declared head is a position older than the current head (the base chain's head from before creation)
       chainHeadHashHex: projectId,
       chainHeadSeq: 1,
     });

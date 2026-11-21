@@ -1,12 +1,3 @@
-// The vendor-response readers of `maruhi sync`'s http driver
-// (sync-http.ts): one per preset's `response` kind — Cloudflare's v4
-// envelope (`success` plus error codes), Vercel's `{created, failed[]}`
-// (a partial success is split by name), Netlify's 2xx (the response's
-// `key` must carry the name) — and the failure's display lines. The
-// extracted fragments go through sync-http-send.ts's `scrubbed` before
-// they are shown; readResponse dispatches on ResponseKind for the run
-// procedures (sync-http-run.ts).
-
 import { displayText } from "../display.ts";
 import { isRecord } from "../json-record.ts";
 import { scrubbed } from "./sync-http-send.ts";
@@ -21,7 +12,6 @@ import {
   type ResponseKind,
 } from "./sync-http.ts";
 
-/** Turns a Cloudflare envelope's errors / messages into lines. */
 function cloudflareLines(body: unknown, status: number): string[] {
   if (!isRecord(body)) {
     return [`HTTP ${status}`];
@@ -37,7 +27,6 @@ function cloudflareLines(body: unknown, status: number): string[] {
   ];
 }
 
-/** The set of Cloudflare errors[].code values. */
 function cloudflareCodes(body: unknown): Set<number> {
   const codes = new Set<number>();
   if (isRecord(body) && Array.isArray(body["errors"])) {
@@ -50,10 +39,8 @@ function cloudflareCodes(body: unknown): Set<number> {
   return codes;
 }
 
-// wrangler's isWorkerNotFoundError (worker-not-found-error.ts)
 const CLOUDFLARE_WORKER_NOT_FOUND = new Set([10007, 10090]);
 
-/** The Cloudflare v4 envelope check: 2xx and `success: true`. */
 function readCloudflare(
   outcome: HttpOutcome,
   batch: HttpBatch,
@@ -80,7 +67,6 @@ function readCloudflare(
   };
 }
 
-/** Reading Vercel's `{created, failed[]}` (partial success is split by name). */
 function readVercel(
   outcome: HttpOutcome,
   batch: HttpBatch,
@@ -101,8 +87,6 @@ function readVercel(
     return { delivered: batch.names, failure: null };
   }
   if (!("created" in body)) {
-    // A write 2xx without `created` = not the expected response shape (a
-    // schema change, an intermediary's response). Not read as delivered
     return {
       delivered: [],
       failure: {
@@ -118,14 +102,12 @@ function readVercel(
   }
   const failed = recordsOf(body["failed"]);
   if (failed.length === 0) {
-    // An empty failed means everything was delivered (created's shape wobbles between one entry and an array)
     return { delivered: batch.names, failure: null };
   }
   const created = body["created"];
   const createdKeys = new Set(keysOf(Array.isArray(created) ? created : [created]));
   const failures = failed.map(vercelFailureOf);
   const failedNames = new Set(failures.flatMap((entry) => (entry.key === null ? [] : [entry.key])));
-  // If the failed names cannot be identified, the whole batch is undelivered (don't mis-record as delivered)
   const delivered =
     failedNames.size === 0
       ? []
@@ -142,7 +124,6 @@ function readVercel(
   };
 }
 
-/** The display lines of Vercel's non-2xx response (`{error: {code, message}}`). */
 function vercelErrorLines(status: number, body: unknown): string[] {
   const error = isRecord(body) && isRecord(body["error"]) ? body["error"] : null;
   return error === null
@@ -150,7 +131,6 @@ function vercelErrorLines(status: number, body: unknown): string[] {
     : [`HTTP ${status}`, `error ${String(error["code"] ?? "")}: ${String(error["message"] ?? "")}`];
 }
 
-/** The `key` of a response entry (string ones only). */
 function keysOf(entries: readonly unknown[]): readonly string[] {
   return entries.filter(isRecord).flatMap((entry) => {
     const key = entry["key"];
@@ -158,7 +138,6 @@ function keysOf(entries: readonly unknown[]): readonly string[] {
   });
 }
 
-/** One Vercel `failed[]` entry → the failed name and a display line (redaction is the caller's). */
 function vercelFailureOf(entry: Record<string, unknown>): {
   readonly key: string | null;
   readonly line: string;
@@ -172,19 +151,12 @@ function vercelFailureOf(entry: Record<string, unknown>): {
   };
 }
 
-/** The display lines of Netlify's non-2xx response (`{code, message}`) (only the status when the body is not JSON). */
 function netlifyErrorLines(status: number, body: unknown): string[] {
   return isRecord(body) && typeof body["message"] === "string"
     ? [`HTTP ${status}`, `error ${String(body["code"] ?? status)}: ${body["message"]}`]
     : [`HTTP ${status}`];
 }
 
-/**
- * Reading Netlify: 2xx. For a write (POST = array / PATCH = one variable)
- * the response's `key` must also carry the name (a differently-shaped 2xx
- * is not read as "delivered" — same posture as Vercel's `created`). A
- * delete is a 204 with no body. The response echoes the value (discarded).
- */
 function readNetlify(
   outcome: HttpOutcome,
   batch: HttpBatch,

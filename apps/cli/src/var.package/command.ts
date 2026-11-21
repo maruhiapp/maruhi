@@ -1,5 +1,3 @@
-// `maruhi var` (discipline: see commands/index.ts).
-
 import { Clock, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -127,10 +125,6 @@ export const varRotateConfig = {
   ),
 };
 
-/**
- * `--previous` names a version (checked before any network; that it rides
- * only with `--finalize` is the command's validate rule).
- */
 function checkPreviousFlag(values: {
   readonly previous: number | undefined;
 }): Effect.Effect<void, CliError> {
@@ -139,7 +133,6 @@ function checkPreviousFlag(values: {
     : Effect.void;
 }
 
-/** `maruhi var rotate <name> --finalize`: invalidates the previous credential and reports. */
 const runVarFinalize = Effect.fn("var-command.runVarFinalize")(function* (
   input: VarFinalizeInput,
 ): Effect.fn.Return<void, CliError, CliServices> {
@@ -157,7 +150,6 @@ const runVarFinalize = Effect.fn("var-command.runVarFinalize")(function* (
   }
 });
 
-/** `maruhi var rotate <name>`: the rotation, its report, the checkpoint proposal, and the onPush sync. */
 const runVarRotate = Effect.fn("var-command.runVarRotate")(function* (
   input: VarRotateInput,
   syncSetup: PushSyncSetup | null,
@@ -229,8 +221,6 @@ export function makeVarCommands() {
           varHistoryOp: m.varHistoryOp,
         })),
       );
-      // Metadata only (§12-7): keyless, scope-agnostic, no value is read —
-      // the agent gate does not apply (zero values — the permissive side)
       const context = yield* openMetadataEnvironment(values);
       const result = yield* varHistoryOp({
         client: context.client,
@@ -308,8 +298,6 @@ export function makeVarCommands() {
     varRotateConfig,
     Effect.fn("var-command.varRotate")(function* (values) {
       yield* checkPreviousFlag(values);
-      // Both configs are read before any network: a broken or absent rotation
-      // config is a usage problem, not something to find after a pull
       const rotateConfigPath = values["rotate-config"] ?? DEFAULT_ROTATE_CONFIG_PATH;
       const rotateConfig = yield* loadRotateConfig(rotateConfigPath);
       const syncSetup = values.finalize
@@ -344,7 +332,6 @@ export function makeVarCommands() {
         ? invalidFlagCombination("--previous applies to --finalize only")
         : Effect.void,
     ),
-    // --finalize syncs nothing, so it reads neither sync flag
     Command.validate((values) => (values.finalize ? Effect.void : rejectNoSyncWithConfig(values))),
   );
 

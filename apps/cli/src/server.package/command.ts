@@ -1,5 +1,3 @@
-// `maruhi server` (discipline: see commands/index.ts).
-
 import { decodeEnvironmentId, type EnvironmentId, isEnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
@@ -54,11 +52,6 @@ export const serverRevokeConfig = {
   ),
 };
 
-/**
- * Interpreting `--environments dev,prod` (mandatory on grant — the
- * minimal-disclosure default is environments are explicitly listed.
- * session-22 §2's ruling). An empty element is refused as a misspelling.
- */
 function parseEnvironmentsFlag(
   value: string | undefined,
 ): Effect.Effect<readonly EnvironmentId[], CliError> {
@@ -88,17 +81,11 @@ function parseEnvironmentsFlag(
   return Effect.succeed(ids.map(decodeEnvironmentId));
 }
 
-/** The deployment whose server key `server grant --key-from` grants (a mirror — AUTH_SPEC §11-7 ruling F). */
 interface GrantKeySource {
   readonly origin: string;
   readonly client: MaruhiClient;
 }
 
-/**
- * The client whose `/auth/config` supplies the key (`--key-from`; null = the
- * server itself). The endpoint is unauthenticated, so a tokenless client
- * reads it; naming the server itself is the default spelled out.
- */
 const grantKeySource = Effect.fn("server-command.grantKeySource")(function* (
   keyOrigin: string | null,
   serverOrigin: string,
@@ -117,7 +104,6 @@ const grantKeySource = Effect.fn("server-command.grantKeySource")(function* (
   return { origin: keyOrigin, client: yield* makeApiClient({ baseUrl: keyOrigin }) };
 });
 
-/** After a grant of another deployment's key: how the grant reaches it. */
 function noteGrantKeySource(keySource: GrantKeySource | null) {
   return keySource === null
     ? Effect.void
@@ -126,7 +112,6 @@ function noteGrantKeySource(keySource: GrantKeySource | null) {
       );
 }
 
-/** `maruhi server grant --environments <ids> [--lease-policy <file>]` (§9 / §12-6). */
 const serverGrantCommand = Effect.fn("server-command.serverGrantCommand")(function* (
   flags: CommonFlags & {
     readonly environments?: string | undefined;
@@ -148,8 +133,6 @@ const serverGrantCommand = Effect.fn("server-command.serverGrantCommand")(functi
     flags.expectFingerprint,
   );
   const proposal = yield* proposalInputOf(flags.expires);
-  // The key of another deployment (a mirror — AUTH_SPEC §11-7 ruling F);
-  // the URL's format check precedes any network
   const keyOrigin =
     flags.keyFrom === undefined
       ? null
@@ -182,14 +165,12 @@ const serverGrantCommand = Effect.fn("server-command.serverGrantCommand")(functi
     `Done: disclosure to server key ${summary.serverKeyFingerprintHex}${keyNote} is active (scope=${summary.scopeEnvironmentIds.join(", ")}, ${policyNote}). Backfill: ${summary.registered} newly registered, ${summary.alreadyRegistered} already registered`,
   );
   yield* noteGrantKeySource(keySource);
-  // §9: always indicate that it is being disclosed (the revocation path is also guided on the spot)
   yield* logNote(
     "the epoch DEKs of environments in the disclosure scope are disclosed to the server (CRYPTO_SPEC §9). To withdraw, run `maruhi server revoke` (it forces a rotation of every environment — §7)",
   );
   return 0;
 });
 
-/** `maruhi server revoke [--fingerprint <hex>]` (§7 / §9). */
 const serverRevokeCommand = Effect.fn("server-command.serverRevokeCommand")(function* (
   flags: CommonFlags & {
     readonly fingerprint?: string | undefined;
@@ -206,9 +187,7 @@ const serverRevokeCommand = Effect.fn("server-command.serverRevokeCommand")(func
   const io = yield* CliIo;
   const fingerprintHex = yield* parseFingerprintFlag("--fingerprint", flags.fingerprint);
   const proposal = yield* proposalInputOf(flags.expires);
-  // A convergent command: the always-on warning of unconverged duties is suppressed (its own sweep report carries it)
   const context = yield* openProject(flags, { quietMandateWarning: true });
-  // One environment's rotation (reusing envRotateOp — sweepRotateFor)
   const outcome = yield* serverRevokeOp({
     client: context.client,
     verified: context.verified,
@@ -231,7 +210,6 @@ const serverRevokeCommand = Effect.fn("server-command.serverRevokeCommand")(func
   if (exitCode === 0) {
     yield* io.log("Done: the revocation and the rotation of every environment completed");
   }
-  // The needs-rotation-flag count and route (the revoke variant of AUDIT_SPEC §4.1)
   if (summary.serverKeyFingerprintHex !== null) {
     yield* reportRotationChecklist({
       context,
@@ -241,7 +219,6 @@ const serverRevokeCommand = Effect.fn("server-command.serverRevokeCommand")(func
   return exitCode;
 });
 
-/** Reporting revoke's append result (the sweep's shared part is carried by reportSweepOutcome). */
 function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effect<void, CliError> {
   if (summary.appended) {
     return io.log(
@@ -249,9 +226,6 @@ function reportRevokeAppend(io: CliIoShape, summary: RevokeSummary): Effect.Effe
     );
   }
   if (summary.serverKeyFingerprintHex !== null) {
-    // The target grant existed, but the CAS-conflict resync found it
-    // already revoked (a concurrent revoke). The fact that someone revoked
-    // the same key is operationally significant, so it is made explicit
     return io.log(
       `The targeted grant (FP=${summary.serverKeyFingerprintHex}) was already revoked by a concurrent run — skipping the append and proceeding to rotate every environment (§7)`,
     );

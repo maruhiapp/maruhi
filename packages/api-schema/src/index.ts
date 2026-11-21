@@ -1,8 +1,3 @@
-// @maruhi/api-schema — HttpApi definitions (the shared source for the
-// server implementation and the derived client). API-boundary types are
-// the EncryptedPayload family only; no type that represents a plaintext
-// secret belongs here.
-
 export {
   AUDIT_ROW_ID_PATTERN,
   AuditActorSchema,

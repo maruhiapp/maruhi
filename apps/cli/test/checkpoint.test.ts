@@ -1,24 +1,3 @@
-// Tests for periodic checkpoint issuance (`maruhi project checkpoint` —
-// CRYPTO_SPEC §6.3 / AUTH_SPEC §16-2).
-//
-// Pillars verified:
-//  1. Construction: the tuple is assembled from the verified view (verified
-//     pull) — environment IDs in byte order, manifest ref = the self-computed
-//     hash of the verified manifest, values_digest = the self-computed hash
-//     of the verified values (never signing the server's claimed values)
-//  2. Audit-head notarization: effective-permission admin (chain role ×
-//     /auth/me tokenScopes) is judged up front — below admin / write-scope
-//     tokens do NOT call GET /audit-head (never step on a 403 — §16-2)
-//  3. Retries: 422 (CheckpointStateMismatch) retries bounded by refetching
-//     the view and re-attesting; once exhausted, issues exactly once against
-//     the stable subset (§6.3 fallback). 409 (CAS) = resync + re-sign
-//  4. Post-acceptance check (§12-10 (3)): even on 2xx, if the synced chain
-//     doesn't show our own entry, do not report success
-//  5. Changed-only cover (§6.3 — Sc-3a): every environment is built, only
-//     those differing from their baseline (or without one) are notarized,
-//     and a run with nothing changed issues a tuple-less entry only to
-//     notarize the audit head or to restart trigger (iii)'s clock
-
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,7 +49,6 @@ import { testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
 
-// Byte-order discrimination pair (alpha < dev)
 const ENV_A = "alpha";
 const ENV_B = "dev";
 
@@ -97,9 +75,7 @@ interface MockEnvironment {
     readonly statement: WireDistributedVariableStatement;
     value: WireDistributedValue;
   }[];
-  /** Swap the value on each pull (the "busy environment" of the subset-fallback test). */
   nextValues?: WireDistributedValue[];
-  /** The enumeration of the latest checkpoint containing the environment (§12-7 — required once it has a baseline). */
   checkpointSnapshot?: WireCheckpointSnapshot;
 }
 
@@ -108,13 +84,9 @@ interface CheckpointServerOptions {
   readonly environments: MockEnvironment[];
   readonly me: { readonly userId: string; readonly tokenScopes?: readonly unknown[] };
   readonly auditHeadHashHex?: string;
-  /** Per-call override for audit-head (undefined = return the attestation with 200). */
   readonly onAuditHead?: (call: number) => MockResponse | undefined;
-  /** Per-call override for append (undefined = accept and append). */
   readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
-  /** Accept without appending to the chain (a lying 2xx server — the §12-10 (3) check). */
   readonly acceptWithoutAppending?: boolean;
-  /** The first chain fetch serves only this many entries (a checkpoint landing after the opening view). */
   readonly firstFetchEntries?: number;
 }
 
@@ -130,7 +102,6 @@ interface CheckpointServerState {
   readonly entries: ChainEntry[];
 }
 
-/** Mock with every endpoint the issuance flow needs (accepted entries are reflected onto the chain). */
 function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServerState {
   const projectId = options.built.projectId;
   const entries: ChainEntry[] = [...options.built.entries];
@@ -204,7 +175,6 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
         json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
       };
     },
-    // Per-environment pull (valued — §12-7)
     ...options.environments.map((environment): MockHandler => (request) => {
       if (
         request.method !== "GET" ||
@@ -241,7 +211,6 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
   return { handlers, appends, auditHeadCalls: () => auditHeadCalls, entries };
 }
 
-/** Fixture for one environment (one variable + manifest). */
 async function makeEnvironment(input: {
   readonly built: BuiltChain;
   readonly environmentId: string;
@@ -323,7 +292,6 @@ async function expectedValuesDigest(environment: MockEnvironment): Promise<strin
 
 type CheckpointPayload = Extract<ChainOperation, { readonly op: "checkpoint" }>["payload"];
 
-/** The tuple the issuer builds for a fixture environment (what a checkpoint notarizes). */
 async function tupleOf(
   projectId: string,
   environment: MockEnvironment,
@@ -338,7 +306,6 @@ async function tupleOf(
   };
 }
 
-/** Appends an owner-signed checkpoint at a chosen time (buildChain's timestamps all lie past the 7-day line). */
 async function appendSignedCheckpoint(
   built: BuiltChain,
   payload: CheckpointPayload,
@@ -375,8 +342,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     ]);
     const head = "ab".repeat(32);
     const environments = [
-      // Deliberately listed in descending order (to discriminate the
-      // issuer-side ascending normalization)
       await makeEnvironment({
         built,
         environmentId: ENV_B,
@@ -411,8 +376,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     expect(state.appends.length).toBe(1);
     const entry = state.appends[0]!.entry;
     expect(entry.op).toBe("checkpoint");
-    // Byte-ascending (alpha < dev); the tuple is self-computed from the
-    // verified view
     expect(entry.payload.environments.map((tuple) => tuple.environmentId)).toEqual([ENV_A, ENV_B]);
     const tupleA = entry.payload.environments[0]!;
     expect(tupleA.epoch).toBe(1);
@@ -421,8 +384,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       await manifestHashOf(built.projectId, environments[1]!.manifest),
     );
     expect(tupleA.valuesDigestHex).toBe(await expectedValuesDigest(environments[1]!));
-    // Effective permission admin: notarize the attestation fetched after the
-    // CAS parent was fixed
     expect(entry.payload.auditHeadHashHex).toBe(head);
     expect(state.auditHeadCalls()).toBe(1);
     expect(env.logs.join("\n")).toContain("Checkpoint accepted at chain seq 4");
@@ -499,8 +460,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     const entry = state.appends[0]!.entry;
     expect(entry.payload.environments.map((tuple) => tuple.environmentId)).toEqual([ENV_A]);
-    // Out-of-scope environments get no valued pull (no var.read recorded,
-    // no 403 stepped on)
     expect(
       server.requests.filter((request) => request.path.includes(`/environments/${ENV_B}/pull`)),
     ).toHaveLength(0);
@@ -577,11 +536,9 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
 
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     expect(state.appends.length).toBe(2);
-    // The audit-head attestation is re-fetched per attempt (§16-2 retries)
     expect(state.auditHeadCalls()).toBe(2);
   });
 
-  /** Shared fixture for the AuditHeadNotReady retry tests (a single-environment issuance by admin). */
   async function makeNotReadyFixture(input: {
     readonly onAuditHead?: (call: number) => MockResponse | undefined;
     readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
@@ -623,8 +580,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       onAuditHead: (call) => (call < 2 ? NOT_READY : undefined),
     });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
-    // Absorbs two 503s and issues on the third attestation (issuance happens
-    // once)
     expect(state.auditHeadCalls()).toBe(3);
     expect(state.appends.length).toBe(1);
     expect(state.appends[0]!.entry.payload).toMatchObject({ auditHeadHashHex: "cd".repeat(32) });
@@ -637,8 +592,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(0);
     expect(state.appends.length).toBe(2);
-    // Resending also re-fetches the attestation (the server's extension has
-    // already advanced — AUDIT_SPEC §5.1)
     expect(state.auditHeadCalls()).toBe(2);
   });
 
@@ -651,16 +604,8 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       },
     });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
-    // The shared notReady counter caps the acceptance path too: 10
-    // appends, each preceded by a fresh attestation (the retried unit
-    // refetches it — §16-2; the server's extension advances regardless —
-    // AUDIT_SPEC §5.1)
     expect(state.appends.length).toBe(10);
     expect(state.auditHeadCalls()).toBe(10);
-    // Exponential backoff between appends (5, 10, …, 1280 ms — ~2.5 s
-    // cumulative; the pre-backoff loop resubmitted immediately). The gaps
-    // are lower bounds only — each also carries a rebuild + attestation
-    // + send round-trip
     const waits = [5, 10, 20, 40, 80, 160, 320, 640, 1280];
     for (const [index, wait] of waits.entries()) {
       expect(appendTimes[index + 1]! - appendTimes[index]!).toBeGreaterThanOrEqual(wait - 1);
@@ -685,9 +630,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
           : NOT_READY,
     });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
-    // Five 503s, the 422, then five more: the attempt after the 422 starts
-    // with the five already spent, so the budget runs out at 11 appends (a
-    // fresh budget per attempt would take 16)
     expect(state.appends.length).toBe(11);
     expect(env.logs.join("\n")).toContain(
       "refetching the attestation and retrying (attempt 10 of 10)",
@@ -698,7 +640,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
   it("when AuditHeadNotReady is exhausted, fails with guidance on the trigger condition and the fix by re-running", async () => {
     const { state, env } = await makeNotReadyFixture({ onAuditHead: () => NOT_READY });
     expect(await runCli(["project", "checkpoint"], env.layer)).toBe(1);
-    // Stops at the 10-attempt budget without reaching issuance
     expect(state.auditHeadCalls()).toBe(10);
     expect(state.appends.length).toBe(0);
     expect(env.errors).toEqual(
@@ -730,7 +671,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       });
     const stable = await fixtureOf(ENV_A, dekA);
     const busy = await fixtureOf(ENV_B, dekB);
-    // ops matches its baseline: neither covered nor reported as skipped
     const unchanged = await fixtureOf("ops", dekC);
     const built = await buildChain([
       ...steps,
@@ -750,9 +690,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       entryHashHex: built.hashes[4] ?? "",
       values: await checkpointSnapshotValuesOf(unchanged.variables.map((v) => v.value)),
     };
-    // ENV_B's version advances on every pull (models a concurrent push).
-    // prev chains to the self-computed hash of the immediately preceding
-    // version (§4.1)
     const head = headOf(base, 4);
     const nextValues: WireDistributedValue[] = [];
     let previous = busy.variables[0]!.value;
@@ -781,8 +718,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         tokenScopes: [{ project: built.projectId, permission: "admin" }],
       },
       auditHeadHashHex: "ab".repeat(32),
-      // Any issuance including ENV_B always 422s (a busy environment where
-      // the at-acceptance match never converges)
       onAppend: (_call, body) =>
         body.entry.payload.environments.some((tuple) => tuple.environmentId === ENV_B)
           ? {
@@ -810,10 +745,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
 
   it("the trigger-(iii) proposal (checkpointProposal): branches on baseline presence / freshness / effective permission", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
-    // buildChain's timestamps are deterministic past times — every
-    // checkpoint on the chain lands on the "older than 7 days" side. A fresh
-    // baseline is built by appending a hand-signed checkpoint
-    // (timestampMs = now)
     const base = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },
@@ -837,7 +768,6 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         { environments: [], auditHeadHashHex: input.auditHeadHashHex },
         input.timestampMs,
       );
-    // A mock with only /auth/me (used to judge admin's effective permission)
     const state = makeCheckpointServer({
       built: base,
       environments: [],
@@ -861,13 +791,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         ),
       );
 
-    // member: no baseline → propose / a fresh baseline (notarization not
-    // required) → no proposal
     expect(await propose(base, member.userId)).toContain("maruhi project checkpoint");
-    // Never-issued counts as "baseline = genesis" (DP5 ruling C): within 7
-    // days of genesis, no proposal (avoids proposing on every push from day
-    // one); past 7 days, propose. admin (notarized baseline) uses the same
-    // threshold
     const genesisMs = base.entries[0]?.timestampMs ?? 0;
     const proposeAt = (built: BuiltChain, signerUserId: string, nowMs: number) =>
       verifiedOf(built).then((verified) =>
@@ -895,11 +819,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       auditHeadHashHex: "",
     });
     expect(await propose(freshPlain, member.userId)).toBeNull();
-    // Effective permission admin: a fresh un-notarized baseline doesn't
-    // satisfy it (a notarized baseline — a member's issuance must not kill
-    // admin's trigger)
     expect(await propose(freshPlain, owner.userId)).toContain("notarized audit prefix");
-    // A fresh notarized baseline → no proposal
     const freshAttested = await appendCheckpoint(base, {
       timestampMs: Date.now(),
       auditHeadHashHex: "ab".repeat(32),
@@ -962,8 +882,6 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
         issuer: owner,
         variableId: `var-${environmentId}`,
       });
-    // alpha: unchanged since its baseline. dev: no baseline. ops: its
-    // value landed after its baseline (an empty value set)
     const unchanged = await fixtureOf(ENV_A, dekA);
     const unbased = await fixtureOf(ENV_B, dekB);
     const changed = await fixtureOf(ENV_C, dekC);
@@ -1010,8 +928,6 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
       await tupleOf(built.projectId, changed),
     ]);
     expect(payload.auditHeadHashHex).toBe("ab".repeat(32));
-    // The unchanged environment was still pulled: only its verified tuple
-    // shows that it equals the baseline
     expect(
       server.requests.filter((request) => request.path.endsWith(`/environments/${ENV_A}/pull`)),
     ).toHaveLength(1);
@@ -1020,7 +936,6 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
     );
   });
 
-  /** One environment whose baseline equals its current tuple; `freshMs` signs that baseline at a chosen time. */
   async function unchangedProject(input: {
     readonly member?: "full" | "listed";
     readonly freshMs?: number;
@@ -1216,7 +1131,6 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
           afterWrite,
         }),
       );
-    // The baseline is older than 7 days either way
     expect(await propose(false)).toBeNull();
     expect(await propose(true)).toContain("maruhi project checkpoint");
   });

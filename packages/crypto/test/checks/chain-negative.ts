@@ -1,9 +1,3 @@
-// Checks for CRYPTO_SPEC §6 (negatives + boundary positives): tampering,
-// transplanting, reordering (must_fail), authorization vectors (valid
-// signatures rejected by the §6.2 rules), framing and semantic verification
-// failures, and the permissive-side boundaries of the consensus rules
-// (valid_appends).
-
 import {
   canonicalChainSignedBytes,
   type ChainEntry,
@@ -57,7 +51,6 @@ function negativeByName(name: string) {
   return vectorNegatives.find((n) => n.name === name);
 }
 
-/** Vector-fixed keys (missing = fixture corruption → throw. Same convention as entryAt). */
 function keysOf(userId: string) {
   const keys = vectorKeys[userId];
   if (keys === undefined) {
@@ -70,11 +63,9 @@ interface TamperVariant {
   readonly name: string;
   readonly entry: ChainEntry;
   readonly expect: string;
-  /** The base entry's derived chain (an extended_chains key; unset = the canonical chain). */
   readonly chain?: string;
 }
 
-/** The vector entry of the expected op (mismatch = fixture corruption → throw). */
 function entryOfOp<K extends ChainEntry["op"]>(seq: number, op: K): ChainEntry & { op: K } {
   const entry = entryAt(seq);
   if (entry.op !== op) {
@@ -83,7 +74,6 @@ function entryOfOp<K extends ChainEntry["op"]>(seq: number, op: K): ChainEntry &
   return entry as ChainEntry & { op: K };
 }
 
-/** The expected-op entry of a derived chain (mismatch/missing = fixture corruption → throw). */
 function extendedEntryOfOp<K extends ChainEntry["op"]>(
   chainName: string,
   seq: number,
@@ -100,7 +90,6 @@ function extendedEntryOfOp<K extends ChainEntry["op"]>(
   return entry as ChainEntry & { op: K };
 }
 
-/** Prefix of a derived chain up to just before seq (base + derived entries below seq). */
 function extendedPrefix(chainName: string, seq: number): readonly ChainEntry[] {
   const extended = vectorExtendedChains[chainName];
   if (extended === undefined) {
@@ -112,7 +101,6 @@ function extendedPrefix(chainName: string, seq: number): readonly ChainEntry[] {
   ];
 }
 
-/** The vector's (environment, epoch) commitment (missing = fixture corruption → throw). */
 function vectorCommitmentOf(environmentId: string, epoch: number): string {
   const commitment = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_commitment_hex;
   if (commitment === undefined) {
@@ -121,7 +109,6 @@ function vectorCommitmentOf(environmentId: string, epoch: number): string {
   return commitment;
 }
 
-/** Typed variants with tampered payloads; the canonical bytes should match the vector negatives */
 function payloadTamperVariants(): readonly TamperVariant[] {
   const e2 = entryOfOp(2, "add_member");
   const eChange = entryOfOp(7, "change_role");
@@ -151,12 +138,10 @@ function payloadTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
-/** Payload-tampered variant for environment deletion (2026-10-07 — seq 20 of the derived chain environment-deleted). */
 function deletionTamperVariants(): readonly TamperVariant[] {
   const chain = "environment-deleted";
   const eDelete = extendedEntryOfOp(chain, 20, "delete_environment");
   return [
-    // The deleted environment is signed (a server cannot redirect a deletion)
     {
       name: "delete-env-tampered-environment-id",
       entry: { ...eDelete, payload: { environmentId: testEnvironmentId("env-dev-0002") } },
@@ -166,10 +151,8 @@ function deletionTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
-/** The unregistered dummy enc public key that add-device-tampered-enc-pub substitutes (matches the vector payload). */
 const FRESH_DEVICE_ENC_PUB_HEX = "1349ac6a06c18c9fb1cc6f15b1907ca645b45fe524716d690bb29f354dffa76e";
 
-/** Payload-tampered variants for DK (device keys — 2026-09-19) (based on seq 25 / 27 / 35 / 37 of the derived chain device-ops). */
 function deviceTamperVariants(): readonly TamperVariant[] {
   const chain = "device-ops";
   const eReserve = extendedEntryOfOp(chain, 25, "add_device");
@@ -177,7 +160,6 @@ function deviceTamperVariants(): readonly TamperVariant[] {
   const eRevokeSelf = extendedEntryOfOp(chain, 35, "revoke_device");
   const eRevokeOther = extendedEntryOfOp(chain, 37, "revoke_device");
   return [
-    // cap (role_cap / scope) is signed — guards against relabeling the cap
     {
       name: "add-device-tampered-role-cap",
       entry: { ...eCiBox, payload: { ...eCiBox.payload, roleCap: "owner" } },
@@ -193,8 +175,6 @@ function deviceTamperVariants(): readonly TamperVariant[] {
       expect: "bad-signature",
       chain,
     },
-    // The order of a device scope's nested LP is also signed (same shape as
-    // add_member's scope)
     {
       name: "add-device-scope-reorder",
       entry: {
@@ -207,16 +187,12 @@ function deviceTamperVariants(): readonly TamperVariant[] {
       expect: "bad-signature",
       chain,
     },
-    // The registered key is signed (guards against a server swapping the
-    // key)
     {
       name: "add-device-tampered-enc-pub",
       entry: { ...eReserve, payload: { ...eReserve.payload, encPubHex: FRESH_DEVICE_ENC_PUB_HEX } },
       expect: "bad-signature",
       chain,
     },
-    // The order of the revocation FP list is also signed (generators SHOULD
-    // emit ascending; verification is set-based)
     {
       name: "revoke-device-fp-reorder",
       entry: {
@@ -241,7 +217,6 @@ function deviceTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
-/** Payload-tampered variants for ES (scope) / PF1 (four-eyes) (2026-09-14 — based on canonical seq 13-22). */
 function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
   const eDevMember = entryOfOp(13, "add_member");
   const eDevAdmin = entryOfOp(14, "add_member");
@@ -256,8 +231,6 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
   const flippedHash = fromHex(eApprove.payload.proposalHashHex);
   flippedHash[0] = (flippedHash[0] ?? 0) ^ 0x01;
   return [
-    // The order of scope_environments is also signed (nested LP — same
-    // shape as grant_server's scope)
     {
       name: "add-member-scope-reorder",
       entry: {
@@ -269,8 +242,6 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       },
       expect: "bad-signature",
     },
-    // Relabeling scope_kind (listed{dev} → all) relabels the granted range
-    // = signature failure
     {
       name: "add-member-scope-relabel-all",
       entry: {
@@ -290,8 +261,6 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       },
       expect: "bad-signature",
     },
-    // The order of ops is also signed (generators SHOULD emit ascending;
-    // verification is set-based)
     {
       name: "policy-ops-reorder",
       entry: { ...ePolicy, payload: { ...ePolicy.payload, ops: ePolicy.payload.ops.toReversed() } },
@@ -302,7 +271,6 @@ function scopeAndApprovalTamperVariants(): readonly TamperVariant[] {
       entry: { ...ePolicy, payload: { ...ePolicy.payload, requiredApprovals: 3 } },
       expect: "bad-signature",
     },
-    // The inner payload (inner_payload_lp_hex) and the expiry are signed
     {
       name: "propose-tampered-inner-payload",
       entry: {
@@ -358,8 +326,6 @@ function legacyPayloadTamperVariants(
       },
       expect: "bad-signature",
     },
-    // The order of lease_policy (both elements and constraints) is also
-    // signed (§6.2)
     {
       name: "grant-server-lease-policy-reorder",
       entry: {
@@ -396,8 +362,6 @@ function legacyPayloadTamperVariants(
       },
       expect: "bad-signature",
     },
-    // dek_commitment_hex is also signed (§5.2): substitution fails
-    // verification
     {
       name: "create-env-tampered-commitment",
       entry: { ...eCreate, payload: { ...eCreate.payload, dekCommitmentHex: freshCommitment } },
@@ -411,7 +375,6 @@ function legacyPayloadTamperVariants(
   ];
 }
 
-/** Variants with the signature / prev_hash substituted (payload untouched) */
 function headerTamperVariants(): readonly TamperVariant[] {
   const e3 = entryAt(3);
   return [
@@ -431,17 +394,7 @@ function headerTamperVariants(): readonly TamperVariant[] {
   ];
 }
 
-/**
- * Coverage guard for kind-less (crypto-verification) negatives: when vector
- * regeneration adds new negatives, pins that every name belongs to the
- * covered set so that the name-hardcoded checks (payloadTamperVariants etc.)
- * do not silently drop the newcomers.
- */
 function tamperCoverageCheck(c: Checks, covered: ReadonlySet<string>): void {
-  // The kind vocabulary has only two values: undefined (crypto-verification
-  // — the coverage target of this function) and "authorization" (the
-  // authorization sweeps of crypto / server cover every one). A third kind
-  // would quietly escape both sieves, so pin the vocabulary itself
   const unknownKinds = vectorNegatives
     .filter((negative) => negative.kind !== undefined && negative.kind !== "authorization")
     .map((negative) => negative.name);
@@ -469,11 +422,7 @@ async function tamperedChecks(c: Checks): Promise<void> {
     new Set([
       ...payloadVariants.map((variant) => variant.name),
       ...headerVariants.map((variant) => variant.name),
-      // The 12 covered by bytesLevelChecks (byte strings this implementation
-      // cannot produce)
       ...BYTES_LEVEL_NEGATIVES,
-      // The 1 covered by checkpointTamperChecks (based on a derived-chain
-      // entry)
       "checkpoint-tampered-environments",
     ]),
   );
@@ -483,8 +432,6 @@ async function tamperedChecks(c: Checks): Promise<void> {
       c.push(`chain negative: ${variant.name}`, false, "vector missing");
       continue;
     }
-    // For payload tampering, also confirm the post-tamper canonical byte
-    // string matches the vector
     const canonicalMatches =
       vector.signed_bytes_hex === undefined ||
       variant.name === "wrong-signer" ||
@@ -501,7 +448,6 @@ async function tamperedChecks(c: Checks): Promise<void> {
   }
 }
 
-/** Base entry of a bytes-level negative (chain-tagged ones are pulled from the derived chain). */
 function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): ChainEntry {
   if (chainName === undefined) {
     return entryAt(baseSeq);
@@ -514,19 +460,6 @@ function bytesLevelBaseEntry(chainName: string | undefined, baseSeq: number): Ch
   return toTypedEntry(raw);
 }
 
-// Byte strings that break canonicalization order / nested LP (this
-// implementation cannot produce them):
-// lease-policy-flat-concat flattens a 3-level nest; lease-policy-dropped is
-// the old 3-field form (pins that the 4-field form is canonical — §6.2);
-// checkpoint-environments-flat-concat flattens the environment tuples'
-// nested LP (§6.2).
-// 2026-09-14 ES / PF1: *-scope-dropped are old forms lacking the 2 scope
-// fields (pins that the new form is canonical — no compatibility
-// acceptance); *-flat-concat flatten the scope / ops nested LP;
-// propose-inner-payload-flat splices the inner payload into the outer LP.
-// 2026-09-19 DK: add-device-scope-flat-concat / revoke-device-fp-flat-concat
-// flatten the device-scope / revocation-FP-list nested LP (based on the
-// derived chain device-ops)
 const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "field-order-swap",
   "grant-server-scope-flat-concat",
@@ -540,16 +473,11 @@ const BYTES_LEVEL_NEGATIVES: readonly string[] = [
   "propose-inner-payload-flat",
   "add-device-scope-flat-concat",
   "revoke-device-fp-flat-concat",
-  // 2026-10-07: a deletion's bytes relabeled as remove_member (same
-  // one-field payload — the op name is the domain separation) and under
-  // another suite (based on the derived chain environment-deleted)
   "delete-env-op-confusion",
   "delete-env-suite-mismatch",
 ];
 
 async function bytesLevelChecks(c: Checks): Promise<void> {
-  // Confirm the broken byte string differs from the canonical bytes and
-  // that the original signature does not verify either
   for (const name of BYTES_LEVEL_NEGATIVES) {
     const vector = negativeByName(name);
     if (
@@ -580,14 +508,6 @@ async function bytesLevelChecks(c: Checks): Promise<void> {
   }
 }
 
-/**
- * checkpoint payload-tamper negative: based on seq 13 of the derived chain
- * (checkpoint-baseline), pins that the canonical bytes of a typed variant
- * with the environment tuple's manifest_version rewritten match the vector
- * and that the original signature gives bad-signature (the derived-chain
- * counterpart of payloadTamperVariants — the canonical 12 entries contain
- * no checkpoint op, so the base is pulled via the vector's chain field).
- */
 async function checkpointTamperChecks(c: Checks): Promise<void> {
   const name = "checkpoint-tampered-environments";
   const vector = negativeByName(name);
@@ -608,7 +528,6 @@ async function checkpointTamperChecks(c: Checks): Promise<void> {
   );
 }
 
-/** Prerequisite chain of an authorization negative: the canonical prefix or an extended_chains derived chain. */
 function authzPrefix(chainName: string | undefined, seq: number): readonly ChainEntry[] {
   if (chainName === undefined) {
     return typedEntries.slice(0, seq - 1);
@@ -624,8 +543,6 @@ function authzPrefix(chainName: string | undefined, seq: number): readonly Chain
 }
 
 async function authorizationChecks(c: Checks): Promise<void> {
-  // kind = "authorization": signature and chaining are valid; must be
-  // rejected only by the §6.2 authorization rules
   for (const vector of vectorNegatives) {
     if (vector.kind !== "authorization" || vector.entry === undefined) {
       continue;
@@ -641,16 +558,6 @@ async function authorizationChecks(c: Checks): Promise<void> {
 }
 
 async function extendedChainChecks(c: Checks): Promise<void> {
-  // extended_chains: the derived chain itself is accepted (the permissive
-  // boundary). server-key-grant-pending / server-key-grant-approved pin when
-  // a grant names its key (§6.2 key uniqueness — an approve that applies the
-  // grant does, a pending proposal does not). checkpoint-baseline pins a legitimate
-  // re-notarization at the same manifest_version (the equality side of
-  // non-regression) and the "latest checkpoint per environment" derivation
-  // (expected_checkpoints). The four-eyes family (proposal-* / stale-* /
-  // proposer-* / policy-*) pins the derived state of the policy, pending
-  // proposals, and vote re-tallying (votes of departed voters are not
-  // counted — principle 2)
   for (const [name, extended] of Object.entries(vectorExtendedChains)) {
     const chain = [
       ...typedEntries.slice(0, extended.base_seq),
@@ -664,12 +571,6 @@ async function extendedChainChecks(c: Checks): Promise<void> {
   }
 }
 
-/**
- * The keys grants have named, as ChainState exposes them to the CLI's early
- * checks (§6.2 key uniqueness): seq 9's key stays named after its grant's
- * revocation at seq 12, a pending grant proposal names none, and the approve
- * that applies one names its key.
- */
 async function namedServerKeysCheck(c: Checks): Promise<void> {
   const grant = entryOfOp(9, "grant_server").payload;
   const approvedGrant =
@@ -705,7 +606,6 @@ async function namedServerKeysCheck(c: Checks): Promise<void> {
   }
 }
 
-/** Whether an extended chain's derived state matches every expectation its vector carries (an optional axis only when present). */
 function extendedStateMatches(
   state: ChainState,
   extended: (typeof vectorExtendedChains)[string],
@@ -723,7 +623,6 @@ function extendedStateMatches(
   ].every(Boolean);
 }
 
-/** An optional expectation: absent passes, present must match. */
 function optionalMatch<T>(expected: T | undefined, match: (expected: T) => boolean): boolean {
   return expected === undefined || match(expected);
 }
@@ -763,7 +662,6 @@ async function signAs(userId: string, entry: UnsignedChainEntry): Promise<ChainE
   return signed.ok ? signed.value : undefined;
 }
 
-/** seq of an append entry following the canonical chain end (seq 24). */
 const NEXT_SEQ = typedEntries.length + 1;
 
 function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
@@ -775,15 +673,12 @@ function nextEntryBase(): Omit<UnsignedChainEntry, "op" | "payload"> {
   return {
     suite: "maruhi/v1",
     seq: NEXT_SEQ,
-    // prev is the vector's final-entry hash (already pinned by the
-    // chain.ts positives)
     prevHashHex: "",
     actor: { userId: testUserId("user-owner-0001"), keyFingerprintHex: owner.key_fingerprint_hex },
     timestampMs: head.timestampMs + 1000,
   };
 }
 
-/** A formally valid commitment for entries appended inside the test (the content is the §5.2 comparison target; chain verification checks form only). */
 const DUMMY_COMMITMENT_HEX = "ab".repeat(32);
 
 type SemanticBase = Omit<UnsignedChainEntry, "op" | "payload">;
@@ -825,10 +720,6 @@ function semanticCases(
       expect: "duplicate-member",
     },
     {
-      // Pin the check order (§6.2): when both the target user_id and the
-      // key are duplicates, the user_id duplicate (duplicate-member) is
-      // judged before the key duplicate (duplicate-member-key) (reusing the
-      // owner's full key set still reports duplicate-member)
       name: "add_member duplicate user id wins over duplicate key",
       entry: {
         ...base,
@@ -894,7 +785,6 @@ async function appendRotation(
   return result.ok ? result.value : undefined;
 }
 
-/** Whether the derived member set matches the expectation (user_id → role + scope). */
 function membersMatch(
   state: ChainState,
   expected: Readonly<Record<string, VectorMemberState>>,
@@ -902,11 +792,6 @@ function membersMatch(
   return membersMatchVector(state.members, expected);
 }
 
-/**
- * Whether the derived latest-checkpoint set matches the expectation (§6.2
- * derived state — vectors without expected_checkpoints pass as out of
- * scope).
- */
 function checkpointsMatch(
   state: ChainState,
   expected: Readonly<Record<string, VectorCheckpointState>> | undefined,
@@ -930,7 +815,6 @@ function checkpointsMatch(
   );
 }
 
-/** Whether the derived environment set matches the expectation (environment_id → current epoch). */
 function environmentsMatch(state: ChainState, expected: Readonly<Record<string, string>>): boolean {
   return (
     state.environments.size === Object.keys(expected).length &&
@@ -941,11 +825,6 @@ function environmentsMatch(state: ChainState, expected: Readonly<Record<string, 
   );
 }
 
-/**
- * Whether the derived deletions match the expectation (environment_id →
- * delete_environment seq — §6.2, 2026-10-07). An absent expectation means
- * no environment is deleted.
- */
 function deletedEnvironmentsMatch(
   state: ChainState,
   expected: Readonly<Record<string, number>> | undefined,
@@ -963,7 +842,6 @@ function deletedEnvironmentsMatch(
   );
 }
 
-/** Whether the derived active-grant set matches the expectation (including scope + lease_policy). */
 function serverGrantsMatch(
   state: ChainState,
   expected: Parameters<typeof serverGrantsMatchVector>[1],
@@ -971,16 +849,11 @@ function serverGrantsMatch(
   return serverGrantsMatchVector(state.serverGrants, expected);
 }
 
-/** One valid_appends entry: appended onto the attach-point head, pin acceptance and the derived state (all axes). */
 async function validAppendVectorCheck(
   c: Checks,
   append: (typeof vectorValidAppends)[number],
 ): Promise<void> {
   const entry = toTypedEntry(append.entry);
-  // The attach point is right after the canonical entry (or derived-chain
-  // head) that the entry's seq points to (seq 25 = the terminal head, seq 10
-  // = a re-grant append onto the seq-9 head — regrant-lease-policy-revised,
-  // seq 20 = an append onto the pre-policy head 19)
   const result = await verifyChain([...authzPrefix(append.chain, entry.seq), entry]);
   c.push(
     `chain valid append: ${append.name}`,
@@ -996,41 +869,18 @@ async function validAppendVectorCheck(
 }
 
 async function validAppendVectorChecks(c: Checks, base: SemanticBase): Promise<void> {
-  // Pin the permissive-side boundaries of the consensus rules with the
-  // vectors (valid_appends):
-  // (1) Key uniqueness (§6.2) counts a device only while it is current — a
-  //     verifier that wrongly implements "no duplication across all history"
-  //     fails here, including on granting a removed member's key — and a
-  //     server key only once a grant has named it (not while its grant is
-  //     only proposed)
-  // (2) Environment lifecycle (§6.2) — create_environment of an unused ID
-  //     and the first rotate (new_epoch 2) onto an already-created
-  //     environment (epoch 1) are accepted
-  // (3) ES / PF1 (2026-09-14) — in-scope add / remove / change / rotate /
-  //     checkpoint by listed-scope admin / member, direct append of an op
-  //     not targeted by the policy, acceptance of propose / withdraw, and
-  //     direct appends after the policy is narrowed or off (chain = append
-  //     onto the derived head of extended_chains)
   for (const append of vectorValidAppends) {
     await validAppendVectorCheck(c, append);
   }
   await duplicateKeyAfterReaddCheck(c, base);
 }
 
-/**
- * Index re-formation: once re-add returns a key to the current member set,
- * adding a different user_id with the same key is duplicate-member-key
- * again (closes both directions — index removal on remove and
- * re-registration on add).
- */
 async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promise<void> {
   const readd = vectorValidAppends.find((a) => a.name === "readd-removed-member-same-key");
   if (readd === undefined) {
     c.push("chain semantic: duplicate key rejected again after re-add", false, "vector missing");
     return;
   }
-  // The re-add vector is an append (seq 13) onto the canonical seq-12 head,
-  // so continue right after it
   const readdEntry = toTypedEntry(readd.entry);
   const memberKeys = keysOf("user-member-0002");
   const duplicated = await signAs("user-owner-0001", {
@@ -1058,7 +908,6 @@ async function duplicateKeyAfterReaddCheck(c: Checks, base: SemanticBase): Promi
   );
 }
 
-/** Whether the derived environment state matches the expectation (current epoch, created seq, epoch-start seqs). */
 function environmentStateIs(
   environment: EnvironmentChainState | undefined,
   expected: {
@@ -1079,8 +928,6 @@ function environmentStateIs(
 }
 
 async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
-  // A correct append (rotate_epoch by admin; current epoch 2 → 3) verifies
-  // and the state (current epoch, epoch-start seq, commitment) updates
   const extended = await appendRotation(base, "env-prod-0001", 3);
   const prod = extended?.environments.get(testEnvironmentId("env-prod-0001"));
   c.push(
@@ -1090,9 +937,6 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
       prod?.dekCommitments.get(3) === DUMMY_COMMITMENT_HEX,
   );
 
-  // A create_environment → rotate_epoch two-entry chain: the epoch-start
-  // seqs of a freshly created environment are derived (1 = the create's seq,
-  // 2 = the rotate's seq)
   const create = await signAs("user-owner-0001", {
     ...base,
     op: "create_environment",
@@ -1137,10 +981,6 @@ async function validAppendCheck(c: Checks, base: SemanticBase): Promise<void> {
   );
 }
 
-/**
- * A malicious/corrupt entry whose runtime types diverge from the TS types
- * (as in server-distributed JSON) becomes invalid-payload, not an exception
- */
 async function malformedInputChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
   if (!full.ok) {
@@ -1152,9 +992,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     c.push("chain malformed: setup", false, "seq 9 must be grant_server");
     return;
   }
-  // signatureHex is a shape-valid 64-byte dummy: a shorter value would
-  // short-circuit every case at the signature-length shape check, so the
-  // cases would stop testing their intended fields
   const base = {
     ...nextEntryBase(),
     prevHashHex: full.value.headHashHex,
@@ -1268,8 +1105,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: testUserId("x") },
       },
     },
-    // checkpoint payload (§6.2): runtime-type divergence also lands on
-    // invalid-payload
     {
       name: "checkpoint environments is not an array",
       entry: {
@@ -1331,9 +1166,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         },
       },
     },
-    // Payload shapes for scope (§6.2 — 2026-09-14 ES) / four-eyes (PF1):
-    // runtime-type divergence also lands on invalid-payload (recursion into
-    // nested payloads does not throw either)
     {
       name: "add_member scope kind is not a string",
       entry: {
@@ -1417,8 +1249,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
       name: "withdraw payload missing",
       entry: { ...base, op: "withdraw", payload: undefined },
     },
-    // Payload shapes for device keys (§6.2 — 2026-09-19 DK): runtime-type
-    // divergence also lands on invalid-payload
     {
       name: "add_device role cap is a number",
       entry: {
@@ -1466,10 +1296,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
         payload: { targetUserId: testUserId("user-owner-0001"), deviceFingerprintsHex: [42] },
       },
     },
-    // Unknown op: if the PAYLOAD_SHAPES table lookup is called without
-    // confirming membership, verification aborts with a TypeError. Pin the
-    // public verifier's contract here: "invalid input returns
-    // invalid-payload and never throws" (defense-in-depth)
     {
       name: "unknown op",
       entry: { ...base, op: "self_destruct", payload: {} },
@@ -1487,7 +1313,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
     { name: "entry slot is a string", entry: "not-an-entry" },
   ];
   for (const item of cases) {
-    // Verify it returns an invalid-payload CryptoResult without throwing
     try {
       const result = await verifyChain([...typedEntries, item.entry as ChainEntry]);
       c.push(`chain malformed: ${item.name}`, failsWith(result, NEXT_SEQ, "invalid-payload"));
@@ -1498,9 +1323,6 @@ async function malformedInputChecks(c: Checks): Promise<void> {
 }
 
 async function regrantWideningCheck(c: Checks): Promise<void> {
-  // A scope-widening re-grant (old ⊆ new) is accepted and the scope is
-  // updated. The narrowing rejection (grant-scope-narrowed) is pinned by
-  // the vector authz-grant-scope-narrowed
   const check = "chain semantic: re-grant widening accepted";
   const eGrant = entryAt(9);
   const owner = vectorKeys["user-owner-0001"];
@@ -1536,14 +1358,10 @@ async function regrantWideningCheck(c: Checks): Promise<void> {
     check,
     grant !== undefined &&
       grant.scopeEnvironmentIds.length === 3 &&
-      // Independence of the two-layer rule: even a re-grant touching only
-      // the scope replaces lease_policy with the new payload's value (here
-      // the same 2 elements as before)
       grant.leasePolicy.length === eGrant.payload.leasePolicy.length,
   );
 }
 
-/** Boundary of the field size limit (§6.1): exactly 1024 bytes is accepted; judged by byte count */
 async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
   if (!full.ok) {
@@ -1557,7 +1375,6 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
       vectorKeys["user-admin-0003"]?.key_fingerprint_hex ?? testKeyFingerprintHex(""),
   };
 
-  // A reason of exactly 1024 bytes (ASCII) → accepted
   const atLimit = await signAs("user-admin-0003", {
     ...base,
     actor: adminActor,
@@ -1573,8 +1390,6 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
     atLimit === undefined ? undefined : await verifyChain([...typedEntries, atLimit]);
   c.push("chain field-size: 1024-byte reason accepted", accepted !== undefined && accepted.ok);
 
-  // ㊙ (3 bytes) x 342 = 1026 bytes: 342 ≤ 1024 code units, but the UTF-8
-  // byte count exceeds → rejected (pins that the limit is byte-based)
   const multibyte = await signAs("user-admin-0003", {
     ...base,
     actor: adminActor,
@@ -1594,10 +1409,8 @@ async function fieldSizeBoundaryChecks(c: Checks): Promise<void> {
   );
 }
 
-/** The canonical head before policy establishment (seq 20) — the last point where a four-eyes target op can be appended directly. */
 const PRE_POLICY_HEAD_SEQ = 19;
 
-/** Build correctly-signed but semantically invalid entries (failure cases outside the vectors) with the owner key and check them */
 async function semanticChecks(c: Checks): Promise<void> {
   const full = await verifyChain(typedEntries);
   if (!full.ok) {
@@ -1605,10 +1418,6 @@ async function semanticChecks(c: Checks): Promise<void> {
     return;
   }
   const base = { ...nextEntryBase(), prevHashHex: full.value.headHashHex };
-  // grant_server / remove_member become policy targets at seq 20
-  // (approval-required precedes, right after role — pinned by the vectors),
-  // so op-specific reasons are checked by appending onto the pre-policy
-  // head 19
   const prePolicy = typedEntries.slice(0, PRE_POLICY_HEAD_SEQ);
   const prePolicyHead = prePolicy[prePolicy.length - 1];
   const prePolicyBase = {

@@ -2,29 +2,9 @@
 
 @custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
 
-/* ============================================================
- * Nimbus Theme — THE file you edit to customize your site.
- *
- * Architecture:
- *   1. CSS custom properties (--nb-*) define the design tokens
- *   2. `@theme` block exposes them to Tailwind so utilities like
- *      `bg-card`, `text-foreground`, `border-border` work
- *   3. Dark mode uses the `[data-mode="dark"]` attribute
- *   4. All colors use oklch for perceptual uniformity
- *
- * Naming convention:
- *   - Surfaces paired with foregrounds: `card` / `card-foreground`
- *   - Functional names: `primary` (action), `accent` (hover surface),
- *     `muted` (de-emphasized), not visual relationships
- *   - Reserved Tailwind keywords avoided (no `text-base`, `font-sans`,
- *     `shadow-lg`, etc. as color names — they collide with built-ins)
- * ============================================================ */
-
-/* ---- Light mode (default) ---- */
 :root {
   color-scheme: light;
 
-  /* Surfaces (paired with foregrounds for contrast) */
   --nb-background: oklch(0.99 0 0);
   --nb-foreground: oklch(0.21 0 0);
 
@@ -32,34 +12,24 @@
   --nb-card-foreground: var(--nb-foreground);
 
   --nb-muted: oklch(0.98 0 0);
-  /* 4.5:1 or better on every light surface, inline code included. */
   --nb-muted-foreground: oklch(0.52 0 0);
 
   --nb-accent: oklch(0.967 0 0);
   --nb-accent-foreground: var(--nb-foreground);
 
-  /* Primary action / brand */
   --nb-primary: oklch(0.145 0 0);
   --nb-primary-foreground: oklch(0.97 0 0);
   --nb-primary-hover: oklch(0.371 0 0);
 
-  /* Brand — Nimbus steel, the accent of the Chrome palette: a grey with a
-	   trace of blue, so it reads apart from the pure-neutral ink. Used only
-	   for wayfinding: where you are (current page, section, tab) and what you
-	   can act on (focus, link hover). */
   --nb-brand: oklch(0.373 0.034 260.2);
-  /* The current page's fill: a light wash of the brand. */
   --nb-brand-wash: color-mix(in oklch, var(--nb-brand) 7%, transparent);
 
-  /* Borders / focus */
   --nb-border: oklch(0.935 0 0);
   --nb-border-strong: oklch(0.87 0 0);
   --nb-selected: oklch(0.92 0 0);
-  /* Inline code's tint. */
   --nb-code-tint: color-mix(in oklch, var(--nb-foreground) 4.5%, transparent);
   --nb-ring: oklch(0.373 0.034 260.2 / 0.4);
 
-  /* Status colors — paired (saturated for text/border + muted for bg) */
   --nb-info: oklch(0.424 0.199 265.638);
   --nb-info-foreground: oklch(0.424 0.199 265.638);
   --nb-info-muted: oklch(0.932 0.032 255.6 / 0.45);
@@ -69,7 +39,6 @@
   --nb-success-muted: oklch(0.962 0.043 156.7 / 0.57);
 
   --nb-warning: oklch(0.597 0.144 57.5);
-  /* Darker than the line colour so text on the warning tint reads at 4.5:1. */
   --nb-warning-foreground: oklch(0.55 0.144 57.5);
   --nb-warning-muted: oklch(0.931 0.107 94.6 / 0.2);
 
@@ -77,17 +46,12 @@
   --nb-danger-foreground: oklch(0.505 0.213 27.518);
   --nb-danger-muted: oklch(0.936 0.032 17.7 / 0.42);
 
-  /* API method palette — shared source of truth for the method chip across the
-	   sidebar, endpoint card, and code rail (api-sidebar / api-layout /
-	   api-code-rail). Each method maps onto a status token for text and tint.
-	   The line is 25% of the status's solid colour, which has no token. */
   --nb-m-get: var(--nb-success);
   --nb-m-get-tint: var(--nb-success-muted);
   --nb-m-get-line: oklch(0.596 0.145 163.225 / 0.25);
   --nb-m-post: var(--nb-info);
   --nb-m-post-tint: var(--nb-info-muted);
   --nb-m-post-line: oklch(0.685 0.169 237.323 / 0.25);
-  /* A step darker than the warning colour: 4.5:1 on its own tint. */
   --nb-m-put: oklch(0.5 0.13 55);
   --nb-m-put-tint: var(--nb-warning-muted);
   --nb-m-put-line: oklch(0.739 0.177 58.2 / 0.25);
@@ -98,27 +62,17 @@
   --nb-m-other-tint: var(--nb-accent);
   --nb-m-other-line: var(--nb-border);
 
-  /* Layout */
   --nb-sidebar-width: 18.75rem;
   --nb-toc-width: 18rem;
   --nb-content-max: 43.5rem;
-  /* The sticky header's height: taller on phones when the section tabs take
-	   a row of their own (set below). Sticky bars and scroll margins read it. */
   --nb-header-height: 3.5rem;
-  /* Used only by the API reference (registry: api-layout); harmless elsewhere. */
   --nb-code-rail-width: 34rem;
 
-  /* Typography — self-hosted via @fontsource-variable in BaseLayout.astro */
   --nb-font-sans:
     "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --nb-font-mono:
     "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro",
     Menlo, Consolas, monospace;
-  /* Type scale: one ratio, √1.5, stepping up from the 16px body. Two steps
-	   make 1.5, so body → h2 → h1 is the same interval twice and lands on
-	   whole pixels: 16 → 24 → 36, with h3 at the half step (19.6 → 20).
-	   Line heights sit on the 4px grid. Weight falls as size rises, since a
-	   larger glyph needs less stroke to carry the same visual weight. */
   --nb-h1-size: 2.25rem;
   --nb-h1-leading: 2.75rem;
   --nb-h1-weight: 500;
@@ -133,26 +87,20 @@
   --nb-h3-tracking: -0.012em;
   --nb-h4-weight: 600;
 
-  /* Corners: surfaces (cards, callouts, code blocks, buttons, sidebar rows)
-	   share one radius; small marks inside them (inline code, badges in a
-	   title bar) use the smaller one. Change these two to re-round the site. */
   --nb-radius: 0.5rem;
   --nb-radius-sm: 0.25rem;
 
-  /* Shadows */
   --nb-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.04);
   --nb-shadow: 0 1px 3px oklch(0 0 0 / 0.06), 0 1px 2px oklch(0 0 0 / 0.04);
   --nb-shadow-lg: 0 4px 12px oklch(0 0 0 / 0.08), 0 2px 4px oklch(0 0 0 / 0.04);
 }
 
-/* Wider content area on large displays (e.g. MacBook Pro 16″) */
 @media (min-width: 1536px) {
   :root {
     --nb-content-max: 52rem;
   }
 }
 
-/* ---- Dark mode ---- */
 [data-mode="dark"] {
   color-scheme: dark;
 
@@ -197,7 +145,6 @@
   --nb-danger-foreground: oklch(0.704 0.191 22.216);
   --nb-danger-muted: oklch(0.429 0.176 28.7 / 0.17);
 
-  /* API method palette — dark lines; text and tint follow the status tokens. */
   --nb-m-get-line: oklch(0.765 0.177 163.223 / 0.25);
   --nb-m-put: var(--nb-warning);
   --nb-m-put-line: oklch(0.645 0.168 50 / 0.25);
@@ -208,10 +155,6 @@
   --nb-shadow-lg: 0 4px 12px oklch(0 0 0 / 0.4), 0 2px 4px oklch(0 0 0 / 0.2);
 }
 
-/* ---- Tailwind theme mapping ----
- * These generate Tailwind utility classes:
- *   bg-card, text-foreground, border-border, ring-ring, etc.
- */
 @theme {
   --color-background: var(--nb-background);
   --color-foreground: var(--nb-foreground);
@@ -263,7 +206,6 @@
   --shadow-lg: var(--nb-shadow-lg);
 }
 
-/* ---- Minimal overrides the plugin doesn't cover ---- */
 html {
   font-family: var(--nb-font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
@@ -284,11 +226,7 @@ body {
   color: var(--nb-foreground);
 }
 
-/* ---- Focus indicators ---- */
 @layer base {
-  /* Default the outline to the focus ring's resting values so turning the
-	   ring on (outline-style: none → solid) changes nothing a transition can
-	   animate — no color/width/offset flash under transition-colors/-all. */
   *,
   ::before,
   ::after {
@@ -302,7 +240,6 @@ body {
   }
 }
 
-/* ---- Reduced motion ---- */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -314,14 +251,10 @@ body {
   }
 }
 
-/* ---- Scroll lock (used by native <dialog> overlays) ---- */
 [data-scroll-locked] {
   overflow: hidden;
 }
 
-/* ---- Scrollbar ----
-   Thin and quiet everywhere, coloured from the theme. Chrome and Firefox use
-   the standard properties; Safari uses the WebKit pseudo-elements below. */
 * {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklch, var(--nb-foreground) 20%, transparent) transparent;
@@ -341,8 +274,6 @@ body {
   background: var(--nb-muted-foreground);
 }
 
-/* ---- Shiki code-block styling + copy button ---- */
-
 pre.astro-code {
   position: relative;
   margin: 1rem 0;
@@ -353,14 +284,12 @@ pre.astro-code {
   overflow-x: auto;
   font-family: var(--nb-font-mono);
   font-size: 0.875rem;
-  /* 14/24: a whole-pixel line, so a block of n lines is always 24n + 24px. */
   line-height: 1.5rem;
 }
 pre.astro-code > code {
   background: transparent;
 }
 
-/* Classed Shiki tokens set --shiki-light/--shiki-dark once in _nimbus/shiki.css. */
 pre.astro-code span {
   color: var(--shiki-light, inherit);
 }
@@ -368,7 +297,6 @@ pre.astro-code span {
   color: var(--shiki-dark, inherit);
 }
 
-/* Copy button injected by initCodeCopy. */
 .nb-code-copy {
   position: absolute;
   top: 0.5rem;
@@ -407,8 +335,6 @@ pre.astro-code span {
 .nb-code-copy[data-state="copied"] {
   color: var(--nb-success);
 }
-/* In a titled block the copy button lives in the title bar, centred in its
-   36px, and is always there. */
 .nb-code-figure-titled .nb-code-copy {
   top: 0.25rem;
   right: 0.375rem;
@@ -419,8 +345,6 @@ pre.astro-code span {
 .nb-code-figure-titled .nb-code-copy:hover {
   background: var(--nb-accent);
 }
-/* No hover on touch screens: show the button, and let the language badge
-   give way to it. */
 @media (hover: none) {
   .nb-code-copy {
     opacity: 1;
@@ -430,11 +354,6 @@ pre.astro-code span {
   }
 }
 
-/* ---- Premium code chrome ---- */
-
-/* Code reads left to right in every language, so a code surface keeps its
-   title bar, copy button, badge and tabs in LTR order on an RTL page. A
-   diagram's flow is drawn left to right too. */
 .nb-code-figure,
 [data-slot="code-group"],
 [data-slot="package-managers"],
@@ -443,10 +362,6 @@ pre.astro-code span {
   direction: ltr;
 }
 
-/* Every Shiki block is wrapped in a .nb-code-figure (titled or not).
-   Chrome lives on the figure so the language badge + copy button can sit
-   on a non-scrolling ancestor — iOS Safari slides absolutely-positioned
-   children of overflow:auto containers. */
 .nb-code-figure {
   position: relative;
   margin: 1rem 0;
@@ -461,9 +376,6 @@ pre.astro-code span {
   border-radius: 0;
   background-color: transparent;
 }
-/* Title bar: the filename, and the copy button at the right end (positioned
-   below). The filename's extension already names the language, so the
-   language chip stays hidden here. 8 + 20 + 8 + 1px rule = 37px. */
 .nb-code-title {
   display: flex;
   align-items: center;
@@ -497,9 +409,6 @@ pre.astro-code span {
   text-transform: uppercase;
 }
 
-/* Language badge — pinned to the figure (which doesn't scroll), so it
-   stays at top-right even when the pre overflows horizontally. Hidden
-   when a figcaption is already showing the language (titled blocks). */
 .nb-code-figure[data-nb-lang]:not(.nb-code-figure-titled)::before {
   content: attr(data-nb-lang);
   position: absolute;
@@ -518,16 +427,12 @@ pre.astro-code span {
   transition: opacity 0.15s ease;
   z-index: 1;
 }
-/* The badge clears for the copy button: on hover, and when the button has
-   keyboard focus. Same selector chain as the badge, so it wins. */
 .nb-code-figure[data-nb-lang]:not(.nb-code-figure-titled):is(
     :hover,
     :has(.nb-code-copy:focus-visible)
   )::before {
   opacity: 0;
 }
-/* Keep a short line clear of the badge. On a phone a long line scrolls under
-   it whatever the padding, so the badge steps aside there. */
 .nb-code-figure[data-nb-lang]:not(.nb-code-figure-titled) > pre.astro-code {
   padding-right: 3.5rem;
 }
@@ -539,7 +444,6 @@ pre.astro-code span {
     padding-right: 1rem;
   }
 }
-/* Hide plaintext/text "language" — it's noise. */
 .nb-code-figure[data-nb-lang="text"]::before,
 .nb-code-figure[data-nb-lang="plaintext"]::before,
 .nb-code-figure[data-nb-lang="plain"]::before,
@@ -547,7 +451,6 @@ pre.astro-code span {
   display: none;
 }
 
-/* Block-level lines so tints + gutters paint across the full row. */
 pre.astro-code code {
   display: block;
   width: max-content;
@@ -561,13 +464,11 @@ pre.astro-code .line {
   box-sizing: content-box;
 }
 
-/* Highlighted lines (`{1,3-5}` meta or `// [!code highlight]`). */
 pre.astro-code .line.highlighted {
   background: color-mix(in oklch, var(--nb-info) 12%, transparent);
   box-shadow: inset 2px 0 0 var(--nb-info);
 }
 
-/* Diff lines (`// [!code ++]` / `// [!code --]`). */
 pre.astro-code .line.diff {
   position: relative;
 }
@@ -595,7 +496,6 @@ pre.astro-code .line.diff.remove::before {
   color: var(--nb-danger);
 }
 
-/* Focus mode — dim non-focused lines; clears on hover. */
 pre.astro-code.has-focused .line:not(.focused) {
   opacity: 0.45;
   filter: blur(0.25px);
@@ -608,7 +508,6 @@ pre.astro-code.has-focused:hover .line:not(.focused) {
   filter: none;
 }
 
-/* Error / warning lines — use muted tokens for theme-tuned tints. */
 pre.astro-code .line.highlighted.error {
   background: var(--nb-danger-muted);
   box-shadow: inset 2px 0 0 var(--nb-danger);
@@ -618,7 +517,6 @@ pre.astro-code .line.highlighted.warning {
   box-shadow: inset 2px 0 0 var(--nb-warning);
 }
 
-/* Word highlight (`// [!code word:foo]` and meta `/foo/`). */
 pre.astro-code .highlighted-word {
   padding: 0.0625rem 0.25rem;
   margin: -0.0625rem -0.125rem;
@@ -627,14 +525,6 @@ pre.astro-code .highlighted-word {
   box-shadow: 0 0 0 1px color-mix(in oklch, var(--nb-info) 30%, transparent);
 }
 
-/* ---- Sidebar rows ---- */
-
-/* Rows are styled by position, not by class: a large sidebar repeats a row
-   thousands of times, so rows carry no class or data attribute. A link row is
-   any `li > a` in a sidebar, a group row its `details > summary`, and a
-   group's list its `details > ul`. The `.nb-sidebar-*` classes still work for
-   a row placed elsewhere. In the components layer so Tailwind utilities on a
-   row (a `line-through`) still win. */
 @layer components {
   :is(.nb-sidebar-link, :is([data-nb-sidebar], [data-nb-api-nav], [data-nb-nav-results]) li > a),
   :is(.nb-sidebar-row, :is([data-nb-sidebar], [data-nb-api-nav]) details > summary) {
@@ -652,7 +542,6 @@ pre.astro-code .highlighted-word {
   :is(.nb-sidebar-link, :is([data-nb-sidebar], [data-nb-api-nav], [data-nb-nav-results]) li > a) {
     text-decoration: none;
   }
-  /* Operation rows: the method chip sits closer to the edge. */
   :is([data-nb-api-nav], [data-nb-nav-results]) li > a:has(> i[data-m]) {
     padding-inline: 0.25rem;
   }
@@ -675,7 +564,6 @@ pre.astro-code .highlighted-word {
     background-color: var(--nb-accent);
     color: var(--nb-foreground);
   }
-  /* You are here: the one place the sidebar uses the brand. */
   :is(
     .nb-sidebar-link,
     :is([data-nb-sidebar], [data-nb-api-nav], [data-nb-nav-results]) li > a
@@ -690,14 +578,12 @@ pre.astro-code .highlighted-word {
   :is(.nb-sidebar-row, :is([data-nb-sidebar], [data-nb-api-nav]) details > summary):focus-visible {
     outline-offset: -2px;
   }
-  /* The group holds the current page. */
   :is(
     .nb-sidebar-row,
     :is([data-nb-sidebar], [data-nb-api-nav]) details > summary
   )[data-nb-active] {
     color: var(--nb-foreground);
   }
-  /* The caret, drawn once as a mask instead of an inline SVG per group. */
   :is(.nb-sidebar-row, :is([data-nb-sidebar], [data-nb-api-nav]) details > summary)::after {
     content: "";
     flex-shrink: 0;
@@ -715,7 +601,6 @@ pre.astro-code .highlighted-word {
   details[open] > :is(.nb-sidebar-row, summary)::after {
     rotate: 90deg;
   }
-  /* Right to left, the closed caret points the other way and opens downward. */
   :is(.nb-sidebar-row, :is([data-nb-sidebar], [data-nb-api-nav]) details > summary):dir(
       rtl
     )::after {
@@ -735,13 +620,9 @@ pre.astro-code .highlighted-word {
     padding-inline-start: 0.5rem;
     list-style: none;
   }
-  /* Safari still lays out closed <details> content in large trees. */
   :is([data-nb-sidebar], [data-nb-api-nav]) details:not([open]) > ul {
     display: none;
   }
-  /* 14px rows to sit with the 16px body, in the docs and API sidebars alike,
-	   so rows land on the same pixels on both. An on-demand API sidebar and its
-	   filter results have no data-nb-sidebar wrapper, so they're named too. */
   :is([data-nb-sidebar], [data-nb-api-nav], [data-nb-nav-results]) :is(li > a, details > summary) {
     font-size: 0.875rem;
     line-height: 1.25rem;
@@ -750,8 +631,6 @@ pre.astro-code .highlighted-word {
   :is([data-nb-sidebar], [data-nb-api-nav], [data-nb-nav-results]) li > a[aria-current="page"] {
     font-weight: 500;
   }
-  /* A top-level group reads as a section heading, set apart from the loose
-	   pages above it; consecutive groups keep the row spacing. */
   [data-nb-sidebar] .top-level > li:not(:has(> details)) + li:has(> details) {
     margin-top: 0.75rem;
   }
@@ -761,17 +640,10 @@ pre.astro-code .highlighted-word {
   }
 }
 
-/* ---- Mobile sidebar toggle ---- */
-
-/* Hide hamburger on pages without a sidebar dialog. */
 body:not(:has([data-mobile-sidebar])) [data-menu-btn] {
   display: none;
 }
 
-/* ---- View transitions ---- */
-
-/* Scoped to <main transition:name="nb-content"> only — chrome snap-swaps
-   via the root rule below so the visual field doesn't shift on nav. */
 @media (prefers-reduced-motion: no-preference) {
   ::view-transition-old(nb-content) {
     animation: nb-content-out 100ms cubic-bezier(0.32, 0.72, 0, 1) both;
@@ -815,7 +687,6 @@ body:not(:has([data-mobile-sidebar])) [data-menu-btn] {
   }
 }
 
-/* Phones: the section tabs sit on a second header row. */
 @media (max-width: 47.999rem) {
   :root:has([data-nb-header-tabs]) {
     --nb-header-height: 6rem;

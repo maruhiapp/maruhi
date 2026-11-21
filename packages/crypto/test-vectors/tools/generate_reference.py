@@ -27,11 +27,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
-# ---------------------------------------------------------------------------
-# CRYPTO_SPEC §2.1: length-prefixed deterministic encoding
-# Each field is a UTF-8 byte string; fields are concatenated as uint32-BE
-# length + body. Numbers are first stringified in decimal and treated the
-# same way.
 
 
 def lp_encode(fields: list) -> bytes:
@@ -61,13 +56,10 @@ def write(name: str, obj) -> None:
     print(f"wrote {name}")
 
 
-# Deterministic dummy byte strings (patterned; not real key material)
 def pat(prefix: int, n: int) -> bytes:
     return bytes((prefix + i) % 256 for i in range(n))
 
 
-# ---------------------------------------------------------------------------
-# 1. encoding.json — vectors for the §2.1 encoder itself
 
 def gen_encoding():
     cases = []
@@ -106,8 +98,6 @@ def gen_encoding():
     )
 
 
-# ---------------------------------------------------------------------------
-# 2. variable-encryption.json — §4 AES-256-GCM + AAD for variable values
 
 VAR_KEY = pat(0x00, 32)
 VAR_NONCE = pat(0xA0, 12)
@@ -128,7 +118,7 @@ def gen_variable_encryption():
     plaintext = "postgres://dummy:dummy@db.example.internal:5432/app"
 
     aad = var_aad(suite, project_id, environment_id, epoch, variable_id, version)
-    ct = AESGCM(VAR_KEY).encrypt(VAR_NONCE, plaintext.encode(), aad)  # ct || tag(16B)
+    ct = AESGCM(VAR_KEY).encrypt(VAR_NONCE, plaintext.encode(), aad)
 
     tampered = bytearray(ct)
     tampered[-1] ^= 0x01
@@ -188,79 +178,31 @@ def gen_variable_encryption():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3. chain-entries.json — §6 chain-entry canonicalization + Ed25519 signatures
-#
-# Canonicalization (the definition this vector pins. See README):
-#   signed_bytes = LP(suite, seq, prev_hash_hex, op, actor_user_id,
-#                     actor_key_fingerprint_hex, payload_bytes, timestamp)
-#   payload_bytes = LP(the field list in the op-fixed order) embedded as
-#                   one field
-#   entry_bytes  = LP(the above 8 fields, signature_hex)
-#   entry_hash   = SHA-256(entry_bytes) — becomes the next entry's prev_hash
-#   Binary values (prev_hash / public keys / FPs / signatures) are all
-#   treated as lowercase hex strings
 
 PAYLOAD_FIELD_ORDER = {
     "genesis": ["enc_pub_hex", "sig_pub_hex"],
-    # 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.2 — ES): the canonical form
-    # appends scope_kind ("all" | "listed") and scope_environments_lp_hex
-    # (the same nested LP as grant_server's scope_environments) to the end
-    # of the add_member / change_role payload. The old 4 / 2-field form
-    # has no compatibility path (the negatives add-member-scope-dropped /
-    # change-role-scope-dropped pin that "a canonical signature fails
-    # verification over the old-format byte string")
     "add_member": ["target_user_id", "enc_pub_hex", "sig_pub_hex", "role",
                    "scope_kind", "scope_environments_lp_hex"],
     "remove_member": ["target_user_id"],
     "change_role": ["target_user_id", "new_role", "scope_kind", "scope_environments_lp_hex"],
-    # 2026-08-03 (session 12 / CRYPTO_SPEC 0.4-draft): environment
-    # creation became a chain op (§6.2 create_environment), and
-    # dek_commitment_hex was appended to the rotate_epoch payload
     "create_environment": ["environment_id", "dek_commitment_hex"],
     "rotate_epoch": ["environment_id", "new_epoch", "reason", "dek_commitment_hex"],
-    # 2026-08-12 (session 22 / CRYPTO_SPEC 0.5-draft §6.2): the
-    # lease-policy extension of the grant_server payload. Fixed at the
-    # 4-field form with lease_policy_lp_hex appended at the end (before
-    # release is the last window where the format can be settled — no
-    # grandfathering)
     "grant_server": [
         "server_enc_pub_hex", "server_key_fingerprint_hex",
         "scope_environments_lp_hex", "lease_policy_lp_hex",
     ],
     "revoke_server": ["server_key_fingerprint_hex"],
-    # 2026-08-27 (session 33 — the CRYPTO_SPEC 0.7-draft §6.2 checkpoint
-    # op implemented as PR-F3a, M2 pulled forward). The environment entry
-    # list rides as one field: a hex string of the same nested LP as
-    # scope_environments
     "checkpoint": ["environments_lp_hex", "audit_head_hash_hex"],
-    # 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.2 — PF1 four-eyes): 4 ops
-    # added. ops_lp_hex = hex of a nested LP of the op-name list (same
-    # shape as scope_environments); inner_payload_lp_hex = hex of the
-    # inner op's payload_bytes (§6.1's nested LP); proposal_hash_hex =
-    # the proposal entry's entry_hash (lowercase hex, 64)
     "set_approval_policy": ["ops_lp_hex", "required_approvals"],
     "propose": ["inner_op", "inner_payload_lp_hex", "expires_at_ms"],
     "approve": ["proposal_hash_hex"],
     "withdraw": ["proposal_hash_hex"],
-    # 2026-09-20 (CRYPTO_SPEC 0.12-draft §6.2 — DK device keys): 2 ops
-    # added. add_device's 2 scope fields use the same encoding as the
-    # "environment scope"; revoke_device's device_fingerprints_lp_hex =
-    # hex of a nested LP of the FP (lowercase hex, 32) list
     "add_device": ["enc_pub_hex", "sig_pub_hex", "role_cap", "scope_kind",
                    "scope_environments_lp_hex"],
     "revoke_device": ["target_user_id", "device_fingerprints_lp_hex"],
-    # 2026-10-07 (CRYPTO_SPEC 0.17-draft §6.2 — environment deletion on the
-    # chain): 1 op added. Domain separation is the op name inside
-    # signed_bytes, like every chain op (no new domain string)
     "delete_environment": ["environment_id"],
 }
 
-# CRYPTO_SPEC §6.2: checkpoint's values_digest.
-#   values_digest_hex = lower_hex(SHA-256(LP("maruhi/v1/env-values-digest", v_1, …, v_m)))
-#   v_j = LP(variable_id, version, value_sig_hash_hex) — in variable_id
-#   byte order. Active variables only (tombstones are captured on the
-#   manifest side — §4.3). The empty set is also valid
 ENV_VALUES_DIGEST_DOMAIN = "maruhi/v1/env-values-digest"
 
 
@@ -273,9 +215,6 @@ def env_values_digest_hex(value_entries: list) -> str:
     return sha256(lp_encode(fields)).hex()
 
 
-# --- Shared helpers for building chain entries (used by
-# gen_chain_entries and by gen_checkpoint_boundary_chains, which runs
-# later because it needs env-manifest hashes) ---
 
 CHAIN_SUITE = "maruhi/v1"
 
@@ -321,13 +260,6 @@ def checkpoint_env_entry_tuple(environment_id, epoch, manifest_version,
 
 
 def checkpoint_environments_lp_hex(env_entries: list) -> str:
-    # The same nested LP as scope_environments / lease_policy: each
-    # environment entry becomes the bytes of LP(environment_id, epoch,
-    # manifest_version, manifest_sig_hash_hex, values_digest_hex), and
-    # the lowercase hex string of the LP of the list rides as one payload
-    # field. The list order is part of the signed payload (generation
-    # SHOULD be in environment_id byte order — verification is not
-    # normative about the order)
     return lp_encode([
         lp_encode([e["environment_id"], e["epoch"], e["manifest_version"],
                    e["manifest_sig_hash_hex"], e["values_digest_hex"]])
@@ -337,18 +269,11 @@ def checkpoint_environments_lp_hex(env_entries: list) -> str:
 
 def checkpoint_payload(env_entries: list, audit_head_hash_hex: str = "") -> dict:
     return {
-        "environments": env_entries,  # plaintext representation for readability (the canonicalization target is *_lp_hex)
+        "environments": env_entries,
         "environments_lp_hex": checkpoint_environments_lp_hex(env_entries),
         "audit_head_hash_hex": audit_head_hash_hex,
     }
 
-# CRYPTO_SPEC §5.2: the epoch-DEK commitment.
-#   dek_commitment_hex = lower_hex(SHA-256(LP("maruhi/v1/dek-commit",
-#                                             project_id, environment_id, epoch, dek_hex)))
-# The domain string binds the suite and includes the coordinates
-# (project / environment / epoch) in the preimage.
-# dek_hex is the lowercase hex string of the 32-byte DEK (same as the
-# binary_encoding convention).
 DEK_COMMIT_DOMAIN = "maruhi/v1/dek-commit"
 
 
@@ -365,9 +290,6 @@ def make_user(enc_seed: bytes, sig_seed: bytes):
     pub = serialization.PublicFormat.Raw
     enc_pub = enc_sk.public_key().public_bytes(raw, pub)
     sig_pub = sig_sk.public_key().public_bytes(raw, pub)
-    # CRYPTO_SPEC §3: FP = first 16 bytes of SHA-256(enc_pub || sig_pub).
-    # Both public keys are fixed 32B, so this is a raw concatenation (the
-    # LP targets of §2.1 are AAD / info / canonicalization lists)
     fp = sha256(enc_pub + sig_pub)[:16]
     return {
         "sig_sk": sig_sk,
@@ -378,10 +300,6 @@ def make_user(enc_seed: bytes, sig_seed: bytes):
 
 
 def make_server(enc_seed: bytes):
-    # A server (deployment) key is X25519 enc only (CRYPTO_SPEC §9 — it
-    # holds no signing key). The server-key FP is the first 16 bytes of
-    # SHA-256(server_enc_pub(32B)) (needs review: §3's user FP definition
-    # concatenates enc||sig, but a server has no sig key)
     enc_sk = X25519PrivateKey.from_private_bytes(enc_seed)
     raw = serialization.Encoding.Raw
     pub = serialization.PublicFormat.Raw
@@ -391,28 +309,10 @@ def make_server(enc_seed: bytes):
 
 
 def scope_environments_lp_hex(environment_ids: list) -> str:
-    # grant_server's allowed scope: LP-encode the environment_id list
-    # (a nested LP) and put the lowercase hex string as one payload field
-    # of the outer LP (same shape as the binary_encoding convention
-    # "binary values ride in an LP as hex strings"). The list order is
-    # part of the signed byte string (verification reconstructs in
-    # as-signed order)
     return lp_encode(environment_ids).hex()
 
 
 def lease_policy_lp_hex(policy: list) -> str:
-    # grant_server's lease_policy (CRYPTO_SPEC §6.2 / §9.1): a list of
-    # issuer-generic workload identity-federation constraints.
-    # Canonicalization is the same nested LP as scope_environments, with
-    # a 3-level hierarchy:
-    #   constraint_bytes = LP(claim_name, claim_value)
-    #   element_bytes    = LP(issuer_url, audience, LP(constraint_bytes...))
-    #   lease_policy_lp_hex = lower_hex(LP(element_bytes...))
-    # An inner LP becomes a field of the outer LP as-is, in bytes (same
-    # shape as the chain's payload_bytes → signed_bytes nesting). The
-    # list order (of both elements and constraints) is part of the signed
-    # byte string. An empty list = "no lease path" and its hex is the
-    # empty string
     elements = []
     for element in policy:
         constraints = lp_encode([
@@ -423,7 +323,6 @@ def lease_policy_lp_hex(policy: list) -> str:
     return lp_encode(elements).hex()
 
 
-# --- ES / PF1 payload helpers (CRYPTO_SPEC 0.11-draft §6.2) -------------
 
 def scope_fields(kind: str, environment_ids: list) -> dict:
     """Member-scope payload fields (the last two of add_member / change_role).
@@ -443,31 +342,21 @@ def scope_fields(kind: str, environment_ids: list) -> dict:
 
 
 def approval_ops_lp_hex(ops: list) -> str:
-    # set_approval_policy's ops: LP-encode the list of op names (a nested
-    # LP) and put the lowercase hex string as one payload field (same
-    # shape as scope_environments). The list order is part of the signed
-    # payload (generation SHOULD be in code-point order; verification
-    # treats it as a set)
     return lp_encode(list(ops)).hex()
 
 
 def policy_payload(ops: list, required_approvals: int) -> dict:
     return {
-        "ops": list(ops),  # plaintext representation for readability (the canonicalization target is ops_lp_hex)
+        "ops": list(ops),
         "ops_lp_hex": approval_ops_lp_hex(ops),
         "required_approvals": str(required_approvals),
     }
 
 
 def propose_payload(inner_op: str, inner_payload: dict, expires_at_ms: int) -> dict:
-    # inner_payload_lp_hex = lowercase hex of the inner op's
-    # payload_bytes (the LP in PAYLOAD_FIELD_ORDER[inner_op] order). If
-    # the inner op itself carries a nested LP for scope / ops, this
-    # becomes a 2-level nesting (same shape as payload_bytes →
-    # signed_bytes)
     return {
         "inner_op": inner_op,
-        "inner_payload": inner_payload,  # plaintext representation for readability (the canonicalization target is *_lp_hex)
+        "inner_payload": inner_payload,
         "inner_payload_lp_hex": chain_payload_bytes(inner_op, inner_payload).hex(),
         "expires_at_ms": str(expires_at_ms),
     }
@@ -498,14 +387,12 @@ def gen_chain_entries():
     server = make_server(pat(0x90, 32))
     suite = "maruhi/v1"
 
-    # Members added to the canonical chain by ES / PF1 (2026-09-14)
-    # (seeds do not overlap other vectors)
-    devmember_id = "user-devmember-0010"    # member listed{dev} → {dev, stage} at seq 17 → reader{dev} at seq 22
-    devadmin_id = "user-devadmin-0011"      # admin listed{dev, stage} (a dev-dedicated admin — ruling C-2)
-    prodreader_id = "user-prodreader-0012"  # reader listed{prod}
-    allmember_id = "user-allmember-0013"    # member all
-    owner2_id = "user-owner-0014"           # owner all (the four-eyes approver)
-    owner3_id = "user-owner-0015"           # owner all (a third owner — quorum 2 survives a demotion)
+    devmember_id = "user-devmember-0010"
+    devadmin_id = "user-devadmin-0011"
+    prodreader_id = "user-prodreader-0012"
+    allmember_id = "user-allmember-0013"
+    owner2_id = "user-owner-0014"
+    owner3_id = "user-owner-0015"
     devmember = make_user(pat(0x3A, 32), pat(0x4A, 32))
     devadmin = make_user(pat(0x3B, 32), pat(0x4B, 32))
     prodreader = make_user(pat(0x3C, 32), pat(0x4C, 32))
@@ -540,9 +427,6 @@ def gen_chain_entries():
             **scope_fields(kind, environment_ids or []),
         }
 
-    # Aliases to the module-level shared helpers (build_chain_entry —
-    # shared with gen_checkpoint_boundary_chains since 2026-08-27).
-    # Output is unchanged
     payload_bytes = chain_payload_bytes
     build_entry = build_chain_entry
 
@@ -556,12 +440,6 @@ def gen_chain_entries():
         prev_hash_hex = entry["entry_hash_hex"]
 
     grant_scope = ["env-prod-0001", "env-dev-0002"]
-    # The canonical chain's lease_policy (CRYPTO_SPEC §6.2 / AUTH_SPEC
-    # §14-1): multiple elements with the same (issuer, audience) but
-    # different claim constraints are a legitimate representation (the
-    # form v1 uses to allow multiple branches under exact-match only).
-    # Both elements and constraints are in code-point order (SHOULD).
-    # All values are dummies (they point at no real repository)
     grant_lease_policy = [
         {
             "issuer_url": "https://token.actions.githubusercontent.com",
@@ -585,34 +463,25 @@ def gen_chain_entries():
         return {
             "server_enc_pub_hex": server["enc_pub_hex"],
             "server_key_fingerprint_hex": server["fp_hex"],
-            "scope_environments": scope,  # plaintext representation for readability (the canonicalization target is *_lp_hex)
+            "scope_environments": scope,
             "scope_environments_lp_hex": scope_environments_lp_hex(scope),
-            "lease_policy": policy,  # same
+            "lease_policy": policy,
             "lease_policy_lp_hex": lease_policy_lp_hex(policy),
         }
 
     grant_payload = grant_payload_for(grant_scope, grant_lease_policy)
 
-    t0 = 1754006400000  # a fixed value equivalent to 2025-08-01T00:00:00Z (dummy)
+    t0 = 1754006400000
     add_entry(1, "genesis", owner_id, owner,
               {"enc_pub_hex": owner["enc_pub_hex"], "sig_pub_hex": owner["sig_pub_hex"]}, t0)
 
-    # Project ID = the genesis entry hash (§6.4). Used as the project_id
-    # coordinate of the §5.2 commitment preimage (the chain's and
-    # commitment's coordinates become one continuous run of real data)
     project_id = entries[0]["entry_hash_hex"]
 
-    # Deterministic dummy DEKs for each (environment, epoch). The
-    # commitment's contents cannot be verified by chain verification
-    # (§6.2), but payloads carry an actually-computed commitment so the
-    # implementation tests can check the §5.2 comparison (DEK →
-    # commitment recomputation → matches the chain-published value)
     environment_deks = {
         "env-prod-0001": {1: pat(0xC0, 32), 2: pat(0xC4, 32), 3: pat(0xF0, 32)},
         "env-dev-0002": {1: pat(0xC8, 32), 2: pat(0xCC, 32), 3: pat(0xD0 + 0x60, 32)},
         "env-stage-0003": {1: pat(0xD4, 32), 2: pat(0xD8, 32)},
         "env-fresh-0004": {1: pat(0xDC, 32)},
-        # for negatives (placeholder DEKs at coordinates that never appear on the chain)
         "env-ghost-9999": {2: pat(0xE4, 32), 7: pat(0xE8, 32)},
         "env-reader-blocked-0008": {1: pat(0xEC, 32)},
     }
@@ -631,14 +500,6 @@ def gen_chain_entries():
             "dek_commitment_hex": commit(environment_id, new_epoch),
         }
 
-    # The canonical chain (regenerated 2026-08-03 — session 12 §8-4):
-    # every rotate_epoch is preceded by a create_environment, and rotate
-    # payloads are the 4 fields including the commitment.
-    # env-stage-0003 at seq 11 is left as an environment with no
-    # rotation performed (epoch 1), pinning the boundary "the first
-    # rotate right after create can only be to 2"
-    # (authz-epoch-first-jump) and the head state of an epoch-1
-    # environment
     add_entry(2, "add_member", owner_id, owner,
               add_payload(member_id, member, "member"), t0 + 1000)
     add_entry(3, "create_environment", member_id, member,
@@ -661,16 +522,6 @@ def gen_chain_entries():
     add_entry(12, "revoke_server", owner_id, owner,
               {"server_key_fingerprint_hex": server["fp_hex"]}, t0 + 11000)
 
-    # --- ES + PF1 appends (2026-09-14 — CRYPTO_SPEC 0.11-draft §6.2 / §11) ---
-    # The seq 1-12 structure is unchanged (only scope = all was added to
-    # seq 2 / 6 / 7). The meaning of the seqs referenced by value / meta
-    # / manifest / head-attestation positives is unchanged.
-    # seq 13-19: members with listed / all scopes (policy off). seq 17 is
-    # a scope-only change by the dev-dedicated admin (the permissive side
-    # of principle 1: symmetric difference {stage} ⊆ actor scope).
-    # seq 20-24: set_approval_policy → propose → approve (applies) →
-    # propose → withdraw. The proposal expiry is t0 + 7 days (the CLI
-    # default — within AUTH_SPEC §12-8's 30-day upper bound)
     EXPIRES = t0 + 7 * 24 * 60 * 60 * 1000
     POLICY_OPS = ["change_role", "grant_server", "remove_member", "set_approval_policy"]
     add_entry(13, "add_member", owner_id, owner,
@@ -705,8 +556,6 @@ def gen_chain_entries():
     head24 = entries[23]["entry_hash_hex"]
     HEAD_SEQ = len(entries)
 
-    # Negative 1: payload tampering (role → admin). The signature is
-    # kept as-is → verification must fail
     e2 = entries[1]
     tampered_payload = dict(e2["payload"], role="admin")
     tampered_signed = lp_encode(
@@ -729,7 +578,7 @@ def gen_chain_entries():
             "base_seq": 2,
             "signed_bytes_hex": lp_encode(
                 [suite, 2, entries[0]["entry_hash_hex"], "add_member",
-                 owner["fp_hex"], owner_id,  # swap the actor's 2 fields
+                 owner["fp_hex"], owner_id,
                  bytes.fromhex(e2["payload_bytes_hex"]), t0 + 1000]
             ).hex(),
             "signature_hex": e2["signature_hex"],
@@ -756,25 +605,18 @@ def gen_chain_entries():
         },
     ]
 
-    # --- Signature negatives for grant_server / revoke_server /
-    # change_role / commitment ---
-    e_grant = entries[8]   # seq 9: grant_server
-    e_change = entries[6]  # seq 7: change_role
-    e_revoke = entries[11]  # seq 12: revoke_server
-    e_create_stage = entries[10]  # seq 11: create_environment env-stage-0003
-    e_rotate_dev = entries[9]     # seq 10: rotate_epoch env-dev-0002 → 2
+    e_grant = entries[8]
+    e_change = entries[6]
+    e_revoke = entries[11]
+    e_create_stage = entries[10]
+    e_rotate_dev = entries[9]
     reordered_scope = dict(grant_payload, **{
         "scope_environments": list(reversed(grant_scope)),
         "scope_environments_lp_hex": scope_environments_lp_hex(list(reversed(grant_scope))),
     })
-    # A mis-encoding that concatenates environment IDs raw without the
-    # nested LP (a breeding ground for ambiguity). Pins that
-    # canonicalization never produces this byte string
     flat_scope = dict(grant_payload, **{
         "scope_environments_lp_hex": "".join(grant_scope).encode("utf-8").hex(),
     })
-    # The lease_policy order is also signed (both element order and
-    # constraint order)
     reordered_policy = list(reversed(grant_lease_policy))
     reordered_lease_elements = dict(grant_payload, **{
         "lease_policy": reordered_policy,
@@ -789,9 +631,6 @@ def gen_chain_entries():
         "lease_policy": reordered_claims_policy,
         "lease_policy_lp_hex": lease_policy_lp_hex(reordered_claims_policy),
     })
-    # A mis-encoding that flattens all strings into a single-level LP
-    # instead of the 3-level nested LP (a breeding ground for ambiguity
-    # where element/constraint boundaries disappear)
     flat_lease_fields = []
     for element in grant_lease_policy:
         flat_lease_fields += [element["issuer_url"], element["audience"]]
@@ -804,8 +643,6 @@ def gen_chain_entries():
     tampered_revoke_fp[0] ^= 0x01
 
     def resign_variant(name, base_entry, payload, note, verify_key_hex=None):
-        # Verify the "original signature" over signed_bytes with only the
-        # payload substituted → must fail
         pb = payload_bytes(base_entry["op"], payload)
         signed = lp_encode([
             suite, base_entry["seq"], base_entry["prev_hash_hex"], base_entry["op"],
@@ -844,11 +681,6 @@ def gen_chain_entries():
             "a byte string encoding lease_policy as a flat single-level LP instead of the 3-level nested LP fails signature verification (eliminates ambiguity at element/constraint boundaries)",
         ),
         {
-            # Verifying the canonical entry's signature over a byte
-            # string assembled in the old 3-field form (no
-            # lease_policy_lp_hex) → must fail. An explicit pin that an
-            # old-format implementation cannot verify the new chain (the
-            # 4 fields are mandatory)
             "name": "grant-server-lease-policy-dropped",
             "base_seq": e_grant["seq"],
             "signed_bytes_hex": lp_encode([
@@ -874,9 +706,6 @@ def gen_chain_entries():
             {"server_key_fingerprint_hex": bytes(tampered_revoke_fp).hex()},
             "tampering with the revocation-target fingerprint fails signature verification",
         ),
-        # dek_commitment_hex is also signed (part of the payload):
-        # substituting it fails verification (the negative side of §5.2's
-        # "a chain entry is covered by its creator's signature")
         resign_variant(
             "create-env-tampered-commitment", e_create_stage,
             dict(e_create_stage["payload"], dek_commitment_hex=commit("env-fresh-0004", 1)),
@@ -890,12 +719,6 @@ def gen_chain_entries():
         ),
     ]
 
-    # --- Authorization negatives: signature and hash linkage are
-    # correct but must be rejected by §6.2's authorization rules ---
-    # kind = "authorization". The signature is valid
-    # (verify_reference.mjs confirms the signature passes; the
-    # implementation tests check that chain verification fails with
-    # expected_reason)
     head12 = entries[11]["entry_hash_hex"]
     head6 = entries[5]["entry_hash_hex"]
 
@@ -904,7 +727,7 @@ def gen_chain_entries():
             "name": name,
             "kind": "authorization",
             "entry": entry,
-            "verify_key_hex": None,  # filled in below with the actor's sig_pub
+            "verify_key_hex": None,
             "expected_reason": expected_reason,
             "must_fail": True,
             "note": note,
@@ -954,10 +777,6 @@ def gen_chain_entries():
         t0 + 12000, "insufficient-role",
         "only an owner may grant the admin / owner roles (an admin may add only reader / member)",
     )
-    # Re-grants that narrow the scope are rejected (2026-08-02 owner
-    # ruling): narrowing must go through revoke_server + rotate_epoch
-    # (§7's all-environment rotation obligation). Only widening
-    # (old ⊆ new) is accepted
     head9 = entries[8]["entry_hash_hex"]
     narrowed_scope = ["env-prod-0001"]
     add_authz(
@@ -969,10 +788,6 @@ def gen_chain_entries():
         t0 + 9000, "grant-scope-narrowed",
         "a re-grant that narrows an active grant's scope is rejected even when signed by an owner (must not bypass §7's rotation obligation)",
     )
-    # Two-layer re-grant rule (2026-08-12 — §6.3): the judgment is
-    # independent per field. Even when lease_policy is freely revised
-    # (deleted entirely here), the scope narrowing is still rejected as a
-    # narrowing
     add_authz(
         "authz-grant-scope-narrowed-policy-revised", 10, head9, "grant_server",
         owner_id, owner,
@@ -980,9 +795,6 @@ def gen_chain_entries():
         t0 + 9000, "grant-scope-narrowed",
         "a re-grant with scope narrowed × lease_policy fully deleted is still rejected as grant-scope-narrowed (independence of the two-layer judgment — freedom to revise policy does not rescue a scope narrowing)",
     )
-    # Check-order pin (role rules → re-grant rules): a scope-narrowing
-    # re-grant by an admin as of seq 9 is rejected by the role rule
-    # before the re-grant rule
     add_authz(
         "authz-grant-role-precedes-scope-narrowed", 10, head9, "grant_server",
         admin_id, admin,
@@ -991,14 +803,6 @@ def gen_chain_entries():
         "an insufficient-role × scope-narrowed compound violation is judged by the role rule first (§6.2 check order: role → re-grant rules)",
     )
 
-    # Server key uniqueness (2026-08-12 — §6.2 duplicate-server-key): a
-    # grant_server whose server enc public key matches a current
-    # member's enc public key is rejected (the recipient-class-crossing
-    # version of "key → principal" reverse-lookup uniqueness). Current
-    # members at head12: owner / admin. Pinned by granting admin's enc
-    # key as the server key (the FP is made consistent under the §9
-    # server-key definition SHA-256(enc_pub)[:16], guaranteeing the
-    # rejection reason is key duplication, not payload mismatch)
     admin_enc_as_server_fp = sha256(bytes.fromhex(admin["enc_pub_hex"]))[:16].hex()
 
     def duplicate_key_payload(scope: list, policy: list) -> dict:
@@ -1017,9 +821,6 @@ def gen_chain_entries():
         t0 + 12000, "duplicate-server-key",
         "an entry granting a current member's (user-admin-0003's) enc public key as the server key is rejected even when signed by an owner (§6.2 server-key uniqueness; an empty lease_policy is formally valid = guarantees the rejection reason is key duplication)",
     )
-    # Check-order pin (role rules → key duplication): a duplicate-key
-    # grant by an admin is rejected by the role rule before the key
-    # duplication check
     add_authz(
         "authz-grant-role-precedes-duplicate-server-key", 13, head12, "grant_server",
         admin_id, admin,
@@ -1028,9 +829,6 @@ def gen_chain_entries():
         "an insufficient-role × server-key-duplicate compound violation is judged by the role rule first (§6.2 check order: role → key duplication)",
     )
 
-    # lease_policy size limit (§6.2 — consensus rule): at most 8 issuer
-    # elements and at most 8 claim constraints per issuer. Exceeding it
-    # fails the payload structural check (invalid-payload)
     def dummy_policy_elements(count: int) -> list:
         return [
             {
@@ -1074,17 +872,6 @@ def gen_chain_entries():
         "a size-limit-violation × insufficient-role (admin) compound violation is judged by the structural check first (check-stage order: structure → authorization; same shape as create-env-commitment-format-precedes-role)",
     )
 
-    # --- Key uniqueness's second clause (2026-10-25 — CRYPTO_SPEC
-    # 0.22-draft §6.2): no current device's enc public key is a server
-    # key a grant has named, valid or since revoked. Until then the
-    # derived chain server-key-member-sock appended at seq 10 an
-    # add_member reusing the active grant's server enc key, which was
-    # valid, to pin re-grant rules → duplicate-server-key. That entry is
-    # now itself invalid and the pair can no longer co-occur (a
-    # re-grant's key is a valid grant's, which no current device can
-    # hold), so the chain and its two negatives are retired; the entry
-    # stays, byte for byte, as the first negative below. The holder is
-    # user-sock-0006: a server enc key with a fresh sig key
     sock_sig_sk = Ed25519PrivateKey.from_private_bytes(pat(0xB0, 32))
     sock_sig_pub_hex = sock_sig_sk.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
@@ -1114,11 +901,6 @@ def gen_chain_entries():
         server_key_device_payload(server["enc_pub_hex"]), t0 + 9000, "duplicate-member-key",
         "a current member (admin-0003) cannot put the active grant's server key in a device of their own (add_device is self-service at every role and the key is public in the grant's payload — §6.2 key uniqueness)",
     )
-    # Check-order pins: the grant clause is part of duplicate-member-key and
-    # sits where the device-key comparison does. The reason code is the
-    # same, so the adjacent-pair pins cannot see a misplaced comparison;
-    # these place it on both sides (the scope family's side and add_device's
-    # follow in their sections)
     add_authz(
         "authz-add-member-role-precedes-named-key", 13, head12, "add_member", admin_id, admin,
         server_key_holder_payload(server["enc_pub_hex"], "admin"), t0 + 12000, "insufficient-role",
@@ -1132,13 +914,6 @@ def gen_chain_entries():
     )
     extended_chains = {}
 
-    # Environment-lifecycle chain binding (2026-08-03 — CRYPTO_SPEC
-    # §6.2): a create_environment's environment_id is unique across the
-    # entire chain history (duplicate-environment); rotate_epoch
-    # requires a preceding create_environment (unknown-environment).
-    # The authorization-stage check order is role → duplicate / unknown
-    # → epoch order (this vector pins the order down to the reason
-    # codes)
     add_authz(
         "authz-create-env-duplicate", 13, head12, "create_environment", owner_id, owner,
         create_env_payload("env-prod-0001"),
@@ -1177,14 +952,6 @@ def gen_chain_entries():
         "an insufficient-role × unknown-environment compound violation is judged by the role rule first (authorization-stage check order: role → unknown-environment)",
     )
 
-    # Epoch-order rule (2026-08-02 owner ruling, option 3; follows the
-    # §6.2 environment-lifecycle binding of 2026-08-03): an epoch is a
-    # per-environment counter starting at 1 with create_environment, and
-    # rotate_epoch is always +1. Rollback (re-exposing an old DEK held
-    # by a removed member), duplicates, and jumps (an epoch-space
-    # burn-out DoS with a single member-level signature) are all
-    # rejected. Current epochs at head12: env-prod-0001 = 2,
-    # env-dev-0002 = 2, env-stage-0003 = 1 (never rotated)
     for name, env, bad_epoch, note in [
         ("authz-epoch-rollback", "env-prod-0001", 1,
          "rolling back from the current epoch (2) is rejected"),
@@ -1195,9 +962,6 @@ def gen_chain_entries():
         ("authz-epoch-first-jump", "env-stage-0003", 5,
          "the first rotate of an environment right after create_environment (epoch 1) is accepted only for 2"),
     ]:
-        # The wrong-epoch commitment is computed with "that
-        # environment's epoch-2 DEK" (formally valid — pins that the
-        # rejection reason is the epoch order, not the commitment)
         payload = {
             "environment_id": env,
             "new_epoch": str(bad_epoch),
@@ -1211,12 +975,6 @@ def gen_chain_entries():
             payload, t0 + 12000, "epoch-out-of-sequence", note,
         )
 
-    # dek_commitment_hex format violations (uppercase hex, bad length)
-    # are payload-structural-check negatives (§6.2 — they belong to the
-    # structural stage of the existing check-stage order "structure →
-    # actor → signature → authorization", preceding the authorization
-    # decision). The signature is valid (the signed-over text is the
-    # format-violating string itself)
     fresh_commit = commit("env-fresh-0004", 1)
     add_authz(
         "create-env-commitment-uppercase-hex", 13, head12, "create_environment",
@@ -1247,13 +1005,6 @@ def gen_chain_entries():
         "a format-violation × insufficient-role (reader at seq 6) compound violation is judged by the structural check first (check-stage order: structure → authorization)",
     )
 
-    # Field size limits (2026-08-02 owner ruling, option 2): free-form
-    # string fields are at most 1024 bytes in UTF-8 and
-    # scope_environments at most 256 elements. Exceeding these is
-    # invalid (countermeasure against verification-client resource
-    # consumption by huge payloads; the limits are consensus rules and
-    # so are pinned by vectors). The signature is valid but the entry
-    # must be rejected by the shape check (invalid-payload)
     add_authz(
         "authz-field-too-long", 13, head12, "rotate_epoch", admin_id, admin,
         dict(rotate_payload("env-prod-0001", 3), reason="x" * 1025),
@@ -1271,17 +1022,7 @@ def gen_chain_entries():
         "an entry whose scope_environments has 257 elements (over the 256 limit) is rejected",
     )
 
-    # Member-key uniqueness (CRYPTO_SPEC §6.2; decided 2026-08-03 —
-    # session 10): add_member is rejected when either of the target's
-    # enc / sig public keys matches a same-kind key in the current
-    # member set (duplicate-member-key). Judgment is per individual key
-    # — a sockpuppet reusing only one of the keys is also rejected (not
-    # an FP = enc‖sig equality check). Current members at head12:
-    # user-owner-0001 (owner) / user-admin-0003 (admin). The actor is
-    # owner (passes the role rule) and target_user_id is new (passes
-    # duplicate-member), so the entry is rejected only by the
-    # key-duplication check
-    clone = make_user(pat(0x70, 32), pat(0x80, 32))  # fresh keys on the non-reused side
+    clone = make_user(pat(0x70, 32), pat(0x80, 32))
     for name, enc_hex, sig_hex, note in [
         ("authz-add-member-duplicate-key", admin["enc_pub_hex"], admin["sig_pub_hex"],
          "adding a different user_id reusing a current member's (user-admin-0003's) whole enc / sig key set is rejected (key-reusing sockpuppet)"),
@@ -1298,11 +1039,6 @@ def gen_chain_entries():
              "sig_pub_hex": sig_hex, "role": "member", **ALL},
             t0 + 12000, "duplicate-member-key", note,
         )
-    # Check-order pin (role rules → key duplication): an entry where
-    # actor = admin tries to grant role "admin" to a target reusing a
-    # current member's keys is rejected by the role rule before the
-    # key-duplication check (insufficient-role, not
-    # duplicate-member-key)
     add_authz(
         "authz-add-member-role-precedes-duplicate-key", 13, head12, "add_member",
         admin_id, admin,
@@ -1311,9 +1047,6 @@ def gen_chain_entries():
         t0 + 12000, "insufficient-role",
         "the role rule (only an owner may grant admin/owner) is judged before the key-duplication check (§6.2 check-order pin)",
     )
-    # Check-order pin (user_id duplication → key duplication): an
-    # entry whose target user_id and keys are both duplicates is
-    # rejected as duplicate-member (not duplicate-member-key)
     add_authz(
         "authz-add-member-duplicate-user-precedes-key", 13, head12, "add_member",
         owner_id, owner,
@@ -1323,10 +1056,6 @@ def gen_chain_entries():
         "a duplicate target user_id is judged before the key-duplication check (§6.2 check-order pin)",
     )
 
-    # Impersonation where the actor's declared FP and signing key do
-    # not match the actor's key registered on the chain. Signed with
-    # member's key and the FP is also member's, but the user_id claims
-    # to be the owner
     impostor = build_entry(13, "rotate_epoch", owner_id, member,
                            rotate_payload("env-prod-0001", 3), t0 + 12000, head12)
     authz_cases.append({
@@ -1341,38 +1070,13 @@ def gen_chain_entries():
 
     negatives += authz_cases
 
-    # --- Valid-append positives (pinning the permissive-side boundary
-    # of the consensus rules) ---
-    # (1) Pins that member-key uniqueness (§6.2) bans only reuse within
-    #     the *current member set*: a removed member's key (seq 5's
-    #     user-member-0002) is not in the current set, so neither a
-    #     return under the same user_id nor reuse under a different
-    #     user_id is rejected. A verifier that wrongly implemented "ban
-    #     duplicates against the whole history" fails here
-    # (2) The permissive side of the environment lifecycle (§6.2): a
-    #     create_environment for an unused ID and the first rotate
-    #     (new_epoch 2) to a created environment (epoch 1) are accepted.
-    #     The chain does not observe environment deletion (it stays
-    #     duplicate-environment even after a data-plane tombstone), so
-    #     for the permissive side of "re-create after delete", "a create
-    #     under a different ID is valid" is the whole of it
     base_environments = {
         "env-prod-0001": "2",
         "env-dev-0002": "2",
         "env-stage-0003": "1",
     }
-    # Current members at head 12 (role + scope — §6.2's verification
-    # state). The ES revision expanded member state from a role string
-    # to {role, scope}
     OWNER_ADMIN = {owner_id: member_state("owner", "all"), admin_id: member_state("admin", "all")}
 
-    # grant_seq (2026-08-15 / Wave 2 A2): **the seq of the entry that
-    # established the active grant for this server key**. A re-grant
-    # replaces it with the seq of the latest grant_server entry.
-    # AUDIT_SPEC §3.5's server.lease_issued payload's grant_chain_seq
-    # has this derived value as its only source (the server side does
-    # not re-implement the re-grant two-layer rule), so it is pinned by
-    # vectors as part of the derived state
     def grant_state(scope: list, policy: list, grant_seq: int) -> dict:
         return {
             "server_key_fingerprint_hex": server["fp_hex"],
@@ -1429,30 +1133,16 @@ def gen_chain_entries():
             "note": "the first rotate (new_epoch 2) to a create_environment'd environment (epoch 1) is accepted (the create → rotate boundary)",
         },
         {
-            # The acceptance side of the re-grant two-layer rule
-            # (2026-08-12 — §6.3): a re-grant that keeps the scope
-            # unchanged and shrinks lease_policy (here: deleted
-            # entirely = empty list) is accepted, and the derived
-            # state's lease_policy is replaced. The policy is the lease
-            # path's ACL and does not change the set of known DEKs, so
-            # tightening it does not incur an all-environment rotation
             "name": "regrant-lease-policy-revised",
             "entry": build_entry(10, "grant_server", owner_id, owner,
                                  grant_payload_for(grant_scope, []), t0 + 9000, head9),
             "expected_members": OWNER_ADMIN,
             "expected_environments": {"env-prod-0001": "2", "env-dev-0002": "1"},
-            # grant_seq advances to the re-grant entry's own seq (10) —
-            # the entry that established the active grant is replaced
-            # (an implementation keeping seq 9 fails here)
             "expected_server_grants": [grant_state(grant_scope, [], 10)],
             "note": "a re-grant with scope unchanged × lease_policy fully deleted is accepted and the policy is replaced by empty (no lease path) (the acceptance side of §6.3's re-grant two-layer rule; appended on the seq-9 head). The derived grant_seq advances to the re-grant entry's seq",
         },
     ]
 
-    # Key uniqueness counts a device only while it is current (§6.2), so
-    # no registration blocks a grant for good: user-member-0002's enc key
-    # (its holder was removed at seq 5) can become a server key. Its
-    # fingerprint follows the §9 server-key definition
     removed_member_server_fp = sha256(bytes.fromhex(member["enc_pub_hex"]))[:16].hex()
     removed_member_grant = {
         "server_enc_pub_hex": member["enc_pub_hex"],
@@ -1476,13 +1166,6 @@ def gen_chain_entries():
         },
     ]
 
-    # --- Expected values for the state derived from a verified chain
-    # (pinning the implementation's derivation API) ---
-    # 2026-08-03 (§6.2 / §6.3): environment existence, the epoch-start
-    # seq, and the per-epoch DEK commitment became chain-derived values.
-    # The default "initial value 1 if unobserved" is abolished (an
-    # environment with no create_environment on the chain does not
-    # exist in the environment set)
     def env_state(environment_id, current_epoch, created_at_seq, epoch_start_seqs):
         return {
             "current_epoch": str(current_epoch),
@@ -1493,23 +1176,9 @@ def gen_chain_entries():
             },
         }
 
-    # Four-eyes verification state (§6.2 / §6.3): approval_policy =
-    # {ops, required_approvals} | null (null = no policy = off);
-    # pending_proposals = proposal entry's entry_hash → {proposal_seq,
-    # proposer (user_id, key FP, role at proposal), inner op and
-    # payload, expiry, approvals (the list of actors of accepted
-    # approve entries)}. Votes are counted anew as the number of
-    # distinct principals in S = {proposer} ∪ approvals that are owners
-    # at each approve time (principle 2). The role-at-proposal is an
-    # informational value, not an input to vote counting (design
-    # record §8 K2-6 / handoff note ② to the canonical text)
     def policy_state(ops: list, required: int) -> dict:
         return {"ops": list(ops), "required_approvals": str(required)}
 
-    # A vote = (user_id, key FP at signing) (2026-09-15 owner
-    # delegation ruling ⑤ — design record §8 K2-11). In approvals, pass
-    # either a user_id (the current key) or a dict with an explicit key
-    # (a vote by the old key before re-addition)
     def vote(user_id: str, user: dict | None = None) -> dict:
         return {"user_id": user_id, "key_fingerprint_hex": (user or users[user_id])["fp_hex"]}
 
@@ -1536,7 +1205,6 @@ def gen_chain_entries():
         "env-stage-0003": env_state("env-stage-0003", 1, 11, {1: 11}),
     }
     canonical_policy = policy_state(POLICY_OPS, 2)
-    # Member state at head 19 (policy off, all members enrolled)
     members_19 = {
         owner_id: member_state("owner", "all"),
         admin_id: member_state("admin", "all"),
@@ -1547,7 +1215,6 @@ def gen_chain_entries():
         owner2_id: member_state("owner", "all"),
         owner3_id: member_state("owner", "all"),
     }
-    # Head 22 onward (proposal 21 applied = devmember is reader{dev})
     members_24 = dict(members_19, **{devmember_id: member_state("reader", "listed", [DEV])})
     members_24_without_devmember = {k: v for k, v in members_24.items() if k != devmember_id}
 
@@ -1582,9 +1249,6 @@ def gen_chain_entries():
             "pending_proposals": {},
         },
         {
-            # ES: the state after applying members of each scope
-            # listed / all plus the scope-only change (seq 17) by the
-            # dev-dedicated admin. No policy yet
             "after_seq": 19,
             "members": members_19,
             "server_grants": [],
@@ -1593,8 +1257,6 @@ def gen_chain_entries():
             "pending_proposals": {},
         },
         {
-            # PF1: policy in force + an owner's proposal pending
-            # (proposer owner's vote = 1)
             "after_seq": 21,
             "members": members_19,
             "server_grants": [],
@@ -1603,9 +1265,6 @@ def gen_chain_entries():
             "pending_proposals": pending_map((p21, "owner", [])),
         },
         {
-            # PF1: a different owner's approve reaches quorum 2 → the
-            # inner change_role applies at seq 22 (inclusive — devmember
-            # is reader{dev} from seq 22). pending is empty
             "after_seq": 22,
             "members": members_24,
             "server_grants": [],
@@ -1614,8 +1273,6 @@ def gen_chain_entries():
             "pending_proposals": {},
         },
         {
-            # PF1: after an owner withdraws a non-owner (dev-dedicated
-            # admin) proposal (votes 0)
             "after_seq": 24,
             "members": members_24,
             "server_grants": [],
@@ -1625,17 +1282,6 @@ def gen_chain_entries():
         },
     ]
 
-    # --- checkpoint op (CRYPTO_SPEC §6.2; session 33 on 2026-08-27 =
-    # PR-F3a) ---
-    # An early implementation of M2 (split F3a from session-32 §5-1).
-    # What consensus rules verify is only the form, actor role, and
-    # coordinate consistency; the tuple contents (manifest, values,
-    # audit head) cannot be verified by chain verification (§6.2's
-    # "form is consensus rules, content is on the comparison side").
-    # So deterministic dummy values suffice for this section's
-    # manifest_sig_hash / audit head. A derived chain of boundary
-    # checkpoints wired to real manifest hashes is added in PR-F3b
-    # (the consumer side of the manifest verification rules)
 
     def dummy_manifest_sig_hash(environment_id: str, manifest_version: int) -> str:
         return sha256(
@@ -1650,9 +1296,6 @@ def gen_chain_entries():
 
     def checkpoint_env_entry(environment_id, epoch, manifest_version,
                              values_digest_hex=None, manifest_sig_hash_hex=None):
-        # Thin wrapper with dummy defaults (the tuple-construction
-        # substance is the module-level checkpoint_env_entry_tuple —
-        # shared since 2026-08-27)
         return checkpoint_env_entry_tuple(
             environment_id, epoch, manifest_version,
             (manifest_sig_hash_hex if manifest_sig_hash_hex is not None
@@ -1660,7 +1303,6 @@ def gen_chain_entries():
             values_digest_hex if values_digest_hex is not None else empty_values_digest,
         )
 
-    # Current epochs at head12: env-prod-0001 = 2 / env-dev-0002 = 2 / env-stage-0003 = 1
     head4 = entries[3]["entry_hash_hex"]
     cp_prod_values = env_values_digest_hex([
         {"variable_id": "var-database-url-0001", "version": "3",
@@ -1668,12 +1310,6 @@ def gen_chain_entries():
         {"variable_id": "var-api-key-0002", "version": "1",
          "value_sig_hash_hex": dummy_value_sig_hash("var-api-key-0002", 1)},
     ])
-    # A legitimate re-attestation of the same (environment,
-    # manifest_version) (after the rotate-boundary checkpoint, the
-    # periodic checkpoint issued once re-encryption completes attests
-    # the same manifestVersion with a new value set — §6.3 issuance
-    # SHOULD (i); a value push does not advance the manifest version,
-    # §4.3)
     cp_prod_values_reencrypted = env_values_digest_hex([
         {"variable_id": "var-database-url-0001", "version": "4",
          "value_sig_hash_hex": dummy_value_sig_hash("var-database-url-0001", 4)},
@@ -1732,12 +1368,6 @@ def gen_chain_entries():
             case["chain"] = chain
         checkpoint_negatives.append(case)
 
-    # Authorization-stage check order (§6.2): role (member or above)
-    # → admin role for a non-empty audit head → unknown-environment →
-    # checkpoint-epoch-mismatch → checkpoint-regression. Across
-    # multiple environment entries, all entries are scanned per check
-    # stage (stage-wise — pinned by
-    # authz-checkpoint-unknown-precedes-epoch; session-33 ruling C)
     add_checkpoint_authz(
         "authz-checkpoint-reader-role", 7, head6, admin_id, admin,
         checkpoint_payload([checkpoint_env_entry("env-prod-0001", 2, 1)]),
@@ -1783,8 +1413,8 @@ def gen_chain_entries():
     add_checkpoint_authz(
         "authz-checkpoint-unknown-precedes-epoch", 13, head12, admin_id, admin,
         checkpoint_payload([
-            checkpoint_env_entry("env-prod-0001", 1, 2),   # epoch mismatch (head of the list)
-            checkpoint_env_entry("env-ghost-9999", 2, 1),  # unknown environment (later in the list)
+            checkpoint_env_entry("env-prod-0001", 1, 2),
+            checkpoint_env_entry("env-ghost-9999", 2, 1),
         ]),
         t0 + 12000, "unknown-environment",
         "a compound violation across multiple environment entries scans all entries per check stage (stage-wise): the later-list unknown-environment is judged before the head-of-list epoch mismatch (session-33 ruling C)",
@@ -1809,10 +1439,6 @@ def gen_chain_entries():
         chain="checkpoint-baseline",
     )
 
-    # The payload structural check (invalid-payload — the structural
-    # stage of the check-stage order "structure → actor → signature →
-    # authorization"; same shape as the dek_commitment_hex format
-    # check and precedes the authorization decision)
     add_checkpoint_authz(
         "checkpoint-manifest-hash-uppercase-hex", 13, head12, admin_id, admin,
         checkpoint_payload([checkpoint_env_entry(
@@ -1856,12 +1482,6 @@ def gen_chain_entries():
         "a format-violation × insufficient-role (reader at seq 6) compound violation is judged by the structural check first (same shape as create-env-commitment-format-precedes-role)",
     )
 
-    # Signature negatives: tampering environments and flattening the
-    # nested LP (in both, the original signature fails verification and
-    # canonicalization never produces these byte strings). The base is
-    # checkpoint-baseline's seq-13 entry (the canonical 12-entry chain
-    # has no checkpoint op, so the derived chain's entry is referenced
-    # via the chain field)
     tampered_cp_payload = checkpoint_payload([
         cp_dev_entry,
         checkpoint_env_entry(
@@ -1944,9 +1564,6 @@ def gen_chain_entries():
         },
     ]
 
-    # Unit vectors for the env values digest (§6.2's values_digest
-    # canonical form — pinned the same way as env-manifest.json's
-    # digests section)
     values_digests = [
         {
             "name": "empty-set",
@@ -1991,12 +1608,6 @@ def gen_chain_entries():
             "note": "canonical order is UTF-8 byte-ascending on variable_id: var-Z-0001 (0x5A) < var-a-0002 < var-a-0010 < var-㊙-0001 (0xE3…). Pins that the order is byte order, not locale or numeric order (entries are listed in non-canonical order — implementations sort internally and reach the same digest)",
         },
         {
-            # Surrogate-pair boundary (session-31 M1-T2 — 2026-08-28):
-            # high BMP U+FFE5 (UTF-8 EF BF A5) sorts before astral
-            # U+1F511 (UTF-8 F0 9F 94 91). Under UTF-16 code-unit
-            # comparison (JS's naive string comparison) the surrogate
-            # 0xD83D < 0xFFE5 puts them in reverse order, so this pair
-            # discriminates the two implementations
             "name": "surrogate-boundary-order",
             "entries": [
                 {"variable_id": "var-\U0001F511-0001", "version": "2",
@@ -2022,25 +1633,18 @@ def gen_chain_entries():
         },
     ]
 
-    # =========================================================================
-    # ES + PF1 (2026-09-14 — CRYPTO_SPEC 0.11-draft §6.2 / §11;
-    # negatives are enumerated per the design record §3-ter's 2
-    # principles): signature negatives, structural / authorization
-    # negatives, derived chains (preconditions requiring four-eyes
-    # state), and the permissive side (valid_appends)
-    # =========================================================================
     es_start = len(authz_cases)
-    e2 = entries[1]     # add_member member all
-    e7 = entries[6]     # change_role admin all
-    e13 = entries[12]   # add_member devmember listed{dev}
-    e14 = entries[13]   # add_member devadmin listed{dev, stage}
-    e17 = entries[16]   # change_role by devadmin (scope only)
-    e20 = entries[19]   # set_approval_policy
-    e21 = entries[20]   # propose(owner)
-    e22 = entries[21]   # approve(owner2)
+    e2 = entries[1]
+    e7 = entries[6]
+    e13 = entries[12]
+    e14 = entries[13]
+    e17 = entries[16]
+    e20 = entries[19]
+    e21 = entries[20]
+    e22 = entries[21]
     GHOST = "env-ghost-9999"
     FRESH = "env-fresh-0004"
-    newcomer_id = "user-newcomer-0005"  # new user_id holding the keys of the member removed at seq 5
+    newcomer_id = "user-newcomer-0005"
     newcomer = member
     BOGUS_HASH = sha256(b"maruhi-vector-bogus-proposal").hex()
 
@@ -2049,11 +1653,6 @@ def gen_chain_entries():
                               verify_key_hex=users[base_entry["actor"]["user_id"]]["sig_pub_hex"])
 
     def dropped_form(name, base_entry, old_fields, note):
-        # Verifying the canonical entry's signature over a byte string in
-        # the old format (fields missing) → must fail. An explicit pin
-        # that an old implementation cannot verify the new chain (= no
-        # compatibility path) (same shape as
-        # grant-server-lease-policy-dropped)
         signed = lp_encode([
             suite, base_entry["seq"], base_entry["prev_hash_hex"], base_entry["op"],
             base_entry["actor"]["user_id"], base_entry["actor"]["key_fingerprint_hex"],
@@ -2158,9 +1757,6 @@ def gen_chain_entries():
         ),
     ]
 
-    # --- Structure (invalid-payload — the structural stage of the
-    # check-stage order "structure → actor → signature → authorization")
-    # ---
     es_cases = []
 
     def add_es(name, seq, prev_hex, op, actor_id, payload, ts, expected_reason, note, chain=None):
@@ -2260,12 +1856,6 @@ def gen_chain_entries():
         "a bad proposal_hash_hex length (62 chars) is rejected at the structural stage",
     )
 
-    # --- Principle 1 (mutability of authorization — §6.2): enumerate,
-    # per op and per set-algebra shape, the forms where some element of
-    # the authorization-change environment set is outside the actor's
-    # scope. actor = dev-dedicated admin (devadmin: listed{dev,
-    # stage}). head 19 = policy off (a state where approval-required
-    # does not precede the scope check) ---
     add_es(
         "authz-add-member-unknown-scope-environment", 20, head19, "add_member", owner_id,
         add_payload(newcomer_id, newcomer, "member", "listed", [GHOST]), T19, "unknown-environment",
@@ -2331,8 +1921,6 @@ def gen_chain_entries():
         {"target_user_id": allmember_id}, T19, "scope-not-contained",
         "principle 1 (removing an all target): current scope = all is not contained in a listed actor's scope",
     )
-    # --- Environment-targeted ops (§6.2 ruling E): target environment
-    # ∈ actor scope. create is all-actors only
     add_es(
         "authz-create-env-listed-admin", 20, head19, "create_environment", devadmin_id,
         create_env_payload(FRESH), T19, "environment-out-of-scope",
@@ -2353,8 +1941,6 @@ def gen_chain_entries():
         checkpoint_payload([checkpoint_env_entry(PROD, 2, 1)]), T19, "environment-out-of-scope",
         "a checkpoint containing a tuple for an out-of-scope environment is rejected (the values_digest preimage is obtainable only via a pull with values)",
     )
-    # --- Check-order pinning forms (each §6.2 column; the scope family
-    # sits behind the existing check columns) ---
     add_es(
         "authz-add-member-duplicate-key-precedes-unknown-environment", 20, head19, "add_member", owner_id,
         add_payload(newcomer_id, admin, "member", "listed", [GHOST]), T19, "duplicate-member-key",
@@ -2443,10 +2029,6 @@ def gen_chain_entries():
         "an epoch-mismatch (head = in-scope dev) × out-of-scope (later = prod) compound violation is judged as environment-out-of-scope first (stage-wise — checkpoint: environment-out-of-scope → checkpoint-epoch-mismatch)",
     )
 
-    # --- Principle 2 (authorization by the signer set S — §6.2) and
-    # policy monotonicity ---
-    # Rejection of direct appends (policy in force × targeted op):
-    # head 24 (policy = POLICY_OPS / required 2)
     add_es(
         "authz-approval-required-change-role", 25, head24, "change_role", owner_id,
         change_payload(allmember_id, "reader"), T24, "approval-required",
@@ -2502,11 +2084,6 @@ def gen_chain_entries():
         policy_payload(POLICY_OPS, 2), T24, "insufficient-role",
         "set_approval_policy is owner-only. A policy change by an admin is rejected by the role rule (role → approval-required)",
     )
-    # Design record §8-ter (pairs found unpinned by the mechanical
-    # cross-check of K2-8's principle 'adjacent check pairs are either
-    # pinned by vectors or cannot co-occur'): approval-required sits
-    # right after the role rule = before the op-specific checks
-    # (duplicate-member / duplicate-member-key / duplicate-server-key)
     add_es(
         "authz-approval-required-precedes-duplicate-member", 25, head24, "add_member", owner_id,
         add_payload(allmember_id, allmember, "owner"), T24, "approval-required",
@@ -2527,7 +2104,6 @@ def gen_chain_entries():
         add_payload(allmember_id, allmember, "member"), T24, "insufficient-role",
         "an insufficient-role (reader) × existing-user_id compound violation is judged by the role rule first (add_member: role → duplicate-member. Not derivable from the transitions role → duplicate-member-key and duplicate-member → duplicate-member-key, so pinned independently)",
     )
-    # approval-not-required / policy reachability
     add_es(
         "authz-propose-policy-off", 20, head19, "propose", owner_id,
         propose_payload("remove_member", remove_devmember, EXPIRES), T19, "approval-not-required",
@@ -2602,8 +2178,6 @@ def gen_chain_entries():
         policy_payload(POLICY_OPS, 4), T19, "approval-quorum-unreachable",
         "enabling required 4 with 3 owners is invalid (the enable condition is ≥ — approval item 17)",
     )
-    # The approve / withdraw reasons (head 21 = proposal 21 is pending,
-    # proposer owner's vote = 1)
     add_es(
         "authz-approve-non-owner", 22, head21, "approve", admin_id,
         proposal_ref_payload(p21), T21, "insufficient-role",
@@ -2670,8 +2244,6 @@ def gen_chain_entries():
         "an applied-proposal × already-voted-owner compound violation is judged as unknown-proposal first (approve: unknown-proposal → duplicate-approval)",
     )
 
-    # --- Derived chains (preconditions that need four-eyes state —
-    # precedent of conventions 16 / 19) ---
     def extend(base_seq, base_hash, steps):
         """Chain and sign steps = [(op, actor_id, payload, ts)] right after base."""
         out = []
@@ -2701,8 +2273,6 @@ def gen_chain_entries():
     def approve_of(entry):
         return proposal_ref_payload(entry)
 
-    # (1) The first vote on a non-owner's proposal (23) stays pending.
-    #     timestamp = expires_at_ms exactly is valid (the boundary is ≤)
     one_vote = extend(23, head23, [
         ("approve", owner2_id, approve_of(p23), EXPIRES),
     ])
@@ -2720,8 +2290,6 @@ def gen_chain_entries():
         "principle 2 (duplicates): a second vote by the same owner is duplicate-approval (votes are counted by distinct owners)",
         chain="proposal-one-vote",
     )
-    # (2) A non-owner's proposal completed by 2 owner votes → applied
-    #     at seq 25 (devmember's membership ends)
     completed = extend(23, head23, [
         ("approve", owner2_id, approve_of(p23), T23),
         ("approve", owner3_id, approve_of(p23), t0 + 24000),
@@ -2734,21 +2302,17 @@ def gen_chain_entries():
         "(devadmin)",
         23, completed, members_24_without_devmember, canonical_policy, {},
     )
-    # (3) Principle 2 "time-of-check difference" — the proposer's
-    #     (owner's) vote lapses via demotion. The proposer retains the
-    #     remove_member role as admin(all), so the proposal is not
-    #     proposal-void and completes on the other 2 owner votes
     p25s = build_entry(25, "propose", owner_id, owner,
                        propose_payload("remove_member", remove_devmember, EXPIRES), T24, head24)
     demote_owner1 = propose_payload("change_role", change_payload(owner_id, "admin"), EXPIRES)
     stale_proposer_steps = [
-        ("propose", owner2_id, demote_owner1, t0 + 25000),                       # 26: votes [0014]
+        ("propose", owner2_id, demote_owner1, t0 + 25000),
     ]
     stale_proposer = [p25s] + extend(25, p25s["entry_hash_hex"], stale_proposer_steps)
     p26s = stale_proposer[1]
     stale_proposer += extend(26, p26s["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p26s), t0 + 26000),                    # 27: applies — owner-0001 is admin
-        ("approve", owner2_id, approve_of(p25s), t0 + 27000),                    # 28: votes {0014} ∪ ({0001} ∩ owners = ∅) = 1 → pending
+        ("approve", owner3_id, approve_of(p26s), t0 + 26000),
+        ("approve", owner2_id, approve_of(p25s), t0 + 27000),
     ])
     members_stale_proposer = dict(members_24, **{owner_id: member_state("admin", "all")})
     extended_chains["stale-proposer-vote"] = chain_doc(
@@ -2765,7 +2329,7 @@ def gen_chain_entries():
         pending_map((p25s, "owner", [owner2_id])),
     )
     stale_proposer_completed = stale_proposer + extend(28, stale_proposer[-1]["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p25s), t0 + 28000),                    # 29: {0015, 0014} = 2 → applies
+        ("approve", owner3_id, approve_of(p25s), t0 + 28000),
     ])
     extended_chains["stale-proposer-vote-completed"] = chain_doc(
         "owner-0015 votes past stale-proposer-vote (seq 29) and it "
@@ -2777,18 +2341,16 @@ def gen_chain_entries():
         {k: v for k, v in members_stale_proposer.items() if k != devmember_id},
         canonical_policy, {},
     )
-    # (4) Principle 2 "time-of-check difference" — a voter's (owner's)
-    #     vote lapses via demotion
     p25a = build_entry(25, "propose", devadmin_id, devadmin,
                        propose_payload("remove_member", remove_devmember, EXPIRES), T24, head24)
     stale_approver = [p25a] + extend(25, p25a["entry_hash_hex"], [
-        ("approve", owner_id, approve_of(p25a), t0 + 25000),                     # 26: votes [0001]
-        ("propose", owner2_id, demote_owner1, t0 + 26000),                       # 27: votes [0014]
+        ("approve", owner_id, approve_of(p25a), t0 + 25000),
+        ("propose", owner2_id, demote_owner1, t0 + 26000),
     ])
     p27a = stale_approver[2]
     stale_approver += extend(27, p27a["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p27a), t0 + 27000),                    # 28: applies — owner-0001 is admin
-        ("approve", owner2_id, approve_of(p25a), t0 + 28000),                    # 29: {0014} ∪ ({0001} ∩ owners = ∅) = 1 → pending
+        ("approve", owner3_id, approve_of(p27a), t0 + 27000),
+        ("approve", owner2_id, approve_of(p25a), t0 + 28000),
     ])
     extended_chains["stale-approver-vote"] = chain_doc(
         "Principle 2's 'time-of-check difference' (voter side): after "
@@ -2803,7 +2365,7 @@ def gen_chain_entries():
         pending_map((p25a, "admin", [owner_id, owner2_id])),
     )
     stale_approver_completed = stale_approver + extend(29, stale_approver[-1]["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p25a), t0 + 29000),                    # 30: {0015, 0014} = 2 → applies
+        ("approve", owner3_id, approve_of(p25a), t0 + 29000),
     ])
     extended_chains["stale-approver-vote-completed"] = chain_doc(
         "owner-0015 votes past stale-approver-vote (seq 30) and it "
@@ -2814,18 +2376,14 @@ def gen_chain_entries():
         {k: v for k, v in members_stale_proposer.items() if k != devmember_id},
         canonical_policy, {},
     )
-    # (5) The 3 forms of proposal-void — after proposal 23 the
-    #     proposer (devadmin) is removed / re-added with different keys
-    #     / demoted to reader, and the apply check at quorum makes it
-    #     invalid
     remove_devadmin = propose_payload("remove_member", {"target_user_id": devadmin_id}, EXPIRES)
     proposer_removed = extend(23, head23, [
-        ("propose", owner_id, remove_devadmin, T23),                             # 24: votes [0001]
+        ("propose", owner_id, remove_devadmin, T23),
     ])
     p24r = proposer_removed[0]
     proposer_removed += extend(24, p24r["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p24r), t0 + 24000),                    # 25: applies — devadmin removed
-        ("approve", owner2_id, approve_of(p23), t0 + 25000),                     # 26: 1 vote on proposal 23 (pending)
+        ("approve", owner2_id, approve_of(p24r), t0 + 24000),
+        ("approve", owner2_id, approve_of(p23), t0 + 25000),
     ])
     members_without_devadmin = {k: v for k, v in members_24.items() if k != devadmin_id}
     extended_chains["proposer-removed"] = chain_doc(
@@ -2856,10 +2414,10 @@ def gen_chain_entries():
         ("add_member", owner_id,
          {"target_user_id": devadmin_id, "enc_pub_hex": rekeyed_devadmin["enc_pub_hex"],
           "sig_pub_hex": rekeyed_devadmin["sig_pub_hex"], "role": "admin",
-          **scope_fields("listed", [DEV, STAGE])}, t0 + 25000),                  # 26: re-added with different keys (an admin add can be appended directly)
-        ("approve", owner2_id, approve_of(p23), t0 + 26000),                     # 27: 1 vote on proposal 23
+          **scope_fields("listed", [DEV, STAGE])}, t0 + 25000),
+        ("approve", owner2_id, approve_of(p23), t0 + 26000),
     ])
-    members_rekeyed = dict(members_24)  # devadmin is enrolled with the same user_id and same role / scope (only the keys differ)
+    members_rekeyed = dict(members_24)
     extended_chains["proposer-rekeyed"] = chain_doc(
         "The proposer (devadmin) is removed (seq 24 → 25) and the same "
         "user_id is re-added with **different keys** (seq 26 — an "
@@ -2889,12 +2447,12 @@ def gen_chain_entries():
     )
     demote_devadmin = propose_payload("change_role", change_payload(devadmin_id, "reader", "listed", [DEV, STAGE]), EXPIRES)
     proposer_demoted = extend(23, head23, [
-        ("propose", owner_id, demote_devadmin, T23),                             # 24
+        ("propose", owner_id, demote_devadmin, T23),
     ])
     p24d = proposer_demoted[0]
     proposer_demoted += extend(24, p24d["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p24d), t0 + 24000),                    # 25: applies — devadmin is reader
-        ("approve", owner2_id, approve_of(p23), t0 + 25000),                     # 26: 1 vote on proposal 23
+        ("approve", owner2_id, approve_of(p24d), t0 + 24000),
+        ("approve", owner2_id, approve_of(p23), t0 + 25000),
     ])
     members_demoted = dict(members_24, **{devadmin_id: member_state("reader", "listed", [DEV, STAGE])})
     extended_chains["proposer-demoted"] = chain_doc(
@@ -2912,15 +2470,13 @@ def gen_chain_entries():
         "apply check: a proposal whose proposer lost the role the inner op needs cannot complete (proposal-void, not insufficient-role)",
         chain="proposer-demoted",
     )
-    # (6) The order proposal-void → inner op's consensus rules: neither
-    #     proposer nor target exists
     void_then_inner = proposer_removed[:2] + extend(25, proposer_removed[1]["entry_hash_hex"], [
-        ("propose", owner_id, propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 25000),  # 26
+        ("propose", owner_id, propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 25000),
     ])
     p26v = void_then_inner[-1]
     void_then_inner += extend(26, p26v["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p26v), t0 + 26000),                    # 27: applies — devmember removed
-        ("approve", owner2_id, approve_of(p23), t0 + 27000),                     # 28: 1 vote on proposal 23
+        ("approve", owner2_id, approve_of(p26v), t0 + 26000),
+        ("approve", owner2_id, approve_of(p23), t0 + 27000),
     ])
     extended_chains["proposer-removed-target-gone"] = chain_doc(
         "Past proposer-removed, proposal 23's target (devmember) is also "
@@ -2938,16 +2494,14 @@ def gen_chain_entries():
         "an absent-proposer × absent-target compound violation is judged as proposal-void first (approve: proposal-void → inner op's consensus rules)",
         chain="proposer-removed-target-gone",
     )
-    # (7) Two competing proposals: the later application fails the inner
-    #     op's rule and stays pending
     competing = extend(24, head24, [
-        ("propose", owner_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),      # 25: votes [0001]
-        ("propose", devadmin_id, propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 25000),  # 26: votes []
+        ("propose", owner_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),
+        ("propose", devadmin_id, propose_payload("remove_member", remove_devmember, EXPIRES), t0 + 25000),
     ])
     p25c, p26c = competing
     competing += extend(26, p26c["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p26c), t0 + 26000),                    # 27: votes [0014]
-        ("approve", owner3_id, approve_of(p26c), t0 + 27000),                    # 28: applies — devmember removed
+        ("approve", owner2_id, approve_of(p26c), t0 + 26000),
+        ("approve", owner3_id, approve_of(p26c), t0 + 27000),
     ])
     extended_chains["competing-proposals"] = chain_doc(
         "owner-0001 (seq 25, 1 vote) and devadmin (seq 26, 0 votes) "
@@ -2965,26 +2519,18 @@ def gen_chain_entries():
         "at quorum, the inner op is re-checked against the apply-time state: if the target is already removed, the approve entry is invalid as unknown-target and the proposal stays pending (closed via withdraw)",
         chain="competing-proposals",
     )
-    # (7b) ② Literal reading (2026-09-15 owner-delegation ruling —
-    #      design record §8 K2-11): a vote is a signature made as an
-    #      owner. If a proposer who proposed as admin is later promoted
-    #      to owner, the proposal signature does not enter S (it does
-    #      not become 1 vote), but an approve appended by them as owner
-    #      does count (the self-approval does not become
-    #      duplicate-approval — the proposal signature is not an
-    #      element of S)
     promote_admin = propose_payload("change_role", change_payload(admin_id, "owner"), EXPIRES)
     promoted = extend(24, head24, [
-        ("propose", admin_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),  # 25: admin's proposal (S = ∅)
-        ("propose", owner_id, promote_admin, t0 + 25000),                        # 26: proposal to promote admin-0003 to owner (votes [0001])
+        ("propose", admin_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),
+        ("propose", owner_id, promote_admin, t0 + 25000),
     ])
     p25p, p26p = promoted
     promoted += extend(26, p26p["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p26p), t0 + 26000),                    # 27: applies — admin-0003 is owner(all)
+        ("approve", owner2_id, approve_of(p26p), t0 + 26000),
     ])
     members_promoted = dict(members_24, **{admin_id: member_state("owner", "all")})
     promoted_other = promoted + extend(27, promoted[-1]["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p25p), t0 + 27000),                    # 28: S = {0015} = 1 (proposer proposed as admin → outside S) → pending
+        ("approve", owner3_id, approve_of(p25p), t0 + 27000),
     ])
     extended_chains["proposer-promoted"] = chain_doc(
         "Literal reading (2026-09-15 ruling ②): after admin-0003 "
@@ -2999,7 +2545,7 @@ def gen_chain_entries():
         pending_map((p25p, "admin", [owner3_id])),
     )
     promoted_self = promoted + extend(27, promoted[-1]["entry_hash_hex"], [
-        ("approve", admin_id, approve_of(p25p), t0 + 27000),                     # 28: self-approval by the promoted proposer — outside S so not a duplicate; 1 vote (pending)
+        ("approve", admin_id, approve_of(p25p), t0 + 27000),
     ])
     extended_chains["proposer-promoted-self-vote"] = chain_doc(
         "Branch of proposer-promoted: the promoted proposer admin-0003 "
@@ -3011,7 +2557,7 @@ def gen_chain_entries():
         pending_map((p25p, "admin", [admin_id])),
     )
     promoted_completed = promoted_self + extend(28, promoted_self[-1]["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p25p), t0 + 28000),                    # 29: {0003, 0015} = 2 → applies
+        ("approve", owner3_id, approve_of(p25p), t0 + 28000),
     ])
     extended_chains["proposer-promoted-completed"] = chain_doc(
         "owner-0015 votes past proposer-promoted-self-vote (seq 29) and "
@@ -3024,12 +2570,6 @@ def gen_chain_entries():
         {k: v for k, v in members_promoted.items() if k != devmember_id},
         canonical_policy, {},
     )
-    # (7c) ⑤ Voter key-binding (2026-09-15 owner-delegation ruling —
-    #      design record §8 K2-11): an element of S is (user_id, key FP
-    #      at signing). The old vote of an owner removed after voting
-    #      and re-added with different keys lapses (key rotation
-    #      invalidates votes by a compromised key), and they can vote
-    #      again with the new key
     rekeyed_owner = make_user(pat(0x71, 32), pat(0x81, 32))
     users["user-owner-0001(rekeyed)"] = rekeyed_owner
     remove_owner1 = propose_payload("remove_member", {"target_user_id": owner_id}, EXPIRES)
@@ -3038,22 +2578,22 @@ def gen_chain_entries():
         "sig_pub_hex": rekeyed_owner["sig_pub_hex"], "role": "owner", **scope_fields("all", []),
     }, EXPIRES)
     readded = extend(24, head24, [
-        ("propose", devadmin_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),  # 25: S = ∅
+        ("propose", devadmin_id, propose_payload("remove_member", remove_devmember, EXPIRES), T24),
     ])
     p25k = readded[0]
     readded += extend(25, p25k["entry_hash_hex"], [
-        ("approve", owner_id, approve_of(p25k), t0 + 25000),                     # 26: votes [(0001, old key)]
-        ("propose", owner2_id, remove_owner1, t0 + 26000),                       # 27: proposal to remove owner-0001 (votes [0014]; owners 3 → 2 ≥ 2)
+        ("approve", owner_id, approve_of(p25k), t0 + 25000),
+        ("propose", owner2_id, remove_owner1, t0 + 26000),
     ])
     p27k = readded[-1]
     readded += extend(27, p27k["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p27k), t0 + 27000),                    # 28: applies — owner-0001 removed
-        ("propose", owner2_id, readd_owner1, t0 + 28000),                        # 29: proposal to re-add owner-0001 as owner with different keys (owner establishment = constant target)
+        ("approve", owner3_id, approve_of(p27k), t0 + 27000),
+        ("propose", owner2_id, readd_owner1, t0 + 28000),
     ])
     p29k = readded[-1]
     readded += extend(29, p29k["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p29k), t0 + 29000),                    # 30: applies — owner-0001 is owner with a new key
-        ("approve", owner2_id, approve_of(p25k), t0 + 30000),                    # 31: S = {(0001, old key), 0014} → 0001's current key ≠ old key → 1 vote → pending
+        ("approve", owner3_id, approve_of(p29k), t0 + 29000),
+        ("approve", owner2_id, approve_of(p25k), t0 + 30000),
     ])
     rekeyed_owner_keys = {
         "user-owner-0001": {
@@ -3092,22 +2632,16 @@ def gen_chain_entries():
         24, readded + [revote], members_24_without_devmember, canonical_policy, {},
         keys=rekeyed_owner_keys,
     )
-    # (7d) The flip side of ⑤ — on re-addition with the same key
-    #      (allowed by §6.2 as 'the same person returning') the key's
-    #      controller does not change, so the old vote stays alive
-    #      (the pin for the side that did NOT adopt membership-interval
-    #      [tenure] binding. pullfrog round 1 — the option not taken is
-    #      on design record §8 K2-11 ⑤)
     readd_owner1_same_key = propose_payload("add_member", {
         "target_user_id": owner_id, "enc_pub_hex": owner["enc_pub_hex"],
         "sig_pub_hex": owner["sig_pub_hex"], "role": "owner", **scope_fields("all", []),
     }, EXPIRES)
     same_key = readded[:4] + extend(28, readded[3]["entry_hash_hex"], [
-        ("propose", owner2_id, readd_owner1_same_key, t0 + 28000),               # 29: proposal to re-add as owner with the same key
+        ("propose", owner2_id, readd_owner1_same_key, t0 + 28000),
     ])
     p29s = same_key[-1]
     same_key += extend(29, p29s["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p29s), t0 + 29000),                    # 30: applies — owner-0001 is owner with the same key
+        ("approve", owner3_id, approve_of(p29s), t0 + 29000),
     ])
     extended_chains["readded-approver-same-key"] = chain_doc(
         "On the same path as readded-approver-vote, owner-0001 is "
@@ -3123,7 +2657,7 @@ def gen_chain_entries():
         pending_map((p25k, "admin", [owner_id])),
     )
     same_key_completed = same_key + extend(30, same_key[-1]["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p25k), t0 + 30000),                    # 31: {0001 (same key, current owner), 0014} = 2 → applies
+        ("approve", owner2_id, approve_of(p25k), t0 + 30000),
     ])
     extended_chains["readded-approver-same-key-completed"] = chain_doc(
         "owner-0014 votes past readded-approver-same-key (seq 31) and, "
@@ -3139,16 +2673,14 @@ def gen_chain_entries():
         "a second vote by a voter re-added with the same key: (0001, key) is still an element of S, so duplicate-approval (contrast with readded-approver-revote, re-added with different keys)",
         chain="readded-approver-same-key",
     )
-    # (8) Policy narrowing (dropping remove_member from ops) vs a
-    #     pending proposal
     NARROW_OPS = ["grant_server", "set_approval_policy"]
     narrowed = extend(23, head23, [
-        ("approve", owner2_id, approve_of(p23), T23),                            # 24: 1 vote on proposal 23
-        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(NARROW_OPS, 2), EXPIRES), t0 + 24000),  # 25
+        ("approve", owner2_id, approve_of(p23), T23),
+        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(NARROW_OPS, 2), EXPIRES), t0 + 24000),
     ])
     p25n = narrowed[1]
     narrowed += extend(25, p25n["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p25n), t0 + 25000),                    # 26: applies — policy narrowed
+        ("approve", owner3_id, approve_of(p25n), t0 + 25000),
     ])
     narrowed_policy = policy_state(NARROW_OPS, 2)
     extended_chains["policy-narrowed"] = chain_doc(
@@ -3185,10 +2717,8 @@ def gen_chain_entries():
         "a propose for an op that is non-targeted under the narrowed policy is invalid (the direct-append path is open)",
         chain="policy-narrowed",
     )
-    # (9) A required-3 policy (head 19 = 3 owners): the reachability
-    #     invariant
     required3 = extend(19, head19, [
-        ("set_approval_policy", owner_id, policy_payload(["grant_server"], 3), T19),  # 20
+        ("set_approval_policy", owner_id, policy_payload(["grant_server"], 3), T19),
     ])
     extended_chains["policy-required-3"] = chain_doc(
         "A derived chain enabling a policy ops = {grant_server} / "
@@ -3212,14 +2742,12 @@ def gen_chain_entries():
         "a change_role from owner to another role that drops the owner count below required is likewise invalid (the check sits at the end of change_role's column)",
         chain="policy-required-3",
     )
-    # (10) Turning the policy off (required 0) also requires four-eyes.
-    #      After it is off, propose is invalid
     off = extend(24, head24, [
-        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload([], 0), EXPIRES), T24),  # 25
+        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload([], 0), EXPIRES), T24),
     ])
     p25o = off[0]
     off += extend(25, p25o["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p25o), t0 + 25000),                    # 26: applies — off
+        ("approve", owner2_id, approve_of(p25o), t0 + 25000),
     ])
     extended_chains["policy-off"] = chain_doc(
         "A derived chain that turns the policy off via proposal "
@@ -3235,21 +2763,15 @@ def gen_chain_entries():
         "a propose after the policy is off is invalid (approval-not-required)",
         chain="policy-off",
     )
-    # (11) Applied server-grant proposals (2026-10-07 — convention 32):
-    #      grant_server and revoke_server each applied through a proposal
-    #      that reaches quorum. Head 24 has no active grant (seq 9's grant
-    #      was revoked at seq 12) and its policy targets grant_server but
-    #      not revoke_server, so widening the policy to revoke_server is
-    #      itself a four-eyes application (policy monotonicity (a))
     REVOKE_POLICY_OPS = ["change_role", "grant_server", "remove_member", "revoke_server",
                          "set_approval_policy"]
     revoke_server_payload = {"server_key_fingerprint_hex": server["fp_hex"]}
     grant_applied = extend(24, head24, [
-        ("propose", owner_id, propose_payload("grant_server", grant_payload, EXPIRES), T24),  # 25: votes [0001]
+        ("propose", owner_id, propose_payload("grant_server", grant_payload, EXPIRES), T24),
     ])
     p25g = grant_applied[0]
     grant_applied += extend(25, p25g["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p25g), t0 + 25000),                    # 26: applies — grant active
+        ("approve", owner2_id, approve_of(p25g), t0 + 25000),
     ])
     extended_chains["proposal-grant-server-applied"] = chain_doc(
         "owner-0001 proposes grant_server (seq 25 — the seq-9 server key "
@@ -3271,16 +2793,16 @@ def gen_chain_entries():
         chain="proposal-grant-server-applied",
     )
     revoke_applied = list(grant_applied) + extend(26, grant_applied[-1]["entry_hash_hex"], [
-        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(REVOKE_POLICY_OPS, 2), EXPIRES), t0 + 26000),  # 27
+        ("propose", owner_id, propose_payload("set_approval_policy", policy_payload(REVOKE_POLICY_OPS, 2), EXPIRES), t0 + 26000),
     ])
     p27r = revoke_applied[-1]
     revoke_applied += extend(27, p27r["entry_hash_hex"], [
-        ("approve", owner3_id, approve_of(p27r), t0 + 27000),                    # 28: applies — revoke_server targeted
-        ("propose", owner_id, propose_payload("revoke_server", revoke_server_payload, EXPIRES), t0 + 28000),  # 29
+        ("approve", owner3_id, approve_of(p27r), t0 + 27000),
+        ("propose", owner_id, propose_payload("revoke_server", revoke_server_payload, EXPIRES), t0 + 28000),
     ])
     p29r = revoke_applied[-1]
     revoke_applied += extend(29, p29r["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(p29r), t0 + 29000),                    # 30: applies — grant gone
+        ("approve", owner2_id, approve_of(p29r), t0 + 29000),
     ])
     extended_chains["proposal-revoke-server-applied"] = chain_doc(
         "Continues proposal-grant-server-applied (the grant is active from "
@@ -3302,14 +2824,6 @@ def gen_chain_entries():
         chain="proposal-revoke-server-applied",
     )
 
-    # (12) Key uniqueness through four-eyes (2026-10-25 — CRYPTO_SPEC
-    #      0.22-draft §6.2): a grant applied by an approve names its key
-    #      at the approve's seq, and a pending proposal names none.
-    #      other-server's key (seed 0x9C) is granted only through a
-    #      proposal. owner-0001 first proposes adding user-sock-0006 as an
-    #      owner with that key (an owner-establishing add_member is always
-    #      a four-eyes target), then proposes the grant, and owner-0014's
-    #      approve applies the grant at seq 27
     other_server = make_server(pat(0x9C, 32))
     other_grant_payload = {
         "server_enc_pub_hex": other_server["enc_pub_hex"],
@@ -3321,9 +2835,9 @@ def gen_chain_entries():
     }
     keyed = extend(24, head24, [
         ("propose", owner_id, propose_payload("add_member", server_key_holder_payload(
-            other_server["enc_pub_hex"], "owner"), EXPIRES), T24),                    # 25: votes [0001]
+            other_server["enc_pub_hex"], "owner"), EXPIRES), T24),
         ("propose", owner_id, propose_payload("grant_server", other_grant_payload, EXPIRES),
-         t0 + 25000),                                                                  # 26: votes [0001]
+         t0 + 25000),
     ])
     uniq_member_proposal, uniq_grant_proposal = keyed
     extended_chains["server-key-grant-pending"] = chain_doc(
@@ -3339,7 +2853,7 @@ def gen_chain_entries():
         expected_server_grants=[],
     )
     keyed_applied = keyed + extend(26, uniq_grant_proposal["entry_hash_hex"], [
-        ("approve", owner2_id, approve_of(uniq_grant_proposal), t0 + 26000),      # 27: applies — the key is named
+        ("approve", owner2_id, approve_of(uniq_grant_proposal), t0 + 26000),
     ])
     keyed_head = keyed_applied[-1]["entry_hash_hex"]
     extended_chains["server-key-grant-approved"] = chain_doc(
@@ -3370,8 +2884,6 @@ def gen_chain_entries():
         chain="server-key-grant-approved",
     )
 
-    # --- The permissive side (valid_appends). Cases with a chain
-    #     specifier attach to the tail of that derived chain ---
     def append_case(name, seq, prev_hex, op, actor_id, payload, ts, members, note,
                     policy="canonical", pending=None, chain=None, environments=None,
                     checkpoints=None):
@@ -3543,13 +3055,9 @@ def gen_chain_entries():
         ),
     ]
 
-    # (13) The mirror of authz-approve-add-member-key-named-after-proposal:
-    #      a grant proposed while its key is free, completed after a device
-    #      took the key. The registration is the positive
-    #      register-key-of-pending-grant-proposal's entry, byte for byte
     registered = keyed + extend(26, keyed[-1]["entry_hash_hex"], [
         ("add_member", owner_id, server_key_holder_payload(other_server["enc_pub_hex"]),
-         t0 + 26000),                                                                  # 27: the key is a current device's
+         t0 + 26000),
     ])
     extended_chains["server-key-registered-before-grant"] = chain_doc(
         "Continues server-key-grant-pending with the entry of the positive "
@@ -3571,13 +3079,8 @@ def gen_chain_entries():
         chain="server-key-registered-before-grant",
     )
 
-    # (14) The returning member under the grant clause: the first clause
-    #      lets a removed member back with its own keys
-    #      (readd-removed-member-same-key), but a grant that named the enc
-    #      key since keeps it out. The grant is the positive
-    #      grant-key-of-removed-member's entry, byte for byte
     regranted = extend(12, head12, [
-        ("grant_server", owner_id, removed_member_grant, t0 + 12000),            # 13: user-member-0002's enc key is named
+        ("grant_server", owner_id, removed_member_grant, t0 + 12000),
     ])
     extended_chains["removed-member-key-granted"] = chain_doc(
         "Appends the entry of the positive grant-key-of-removed-member to "
@@ -3600,42 +3103,15 @@ def gen_chain_entries():
 
     negatives += authz_cases[es_start:]
 
-    # =========================================================================
-    # DK (2026-09-20 K2 — CRYPTO_SPEC 0.12-draft §6.2 / §11): positive and
-    # negative cases for the 2 device-key ops `add_device` /
-    # `revoke_device`. **The canonical chain seq 1–24 does not change one
-    # byte**: DK's positive column is a derived chain at seq 25–37
-    # (extended_chains — the same 'extend-by-append' form as convention
-    # 19's `checkpoint` op. The device-axis cases of value / meta /
-    # manifest / attestation point at this derived chain's head with
-    # `chain: "device-ops"`). For negatives that need intermediate heads
-    # (29 / 33 / 34 / 36), prefixes of the same column are overlaid as
-    # independent derived chains (the entries' bytes are identical —
-    # design record dk-design.md §7 K2-10).
-    #
-    # Device casting (cap = (role_cap, scope) — the picture in design
-    # record §1-2):
-    #   owner-0001: D1 (the first key — structurally (owner, all)) /
-    #     R = reserve key (owner, all) [being a reserve key is a CLI
-    #     discipline — on the chain it is an ordinary device key] /
-    #     P = phone (owner, listed{}) = a vote-only device / D1n = the
-    #     new device re-registered with the reserve key (owner, all)
-    #   allmember-0013 (member, all): C = CI box (member, listed{dev,
-    #     stage}) → effective (member, {dev, stage})
-    #   owner-0014: D14b = 2nd device (owner, all) (self-revokes after
-    #     casting a vote → the vote is not counted)
-    #   owner-0015: L = a device with cap (reader, all) (cannot approve,
-    #     cannot write values)
-    # =========================================================================
     dk_start = len(authz_cases)
-    reserve = make_user(pat(0x5A, 32), pat(0x6A, 32))       # owner-0001's reserve key R
-    phone = make_user(pat(0x5B, 32), pat(0x6B, 32))         # owner-0001's phone P
-    cibox = make_user(pat(0x5C, 32), pat(0x6C, 32))         # allmember-0013's CI box C
-    owner2_second = make_user(pat(0x5D, 32), pat(0x6D, 32))  # owner-0014's 2nd device D14b
-    owner3_readercap = make_user(pat(0x5E, 32), pat(0x6E, 32))  # owner-0015's cap-reader device L
-    recovered = make_user(pat(0x5F, 32), pat(0x6F, 32))     # owner-0001's new device after recovery, D1n
-    reader_second = make_user(pat(0x59, 32), pat(0x69, 32))  # prodreader-0012's 2nd device
-    fresh_device = make_user(pat(0x58, 32), pat(0x68, 32))   # unused device key (material for the permissive side / negatives)
+    reserve = make_user(pat(0x5A, 32), pat(0x6A, 32))
+    phone = make_user(pat(0x5B, 32), pat(0x6B, 32))
+    cibox = make_user(pat(0x5C, 32), pat(0x6C, 32))
+    owner2_second = make_user(pat(0x5D, 32), pat(0x6D, 32))
+    owner3_readercap = make_user(pat(0x5E, 32), pat(0x6E, 32))
+    recovered = make_user(pat(0x5F, 32), pat(0x6F, 32))
+    reader_second = make_user(pat(0x59, 32), pat(0x69, 32))
+    fresh_device = make_user(pat(0x58, 32), pat(0x68, 32))
 
     def device_payload(dev: dict, role_cap: str, kind: str = "all",
                        environment_ids: list | None = None) -> dict:
@@ -3647,13 +3123,9 @@ def gen_chain_entries():
         }
 
     def revoke_payload(target_id: str, fps: list) -> dict:
-        # device_fingerprints_lp_hex = hex of the nested LP of the FP
-        # (lowercase hex 32) list (same form as scope. The order is
-        # signed — generators SHOULD emit ascending, verifiers treat it
-        # as a set)
         return {
             "target_user_id": target_id,
-            "device_fingerprints": list(fps),  # plaintext representation for readability (the normalized target is *_lp_hex)
+            "device_fingerprints": list(fps),
             "device_fingerprints_lp_hex": lp_encode(list(fps)).hex(),
         }
 
@@ -3665,7 +3137,6 @@ def gen_chain_entries():
         return {"role_cap": role_cap, "scope": scope, "added_seq": added_seq}
 
     def first_device(user: dict, added_seq: int) -> dict:
-        # the first key of genesis / add_member is structurally cap (owner, all) (§6.2)
         return {user["fp_hex"]: device_state(user, "owner", "all", None, added_seq)}
 
     def member_state_dk(role: str, kind: str, environment_ids: list | None, devices: dict) -> dict:
@@ -3688,27 +3159,26 @@ def gen_chain_entries():
             prev = entry["entry_hash_hex"]
         return out
 
-    # --- Positive column seq 25–37 ---
     dk_entries = extend_dk(24, head24, [
-        ("add_device", owner_id, owner, device_payload(reserve, "owner")),                       # 25 reserve key R
-        ("add_device", owner_id, owner, device_payload(phone, "owner", "listed", [])),            # 26 phone P
-        ("add_device", allmember_id, allmember, device_payload(cibox, "member", "listed", [DEV, STAGE])),  # 27 CI box C
-        ("add_device", owner2_id, owner2, device_payload(owner2_second, "owner")),               # 28 2nd device D14b
-        ("add_device", owner3_id, owner3, device_payload(owner3_readercap, "reader")),           # 29 cap-reader device L
+        ("add_device", owner_id, owner, device_payload(reserve, "owner")),
+        ("add_device", owner_id, owner, device_payload(phone, "owner", "listed", [])),
+        ("add_device", allmember_id, allmember, device_payload(cibox, "member", "listed", [DEV, STAGE])),
+        ("add_device", owner2_id, owner2, device_payload(owner2_second, "owner")),
+        ("add_device", owner3_id, owner3, device_payload(owner3_readercap, "reader")),
     ])
     p30_payload = propose_payload("remove_member", remove_devmember, EXPIRES)
     dk_entries += extend_dk(29, dk_entries[-1]["entry_hash_hex"], [
-        ("propose", devadmin_id, devadmin, p30_payload),                                         # 30 proposal (votes 0)
+        ("propose", devadmin_id, devadmin, p30_payload),
     ])
     p30 = dk_entries[-1]
     dk_entries += extend_dk(30, p30["entry_hash_hex"], [
-        ("approve", owner2_id, owner2_second, approve_of(p30)),                                  # 31 D14b's vote
-        ("revoke_device", owner2_id, owner2, revoke_payload(owner2_id, [owner2_second["fp_hex"]])),  # 32 self-revocation
-        ("approve", owner_id, phone, approve_of(p30)),                                           # 33 the phone's vote (D14b's vote is dead → incomplete)
-        ("approve", owner2_id, owner2, approve_of(p30)),                                         # 34 re-vote from another device → completes (devmember removed)
-        ("revoke_device", owner_id, owner, revoke_payload(owner_id, sorted([owner["fp_hex"], phone["fp_hex"]]))),  # 35 bulk + the signing device
-        ("add_device", owner_id, reserve, device_payload(recovered, "owner")),                   # 36 register a new device with the reserve key
-        ("revoke_device", admin_id, admin, revoke_payload(allmember_id, [cibox["fp_hex"]])),     # 37 an admin revokes someone else's device
+        ("approve", owner2_id, owner2_second, approve_of(p30)),
+        ("revoke_device", owner2_id, owner2, revoke_payload(owner2_id, [owner2_second["fp_hex"]])),
+        ("approve", owner_id, phone, approve_of(p30)),
+        ("approve", owner2_id, owner2, approve_of(p30)),
+        ("revoke_device", owner_id, owner, revoke_payload(owner_id, sorted([owner["fp_hex"], phone["fp_hex"]]))),
+        ("add_device", owner_id, reserve, device_payload(recovered, "owner")),
+        ("revoke_device", admin_id, admin, revoke_payload(allmember_id, [cibox["fp_hex"]])),
     ])
     assert [e["seq"] for e in dk_entries] == list(range(25, 38))
     dk_at = {e["seq"]: e for e in dk_entries}
@@ -3718,12 +3188,6 @@ def gen_chain_entries():
     def dk_prefix(upto: int) -> list:
         return [e for e in dk_entries if e["seq"] <= upto]
 
-    # --- Derived state (with devices) ---
-    # Devices live in members[user_id].devices as FP → {role_cap,
-    # scope, added_seq} (a scope representation 1:1 with the payload's
-    # 2 fields). An existing state that omits `devices` means 'one
-    # first key = cap (owner, all)' (do not change the bytes of
-    # existing vectors — design record §7 K2-1)
     def base_devices(members: dict) -> dict:
         added = {owner_id: 1, admin_id: 6, devmember_id: 13, devadmin_id: 14,
                  prodreader_id: 15, allmember_id: 16, owner2_id: 18, owner3_id: 19}
@@ -3814,7 +3278,6 @@ def gen_chain_entries():
     for name, (upto, members, policy, pending, description) in dk_chain_docs.items():
         extended_chains[name] = chain_doc(description, 24, dk_prefix(upto), members, policy, pending)
 
-    # (a) A reader adds its own device (role-agnostic — readers allowed)
     reader_add = extend_dk(37, dk_head[37], [
         ("add_device", prodreader_id, prodreader,
          device_payload(reader_second, "reader", "listed", [PROD])),
@@ -3842,15 +3305,14 @@ def gen_chain_entries():
     )
     reader_head = reader_add[-1]["entry_hash_hex"]
 
-    # (b) Revoking the proposing device → proposal-void at quorum
     void_steps = extend_dk(37, dk_head[37], [
         ("propose", owner_id, recovered,
-         propose_payload("remove_member", {"target_user_id": prodreader_id}, EXPIRES)),          # 38 owner's proposal (1 vote: (0001, D1n))
+         propose_payload("remove_member", {"target_user_id": prodreader_id}, EXPIRES)),
     ])
     p38 = void_steps[-1]
     void_steps += extend_dk(38, p38["entry_hash_hex"], [
-        ("revoke_device", owner_id, reserve, revoke_payload(owner_id, [recovered["fp_hex"]])),   # 39 revoke the proposing device D1n with the reserve key
-        ("approve", owner2_id, owner2, approve_of(p38)),                                         # 40 alive votes = just (0014)'s 1 vote → pending
+        ("revoke_device", owner_id, reserve, revoke_payload(owner_id, [recovered["fp_hex"]])),
+        ("approve", owner2_id, owner2, approve_of(p38)),
     ])
     members_void = without_device(members_37, owner_id, recovered["fp_hex"])
     extended_chains["proposer-device-revoked"] = chain_doc(
@@ -3867,8 +3329,6 @@ def gen_chain_entries():
     )
     void_head = void_steps[-1]["entry_hash_hex"]
 
-    # --- Signature negatives (tampering / reordering — device-op
-    #     fields are signed) ---
     e25 = dk_at[25]
     e27 = dk_at[27]
     e35 = dk_at[35]
@@ -3924,9 +3384,6 @@ def gen_chain_entries():
         ),
     ]
 
-    # --- Authorization negatives (check-stage order: structure → actor
-    #     → signature → authorization. Reason codes per §6.2 'device
-    #     keys' check order) ---
     dk_cases = []
 
     def add_dk(name, seq, prev_hex, op, actor_id, actor_keys, payload, expected_reason, note,
@@ -3938,8 +3395,6 @@ def gen_chain_entries():
         authz_cases.append(case)
         dk_cases.append(name)
 
-    # Structure (invalid-payload). actor = owner-0001's new device D1n
-    # (head 37)
     add_dk("add-device-role-cap-unknown", 38, dk_head[37], "add_device", owner_id, recovered,
            dict(device_payload(fresh_device, "owner"), role_cap="superuser"), "invalid-payload",
            "role_cap is the closed set {reader, member, admin, owner}. Anything else is rejected at the structural stage")
@@ -3977,8 +3432,6 @@ def gen_chain_entries():
            policy_payload(["revoke_device"], 2), "invalid-payload",
            "same as above (revoke_device)")
 
-    # add_device authorization: actor rule → duplicate-member-key →
-    # unknown-environment → device-cap-exceeded
     add_dk("authz-add-device-nonmember-actor", 38, dk_head[37], "add_device", devmember_id, devmember,
            device_payload(fresh_device, "reader", "listed", [DEV]), "actor-not-member",
            "devmember, removed at seq 34, cannot append to the chain (adding a device is the same — a removed member's key is not a current member's device)")
@@ -4040,9 +3493,6 @@ def gen_chain_entries():
            device_payload(fresh_device, "owner", "listed", [GHOST]), "unknown-environment",
            "an unknown-environment × cap-exceeded (a reader's device creating an owner) compound violation is judged as unknown-environment first (add_device: unknown-environment → device-cap-exceeded)")
 
-    # revoke_device authorization: unknown-target → unknown-device →
-    # target-dependent role rule → last-device-protected →
-    # scope-not-contained (others only)
     add_dk("authz-revoke-device-unknown-target", 38, dk_head[37], "revoke_device", owner_id, recovered,
            revoke_payload("user-ghost-9999", [reserve["fp_hex"]]), "unknown-target",
            "if the target user_id is not a current member, unknown-target (a removed member's devices cannot be revoked either — the devices already ended with remove_member)")
@@ -4087,9 +3537,6 @@ def gen_chain_entries():
            revoke_payload(owner_id, [reserve["fp_hex"]]), "actor-key-mismatch",
            "a revocation entry by phone P, revoked at seq 35, is actor-key-mismatch (a revoked device cannot revoke other devices)")
 
-    # Effective-authority substitution — the chain ops' role, containment,
-    # and environment-target checks (§1 principle 7: the signing device's
-    # effective authority)
     add_dk("authz-rotate-by-reader-cap-device", 38, dk_head[37], "rotate_epoch", owner3_id, owner3_readercap,
            rotate_payload(PROD, 3), "insufficient-role",
            "role: the effective role of owner-0015's cap-(reader, all) device L is min(owner, reader) = reader. rotate_epoch (member or above) is rejected")
@@ -4121,7 +3568,6 @@ def gen_chain_entries():
            "environment-targeted op: a checkpoint containing a tuple for an environment outside the device's effective scope is rejected",
            chain="device-recovered")
 
-    # Four-eyes votes × devices (the device vocabulary of §6.2 approve)
     add_dk("authz-approve-revoked-device", 34, dk_head[33], "approve", owner2_id, owner2_second,
            approve_of(p30), "actor-key-mismatch",
            "an approve by revoked device D14b (seq 32) is actor-key-mismatch (a revoked device cannot cast a vote, and votes already cast are not counted — device-dead-vote)",
@@ -4150,7 +3596,6 @@ def gen_chain_entries():
 
     negatives += authz_cases[dk_start:]
 
-    # --- The permissive side (valid_appends) ---
     def dk_append(name, seq, prev_hex, op, actor_id, actor_keys, payload, members, note,
                   chain="device-ops", pending=None, environments=None):
         case = {
@@ -4213,21 +3658,6 @@ def gen_chain_entries():
     ]
     valid_appends[-2]["expected_checkpoints"] = {DEV: expected_checkpoint(37, dev_scoped_checkpoint)}
 
-    # =========================================================================
-    # Environment deletion on the chain (2026-10-07 — CRYPTO_SPEC
-    # 0.17-draft §6.2 `delete_environment`). The canonical chain and every
-    # existing vector are untouched: the new op appears only in valid
-    # appends, two derived chains, and negatives.
-    #   - payload = [environment_id]; admin or above, the environment in the
-    #     actor's effective scope; only after create_environment
-    #     (unknown-environment), at most once (environment-deleted)
-    #   - no later entry may name a deleted environment (environment-deleted
-    #     right after unknown-environment; grant_server: after the FP
-    #     self-consistency, before the re-grant rule); reusing the id stays
-    #     duplicate-environment
-    #   - the state keeps the environment (deleted_at_seq) and prunes the id
-    #     from every listed member / device / grant scope
-    # =========================================================================
     del_start = len(authz_cases)
     head2 = entries[1]["entry_hash_hex"]
 
@@ -4255,12 +3685,9 @@ def gen_chain_entries():
             out[uid] = next_state
         return out
 
-    # --- The derived chain environment-deleted (base 19, policy off): the
-    #     dev-dedicated admin deletes env-stage-0003 (in its listed scope);
-    #     devmember's and devadmin's listed scopes lose the id ---
     T20 = t0 + 20000
     deleted_steps = extend(19, head19, [
-        ("delete_environment", devadmin_id, delete_payload(STAGE), T19),   # 20
+        ("delete_environment", devadmin_id, delete_payload(STAGE), T19),
     ])
     deleted_head = deleted_steps[-1]["entry_hash_hex"]
     members_20_deleted = pruned_members(members_19, STAGE)
@@ -4280,11 +3707,8 @@ def gen_chain_entries():
         expected_server_grants=[],
     )
 
-    # --- The derived chain environment-deleted-granted (base 9 — the grant
-    #     of seq 9 is active with scope {prod, dev}): admin-0003 deletes
-    #     env-dev-0002 at seq 10, and the grant's scope loses the id ---
     granted_steps = extend(9, head9, [
-        ("delete_environment", admin_id, delete_payload(DEV), t0 + 9000),   # 10
+        ("delete_environment", admin_id, delete_payload(DEV), t0 + 9000),
     ])
     granted_head = granted_steps[-1]["entry_hash_hex"]
     granted_environments = {PROD: "2", DEV: "1"}
@@ -4301,7 +3725,6 @@ def gen_chain_entries():
         expected_server_grants=[grant_state([PROD], grant_lease_policy, 9)],
     )
 
-    # --- The permissive side (valid_appends) ---
     valid_appends += [
         {
             "name": "delete-environment-by-admin",
@@ -4349,8 +3772,6 @@ def gen_chain_entries():
     valid_appends[-2]["expected_deleted_environments"] = {DEV: 25}
     valid_appends[-1]["expected_deleted_environments"] = {STAGE: 30}
 
-    # --- Authorization negatives (the signature is valid) ---
-    # Wrong role
     add_es(
         "authz-delete-env-member", 20, head19, "delete_environment", allmember_id,
         delete_payload(STAGE), T19, "insufficient-role",
@@ -4361,13 +3782,11 @@ def gen_chain_entries():
         delete_payload(PROD), T19, "insufficient-role",
         "a reader cannot delete even an environment in its own scope",
     )
-    # Out of scope
     add_es(
         "authz-delete-env-out-of-scope", 20, head19, "delete_environment", devadmin_id,
         delete_payload(PROD), T19, "environment-out-of-scope",
         "the dev-dedicated admin (listed{dev, stage}) cannot delete env-prod-0001, which is outside its scope (environment-targeted ops — §6.2)",
     )
-    # Delete before create
     add_es(
         "authz-delete-env-before-create", 3, head2, "delete_environment", owner_id,
         delete_payload(PROD), t0 + 2000, "unknown-environment",
@@ -4378,7 +3797,6 @@ def gen_chain_entries():
         delete_payload(GHOST), t0 + 12000, "unknown-environment",
         "deleting an id no create_environment ever named is unknown-environment",
     )
-    # Precedence pins on the deletion itself
     add_es(
         "authz-delete-env-role-precedes-unknown", 20, head19, "delete_environment", allmember_id,
         delete_payload(GHOST), T19, "insufficient-role",
@@ -4389,7 +3807,6 @@ def gen_chain_entries():
         delete_payload(GHOST), T19, "unknown-environment",
         "an unknown-environment × out-of-scope compound violation is judged as unknown-environment first (delete_environment: unknown-environment → environment-deleted → environment-out-of-scope)",
     )
-    # Structure (invalid-payload precedes authorization)
     add_es(
         "delete-env-id-empty", 13, head12, "delete_environment", admin_id,
         delete_payload(""), t0 + 12000, "invalid-payload",
@@ -4400,7 +3817,6 @@ def gen_chain_entries():
         delete_payload(""), T19, "invalid-payload",
         "a structure violation × insufficient-role compound violation is judged by the structure check first (check-stage order: structure → authorization)",
     )
-    # Four-eyes exclusion
     add_es(
         "authz-propose-delete-env-not-required", 25, head24, "propose", owner_id,
         propose_payload("delete_environment", delete_payload(DEV), EXPIRES), T24, "approval-not-required",
@@ -4411,7 +3827,6 @@ def gen_chain_entries():
         policy_payload(["delete_environment"], 2), T19, "invalid-payload",
         "ops cannot name delete_environment (it is outside the closed set of targetable ops — §6.2). Rejected at the structural stage",
     )
-    # References after the deletion (chain environment-deleted, seq 21)
     ON_DELETED = {"chain": "environment-deleted"}
     add_es(
         "authz-delete-env-twice", 21, deleted_head, "delete_environment", admin_id,
@@ -4498,7 +3913,6 @@ def gen_chain_entries():
         "an add_device whose scope names a deleted environment is environment-deleted",
         **ON_DELETED,
     )
-    # grant_server references (chain environment-deleted-granted, seq 11)
     ON_GRANTED = {"chain": "environment-deleted-granted"}
     add_es(
         "authz-grant-scope-deleted-environment", 11, granted_head, "grant_server", owner_id,
@@ -4518,11 +3932,6 @@ def gen_chain_entries():
         "a re-grant naming only the deleted id (which also drops prod — a narrowing) is judged as environment-deleted before the re-grant rule",
         **ON_GRANTED,
     )
-    # environment-deleted → duplicate-server-key, pinned on a key's first
-    # grant (§6.2 key uniqueness: the re-grant rule and key duplication
-    # never co-occur, so the old transitive pin through
-    # authz-grant-narrowed-precedes-duplicate-key is gone): admin-0003's
-    # enc key as the server key, naming the deleted env-stage-0003
     add_es(
         "authz-grant-deleted-precedes-duplicate-server-key", 21, deleted_head, "grant_server", owner_id,
         duplicate_key_payload([STAGE], []), T20, "environment-deleted",
@@ -4531,7 +3940,6 @@ def gen_chain_entries():
     )
     negatives += authz_cases[del_start:]
 
-    # --- Signature negatives (based on chain environment-deleted's seq 20) ---
     e_delete = deleted_steps[0]
     tampered_delete = resign_actor(
         "delete-env-tampered-environment-id", e_delete, delete_payload(DEV),
@@ -4540,11 +3948,6 @@ def gen_chain_entries():
     tampered_delete["chain"] = "environment-deleted"
 
     def relabeled(name, base_entry, *, op=None, entry_suite=None, note):
-        # The original signature verified over signed_bytes whose op label
-        # (or suite) is swapped and whose payload bytes are kept → must
-        # fail. remove_member's payload is also [one id], so the op label
-        # is the only thing separating the two (the chain's domain
-        # separation — §6.1 / §6.2)
         signed = lp_encode([
             entry_suite or suite, base_entry["seq"], base_entry["prev_hash_hex"],
             op or base_entry["op"], base_entry["actor"]["user_id"],
@@ -4620,18 +4023,12 @@ def gen_chain_entries():
                 owner_id: key_record(owner, 0x10, 0x20),
                 member_id: key_record(member, 0x30, 0x40),
                 admin_id: key_record(admin, 0x50, 0x60),
-                # members added on 2026-09-14 ES / PF1 (seq 13–19)
                 devmember_id: key_record(devmember, 0x3A, 0x4A),
                 devadmin_id: key_record(devadmin, 0x3B, 0x4B),
                 prodreader_id: key_record(prodreader, 0x3C, 0x4C),
                 allmember_id: key_record(allmember, 0x3D, 0x4D),
                 owner2_id: key_record(owner2, 0x3E, 0x4E),
                 owner3_id: key_record(owner3, 0x3F, 0x4F),
-                # 2026-09-20 DK: device keys (the devices added in seq
-                # 25–36 of the device-ops derived chain). Keys are
-                # "<user_id>@<label>" with user_id / label spelled out.
-                # A verifier picks the key by the actor's (user_id, FP)
-                # (the FP points at the device — §1 principle 7)
                 **{
                     label_key: {"user_id": uid, "label": label, **key_record(dev, enc_p, sig_p)}
                     for label_key, (label, uid, dev, enc_p, sig_p) in device_keys.items()
@@ -4642,12 +4039,6 @@ def gen_chain_entries():
                 "enc_pub_hex": server["enc_pub_hex"],
                 "key_fingerprint_hex": server["fp_hex"],
             },
-            # The dummy DEK and §5.2 commitment of each (environment,
-            # epoch). The dek_commitment_hex of chain payloads is the
-            # real value computed from here, so an implementation test
-            # can check as far as the §5.2 comparison 'DEK → recompute
-            # the commitment → matches the value published on the
-            # chain' (the negatives are on the dek-commitment.json side)
             "environment_deks": {
                 environment_id: {
                     str(epoch): {
@@ -4665,31 +4056,11 @@ def gen_chain_entries():
             "valid_appends": valid_appends,
             "extended_chains": extended_chains,
             "negative": negatives,
-            # unit vectors for the canonical form of checkpoint's
-            # values_digest (§6.2 — PR-F3a)
             "values_digests": values_digests,
         },
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.5 dek-wrap-signature.json — the §5.1 DEK-wrap registration signature
-#     (Ed25519 + §2.1 LP)
-#
-# signed_bytes = LP(domain, project_id, environment_id, epoch, recipient_user_id,
-#                   recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id)
-#   domain = "<suite>/dek-wrap-sig" (suite binding is carried by the
-#   domain string — same form as the §5 info)
-#   binary fields (recipient enc public key / HPKE enc / wrap ciphertext)
-#   go into LP as lowercase hex strings, same as grant_server's
-#   scope_environments
-#   signer_user_id is the signer's own internal user_id (since the chain
-#   allows multiple members with the same key, this prevents a key-reuse
-#   from relabeling attribution — §5.1)
-# The wrap body (enc/ct/recipient key) is read from dek-wrap.json's
-# basic vector (so the wrap → registration signature becomes one run of
-# concrete data). Signers are the same dummy keys as chain-entries.json's
-# user-owner-0001 / user-member-0002
 
 SIGNED_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "epoch", "recipient_user_id",
@@ -4710,8 +4081,8 @@ def gen_dek_wrap_signature():
         dek_wrap = json.load(fh)
     wrap = dek_wrap["vectors"][0]
 
-    owner = make_user(pat(0x10, 32), pat(0x20, 32))     # = chain-entries user-owner-0001
-    member = make_user(pat(0x30, 32), pat(0x40, 32))    # = chain-entries user-member-0002
+    owner = make_user(pat(0x10, 32), pat(0x20, 32))
+    member = make_user(pat(0x30, 32), pat(0x40, 32))
 
     base_ctx = {
         "suite": "maruhi/v1",
@@ -4736,9 +4107,6 @@ def gen_dek_wrap_signature():
     tampered_sig[-1] ^= 0x01
 
     def negative(name, overrides, verify_key_hex, note, signature=None):
-        # rebuild signed_bytes with overrides applied and verify the
-        # 'original signature' (the given signature when signature is
-        # passed) → it should fail
         ctx = dict(base_ctx, **overrides)
         return {
             "name": name,
@@ -4821,14 +4189,6 @@ def gen_dek_wrap_signature():
         ),
     ]
 
-    # --- Recipient class server (CRYPTO_SPEC §9 / AUTH_SPEC §12-6.
-    #     2026-08-12) ---
-    # Registration signature of a server-bound wrap: the
-    # recipient_user_id position in signed_bytes takes the server key
-    # FP (lowercase hex) (the same substitution as HPKE info — §9).
-    # recipient_enc_pub_hex is the server's enc public key. The wrap
-    # body is identical to dek-wrap.json's server-basic vector (wrap →
-    # registration signature becomes one run of concrete data)
     server_wrap = next(v for v in dek_wrap["vectors"] if v["name"] == "server-basic")
     server_ctx = {
         "suite": "maruhi/v1",
@@ -4883,10 +4243,6 @@ def gen_dek_wrap_signature():
     write(
         "dek-wrap-signature.json",
         {
-            # signer_user_id was missing from description's LP
-            # enumeration (signed_fields_order was correct from the
-            # start). Fixed in PR-2 per session-12 §13's handoff
-            # (2026-08-04)
             "description": "CRYPTO_SPEC §5.1: the DEK-wrap registration signature (Ed25519). signed_bytes = LP(\"<suite>/dek-wrap-sig\", project_id, environment_id, epoch, recipient_user_id, recipient_enc_pub_hex, enc_hex, ciphertext_hex, signer_user_id). The wrap body is identical to dek-wrap.json's basic vector",
             "signed_fields_order": SIGNED_FIELDS_ORDER,
             "binary_encoding": "the recipient enc public key / HPKE enc / wrap ciphertext go into LP as lowercase hex strings (the same convention as chain-entries.json's binary_encoding)",
@@ -4923,23 +4279,6 @@ def gen_dek_wrap_signature():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.6 dek-commitment.json — the §5.2 epoch-DEK commitment
-#     (SHA-256 + §2.1 LP)
-#
-# dek_commitment_hex = lower_hex(SHA-256(LP("<suite>/dek-commit",
-#                                           project_id, environment_id, epoch, dek_hex)))
-#   domain = "<suite>/dek-commit" (suite binding is carried by the
-#   domain string — same form as §5.1)
-#   dek_hex = the DEK's 32 bytes as a lowercase hex string
-#   (the binary_encoding convention)
-# The basic vector's DEK and coordinates are the same as dek-wrap.json's
-# basic (wrap → commitment comparison becomes one run of concrete data).
-# rewrap_invariance pins that the commitment depends on neither the
-# recipient set nor the wrap ciphertext (§5.2 — invariant under all of
-# post-add_member backfill of past epochs, repair-path delete →
-# re-register, HPKE randomness changing the same DEK's wrap ciphertext,
-# and later widening of the recipient set)
 
 COMMITMENT_FIELDS_ORDER = ["domain", "project_id", "environment_id", "epoch", "dek_hex"]
 
@@ -4987,8 +4326,6 @@ def gen_dek_commitment():
     other_dek = pat(0xF8, 32)
 
     def negative(name, overrides, note):
-        # recompute the commitment with overrides applied → it should
-        # NOT match basic
         ctx = dict(base_ctx, **overrides)
         preimage = commitment_preimage(ctx)
         return {
@@ -5052,28 +4389,6 @@ def gen_dek_commitment():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.7 value-signature.json — the §4.1 value-write signature
-#     (Ed25519 + §2.1 LP)
-#
-# value_signed_bytes = LP("<suite>/value-sig", project_id, environment_id, epoch,
-#                         variable_id, version, nonce_hex, ciphertext_hex,
-#                         prev_value_sig_hash_hex, writer_user_id,
-#                         chain_head_hash_hex, chain_head_seq)
-#   domain = "<suite>/value-sig" (suite binding is carried by the
-#   domain string — same form as §5.1)
-#   numbers (epoch / version / chain_head_seq) are decimal-stringified;
-#   binaries (nonce / ciphertext / hashes) go into LP as lowercase hex
-#   strings
-#   prev_value_sig_hash_hex = SHA-256 of the previous version's
-#   value_signed_bytes (empty string for version 1)
-#
-# The verification-rule families that need chain state are built by
-# referencing chain-entries.json's canonical 12-entry chain (the
-# cross-file precedent where dek-wrap-signature.json reads
-# dek-wrap.json). The ciphertext is a real AES-GCM ciphertext under an
-# environment_deks dummy DEK (AAD = §4), so value-signature → decrypt
-# becomes one run of concrete data.
 
 VALUE_SIG_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "epoch", "variable_id", "version",
@@ -5130,10 +4445,6 @@ def gen_value_signature():
     def make_value(name, writer_id, environment_id, epoch, variable_id, version,
                    nonce, plaintext, prev_hash_hex, head_seq, note, prev_base=None,
                    key=None, chain_ref=None, head_hash_hex=None):
-        # key / chain_ref / head_hash_hex (2026-09-20 DK): a positive
-        # signed with a device key spells out the key record (a device
-        # entry in chain-entries.json's keys) and the referenced chain
-        # name
         ct_hex = encrypt(environment_id, epoch, variable_id, version, nonce, plaintext)
         ctx = {
             "suite": suite,
@@ -5171,8 +4482,6 @@ def gen_value_signature():
             vector["chain"] = chain_ref
         return vector
 
-    # --- Positive cases (§8-1). Pin the declared-head-time inclusive
-    #     convention (§6.3) at the boundary ---
     v1_basic = make_value(
         "v1-basic", admin_id, "env-prod-0001", 2, "var-api-key-0001", 1,
         pat(0xA4, 12), "sk-dummy-api-key-v1", "", 12,
@@ -5219,11 +4528,6 @@ def gen_value_signature():
         )
     )
 
-    # --- fork-same-version (§14.3-5 / §8-1): two valid signatures with
-    # different contents on the same coordinates (variable × version).
-    # Individually each passes every check; only as a pair do they
-    # become cryptographic evidence of equivocation (mechanically
-    # judged by the signed_bytes_sha256 difference)
     fork_prev = v2_chained["signed_bytes_sha256_hex"]
     fork_branches = [
         make_value(
@@ -5238,11 +4542,6 @@ def gen_value_signature():
         ),
     ]
 
-    # --- A derived chain for cross-tenure checks (chain-entries.json
-    # itself is unchanged): prefix the canonical 12 entries and re-add
-    # user-member-0002 with new keys at seq 13. The combination
-    # old-key (membership interval 1) × new-interval head (seq 13) is
-    # expected to be rejected by §6.3-1's head-time key binding
     rejoined = make_user(pat(0x74, 32), pat(0x84, 32))
     readd_payload = {
         "target_user_id": member_id,
@@ -5251,7 +4550,7 @@ def gen_value_signature():
         "role": "member",
         **scope_fields("all", []),
     }
-    head_seq = len(entries)  # the canonical chain's head (24 since 2026-09-14 ES + PF1)
+    head_seq = len(entries)
     readd_seq = head_seq + 1
     owner_keys = chain["keys"][owner_id]
     owner_fp = owner_keys["key_fingerprint_hex"]
@@ -5293,10 +4592,6 @@ def gen_value_signature():
         },
     }
 
-    # --- Negatives (signature family): tampering / transplantation =
-    #     keep the original signature while substituting signed_bytes,
-    #     and pin that Ed25519 verification fails (the same form as
-    #     dek-wrap-signature)
     base_ctx = v1_basic["context"]
     base_sig = bytes.fromhex(v1_basic["signature_hex"])
     admin_pub = sig_pub_of(admin_id)
@@ -5386,11 +4681,6 @@ def gen_value_signature():
         ),
     ]
 
-    # --- Negatives (verification-rule family; kind = "authorization"):
-    #     the signature is valid, but the entry must be rejected under
-    #     §6.3's verification rules against a verified chain history.
-    #     expected_reason pins the implementation's reason code (the
-    #     same arrangement as chain-entries' authz)
     ghost = make_user(pat(0x78, 32), pat(0x88, 32))
     ghost_signer = Ed25519PrivateKey.from_private_bytes(pat(0x88, 32))
 
@@ -5399,9 +4689,6 @@ def gen_value_signature():
                       expected_reason, note, chain_ref="canonical",
                       writer_fp=None, sign_with=None, verify_key_hex=None,
                       predecessor=None):
-        # actually encrypt under the DEK of the same epoch as the epoch
-        # coordinate (dummy DEKs for all targeted epochs of the
-        # environment exist in environment_deks)
         ct_hex = encrypt(environment_id, epoch, variable_id, version, nonce, plaintext)
         ctx = {
             "suite": suite,
@@ -5546,12 +4833,6 @@ def gen_value_signature():
         ),
     ]
 
-    # --- 3′ authorization-time scope check (2026-09-14 ES —
-    #     CRYPTO_SPEC §6.3): the writer's scope at the declared-head
-    #     time must contain the environment_id. Right after the role
-    #     check (3) and before the epoch consistency (4). The listed
-    #     writer = user-devmember-0010 (member listed{dev, stage} at
-    #     head 19; reader listed{dev} from head 22 on)
     devmember_id = "user-devmember-0010"
     vectors.append(
         make_value(
@@ -5585,14 +4866,6 @@ def gen_value_signature():
         ),
     ]
 
-    # --- The device axis (2026-09-20 DK — CRYPTO_SPEC 0.12-draft
-    #     §6.3 'device-key selection and effective authority'): the
-    #     key selection of rule 1 uses the device's validity interval;
-    #     3 / 3′ are judged by the signing device's effective
-    #     authority. The referenced chain is chain-entries.json's
-    #     derived chain device-ops (seq 25–37 — the meaning of
-    #     existing positives/negatives and `canonical` is unchanged;
-    #     convention 28). The reason codes are all existing ones
     dk_chain = chain["extended_chains"]["device-ops"]["entries"]
 
     def dk_head_hash(seq: int) -> str:
@@ -5604,8 +4877,8 @@ def gen_value_signature():
     def device_signer(label: str) -> Ed25519PrivateKey:
         return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(device_key(label)["sig_sk_seed_hex"]))
 
-    cibox = device_key("user-allmember-0013@ci-box")           # C: effective (member, {dev, stage}); valid seq 27–36
-    readercap = device_key("user-owner-0015@reader-cap")       # L: effective (reader, all)
+    cibox = device_key("user-allmember-0013@ci-box")
+    readercap = device_key("user-owner-0015@reader-cap")
     allmember_id = "user-allmember-0013"
     owner3_id = "user-owner-0015"
     vectors.append(
@@ -5690,33 +4963,6 @@ def gen_value_signature():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.8 metadata-signature.json — §4.2 signed statements of variable and
-#     environment metadata
-#
-# var_meta_signed_bytes = LP("<suite>/var-meta-sig", project_id, environment_id,
-#                            variable_id, name, status, meta_version,
-#                            prev_meta_sig_hash_hex, author_user_id,
-#                            chain_head_hash_hex, chain_head_seq)
-# env_meta_signed_bytes = LP("<suite>/env-meta-sig", project_id, environment_id,
-#                            name, status, meta_version, prev_meta_sig_hash_hex,
-#                            author_user_id, chain_head_hash_hex, chain_head_seq)
-#   domain = "<suite>/var-meta-sig" / "<suite>/env-meta-sig" (suite
-#   binding is carried by the domain string — same form as §4.1).
-#   Numbers (meta_version / chain_head_seq) are decimal-stringified;
-#   binaries (hashes) go into LP as lowercase hex strings
-#   prev_meta_sig_hash_hex = SHA-256 of the previous statement's
-#   signed_bytes (empty string for meta_version 1). name is bound
-#   verbatim as UTF-8 bytes (byte-exact — NFC normalization is the
-#   signing client's responsibility; §4.2)
-#
-# The verification-rule families that need chain state are built by
-# referencing chain-entries.json's canonical 12-entry chain (the same
-# cross-file precedent as value-signature.json). Meta statements carry
-# no epoch anchor (§4.2 / §14.3-5), so rules corresponding to the value
-# signature's epoch-not-current / environment-not-created do not exist —
-# var-meta-head-before-env-create is a **positive** (a deliberate
-# asymmetry pinned. AUTH_SPEC §12-4).
 
 VAR_META_SIG_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "variable_id", "name", "status",
@@ -5728,14 +4974,6 @@ ENV_META_SIG_FIELDS_ORDER = [
     "meta_version", "prev_meta_sig_hash_hex", "author_user_id",
     "chain_head_hash_hex", "chain_head_seq",
 ]
-# CRYPTO_SPEC §4.2 layout v3 (the schema layout — 0.8-draft session 46's
-# schema fields and declared status, plus PF6 R9's max_age_days, 2026-10-02):
-# the second valid layout of the variable-meta statement. The
-# domain-separation string is "<suite>/var-meta-sig-v3" (the layout version
-# is local to the statement kind — suite stays). The schema fields (var_type
-# / required / description / max_age_days) are inserted right after status.
-# max_age_days is "" (no declaration) or a decimal 1..3650 without leading
-# zeros. Environment meta stays v1
 VAR_META_SIG_V3_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "variable_id", "name", "status",
     "var_type", "required", "description", "max_age_days",
@@ -5743,11 +4981,6 @@ VAR_META_SIG_V3_FIELDS_ORDER = [
     "chain_head_hash_hex", "chain_head_seq",
 ]
 
-# The retired layout v2 (CRYPTO_SPEC 0.15-draft §4.2 — 2026-10-06: the v3
-# field sequence without max_age_days under "<suite>/var-meta-sig-v2"). It
-# is no longer a valid layout; the encoder is kept only to build the
-# v2-layout-unsupported negative (a validly signed v2 statement that the
-# implementation must refuse as an unsupported layout)
 RETIRED_VAR_META_SIG_V2_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "variable_id", "name", "status",
     "var_type", "required", "description",
@@ -5759,12 +4992,8 @@ RETIRED_VAR_META_SIG_V2_FIELDS_ORDER = [
 def meta_signed_bytes(ctx: dict) -> bytes:
     layout = ctx.get("layout_version", 1)
     if layout == 3:
-        # A context missing max_age_days (the v3-missing-max-age negative)
-        # is signed as if empty: the bytes are a legitimate v3 statement;
-        # the harness's rejection is the shape check on the context side
         return lp_encode([ctx.get(key, "") for key in VAR_META_SIG_V3_FIELDS_ORDER])
     if layout == 2:
-        # The retired layout (the v2-layout-unsupported negative only)
         order = RETIRED_VAR_META_SIG_V2_FIELDS_ORDER
     else:
         order = (VAR_META_SIG_FIELDS_ORDER if ctx["kind"] == "variable"
@@ -5822,8 +5051,6 @@ def gen_metadata_signature():
     def make_statement(name, kind, environment_id, variable_id, display_name, status,
                        meta_version, prev_hash_hex, author_id, head_seq, note,
                        prev_base=None, key=None, chain_ref=None, head_hash_hex=None):
-        # key / chain_ref / head_hash_hex (2026-09-20 DK): the key record
-        # and referenced chain of a positive signed with a device key
         ctx = make_context(kind, environment_id, variable_id, display_name, status,
                            meta_version, prev_hash_hex, author_id,
                            head_hash_hex if head_hash_hex is not None else head_hash(head_seq),
@@ -5846,9 +5073,6 @@ def gen_metadata_signature():
             vector["chain"] = chain_ref
         return vector
 
-    # --- Positives (session-12 §8-2). Pin the declared-head-time
-    #     inclusive convention (§6.3), the prev chaining of 'create →
-    #     rename → delete', and name retention on delete ---
     var_create = make_statement(
         "var-create", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY",
         "active", 1, "", admin_id, 12,
@@ -5907,17 +5131,9 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- Layout-v3 positives (CRYPTO_SPEC §4.2 layout v3 — the schema
-    #     layout: the schema fields and the declared status of 0.8-draft
-    #     session 46 plus PF6 R9's max_age_days, 2026-10-02). An addition of
-    #     a new domain string: the v1 vectors do not change by one byte
-    #     (extend by appending — §11). The layout-v2 vectors were removed
-    #     in 0.15-draft (layout v2 retired); the rules they pinned are
-    #     re-pinned on v3 statements below ---
     def make_v3_context(environment_id, variable_id, name, status, var_type, required,
                         description, max_age_days, meta_version, prev_hash_hex, author_id,
                         head_hash_hex, head_seq):
-        # The key order follows the signed sequence
         return {
             "kind": "variable",
             "suite": suite,
@@ -6002,11 +5218,6 @@ def gen_metadata_signature():
     )
     vectors += [v3_expiring, v3_no_max_age, v3_activation, v3_upgrade, v3_delete]
 
-    # --- rename-fork (§14.2-5 / §8-2): two valid statements with
-    #     different contents on the same (variable, metaVersion).
-    #     Individually each passes every check; only as a pair do they
-    #     become cryptographic evidence of equivocation (mechanically
-    #     judged by the signed_bytes_sha256 difference)
     fork_branches = [
         make_statement(
             "rename-fork-a", "variable", "env-prod-0001", "var-api-key-0001", "API_KEY_BLUE",
@@ -6021,11 +5232,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- name-swap (§8-2): swapping the names of 2 variables. The
-    #     proper statements bind the name to the variable_id by
-    #     signature, so a byte string with only the name fields swapped
-    #     fails verification of the original signature (blocks a server
-    #     relabeling names ↔ ciphertexts — §4.2)
     swap_a = make_statement(
         "name-swap-var-a", "variable", "env-prod-0001", "var-swap-a-0006", "DATABASE_URL",
         "active", 1, "", admin_id, 12,
@@ -6067,10 +5273,6 @@ def gen_metadata_signature():
         ],
     }
 
-    # --- A derived chain for cross-tenure checks (the same derived
-    #     form as value-signature.json; chain-entries.json itself is
-    #     unchanged): after the canonical 12 entries, seq 13 re-adds
-    #     user-member-0002 with new keys
     rejoined = make_user(pat(0x74, 32), pat(0x84, 32))
     readd_payload = {
         "target_user_id": member_id,
@@ -6079,7 +5281,7 @@ def gen_metadata_signature():
         "role": "member",
         **scope_fields("all", []),
     }
-    head_seq = len(entries)  # the canonical chain's head (24 since 2026-09-14 ES + PF1)
+    head_seq = len(entries)
     readd_seq = head_seq + 1
     owner_fp = chain["keys"][owner_id]["key_fingerprint_hex"]
     readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
@@ -6120,10 +5322,6 @@ def gen_metadata_signature():
         },
     }
 
-    # --- Negatives (signature family): tampering / transplantation =
-    #     keep the original signature while substituting signed_bytes,
-    #     and pin that Ed25519 verification fails (the same form as
-    #     value-signature)
     base_sig = bytes.fromhex(var_create["signature_hex"])
     tampered_sig = bytearray(base_sig)
     tampered_sig[-1] ^= 0x01
@@ -6146,7 +5344,7 @@ def gen_metadata_signature():
         }
 
     nfd_name = unicodedata.normalize("NFD", nfc_name)
-    assert nfd_name != nfc_name  # ensure the name has different bytes under NFC / NFD
+    assert nfd_name != nfc_name
     negatives = [
         make_negative(
             "tampered-signature", {},
@@ -6224,14 +5422,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- Negatives (verification-rule family; kind = "authorization"):
-    #     the signature is valid, but the entry must be rejected under
-    #     §6.3's verification rules against a verified chain history.
-    #     expected_reason pins the implementation's reason code (the same
-    #     arrangement as value-signature's rule negatives). Meta has no
-    #     epoch consistency (§6.3-4) — rule-family negatives corresponding
-    #     to epoch-not-current / environment-not-created are deliberately
-    #     omitted (§14.3-5)
     ghost = make_user(pat(0x78, 32), pat(0x88, 32))
     ghost_signer = Ed25519PrivateKey.from_private_bytes(pat(0x88, 32))
 
@@ -6363,11 +5553,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- Layout-v3 negatives (the enumeration in §11's 0.8-draft,
-    #     0.13-draft and 0.15-draft entries) -----------------------------
-    # Signature family (tampering / transplantation): keep the original
-    # signature while substituting signed_bytes, and pin that Ed25519
-    # verification fails (the same form as the existing negatives)
     def v3_tamper_negative(name, overrides, note):
         ctx = dict(v3_expiring["context"], **overrides)
         return {
@@ -6381,11 +5566,6 @@ def gen_metadata_signature():
             "note": note,
         }
 
-    # Both directions of layout confusion (§4.2 — interpreting v1 as
-    # v3 and vice versa fails structurally on signature mismatch [§1
-    # principle 6]. A false layoutVersion declaration degenerates into
-    # recomputing signed_bytes under the other layout = a signature
-    # mismatch — pinning the known residual of ruling CR)
     confusion_v3_as_v1_ctx = make_context(
         "variable", "env-prod-0001", "var-v3-expiring-0013", "DATABASE_URL", "active",
         1, "", admin_id, head_hash(12), 12)
@@ -6446,7 +5626,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # Verification-rule family (kind = "authorization"): the signature is valid but rejected by transition / layout rules
     def schema_rule_negative(name, ctx, expected_reason, note, predecessor):
         signed = meta_signed_bytes(ctx)
         return {
@@ -6519,13 +5698,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # Structural-violation family (kind = "invalid-input"): a wire-form
-    # structural violation is rejected with the typed InvalidInput before
-    # it ever reaches signature verification or history verification
-    # (fail-closed). The signature itself is valid under this negative's
-    # key — verify_reference confirms the rejection is not by
-    # cryptographic verification (the same arrangement as
-    # kind = "authorization")
     def signed_case(name, kind, ctx, expected_error, note):
         signed = meta_signed_bytes(ctx)
         return {
@@ -6600,14 +5772,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # The retired layout v2 (kind = "unsupported-layout" — CRYPTO_SPEC
-    # 0.15-draft §4.2, 2026-10-06): a well-formed statement validly signed
-    # over the former v2 byte layout and declaring layoutVersion 2. The
-    # supported set is {1, 3}, so the implementation must refuse it with
-    # the typed UnsupportedMetaLayout before signature verification — never
-    # as an invalid signature or InvalidInput. verify_reference confirms
-    # the signature is valid over the retired encoding (the rejection is not
-    # by cryptographic verification)
     retired_v2_ctx = {
         "kind": "variable",
         "suite": suite,
@@ -6638,10 +5802,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- 3′ authorization-time scope check (2026-09-14 ES — §6.3):
-    #     the author's scope must contain the environment. Both variable
-    #     meta and environment meta are environment-targeted. Right after
-    #     the role check (3)
     devmember_id = "user-devmember-0010"
     vectors.append(
         make_statement(
@@ -6676,10 +5836,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- The device axis (2026-09-20 DK — §6.3 'device-key selection
-    #     and effective authority'. The referenced chain is the derived
-    #     chain device-ops. The meaning of existing positives/negatives
-    #     and `canonical` is unchanged — convention 28)
     dk_chain = chain["extended_chains"]["device-ops"]["entries"]
 
     def dk_head_hash(seq: int) -> str:
@@ -6739,12 +5895,6 @@ def gen_metadata_signature():
         ),
     ]
 
-    # --- The deletion axis (2026-10-07 — §6.2: a delete_environment is a
-    #     change point of the history index; the scopes it pruned are
-    #     pruned from its seq on). The referenced chain is the derived chain
-    #     environment-deleted (the canonical prefix up to seq 19 +
-    #     user-devadmin-0011's deletion of env-stage-0003 at seq 20). The
-    #     meaning of existing positives/negatives is unchanged
     ed_head_20 = chain["extended_chains"]["environment-deleted"]["entries"][0]["entry_hash_hex"]
     vectors.append(
         make_statement(
@@ -6808,35 +5958,6 @@ def gen_metadata_signature():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.8b env-manifest.json — the §4.3 environment manifest
-#     (Ed25519 + §2.1 LP)
-#
-# env_manifest_signed_bytes = LP("<suite>/env-manifest-sig", project_id,
-#                                environment_id, epoch, manifest_version,
-#                                variables_digest_hex,
-#                                env_meta_version, env_meta_sig_hash_hex,
-#                                prev_manifest_sig_hash_hex,
-#                                issuer_user_id, chain_head_hash_hex, chain_head_seq)
-# variables_digest_hex = lower_hex(SHA-256(LP("<suite>/env-manifest-vars",
-#                                             entry_1, …, entry_n)))
-# entry_i = LP(variable_id, status, meta_version, meta_sig_hash_hex)
-#   (byte-ascending by variable_id; the latest form of every statement
-#    including tombstones; the empty set is allowed. Each entry is
-#    embedded as one field containing the byte string of a nested LP —
-#    the same convention as scope_environments)
-#
-# The verification-rule families that need chain state are built by
-# referencing chain-entries.json's canonical 12-entry chain (the same
-# cross-file precedent as value-signature / metadata-signature). Issue
-# triggers and epoch burning (§4.3): the declared head of a compound
-# issue (environment creation, rotate) is the current head before the
-# append, and epoch consistency is 'the epoch matches the current epoch
-# at the declared-head time, or the **next** entry after the declared
-# head (= the bundled chain entry) establishes exactly that epoch on
-# the environment' (the verifier-side form of AUTH_SPEC §12-5 (4)'s
-# 'state after applying the bundled entry'). manifest-v1-create /
-# manifest-rotate pin this form as positives.
 
 ENV_MANIFEST_SIG_FIELDS_ORDER = [
     "domain", "project_id", "environment_id", "epoch", "manifest_version",
@@ -6896,9 +6017,6 @@ def gen_env_manifest():
     admin_id = "user-admin-0003"
     env_id = "env-prod-0001"
 
-    # --- The fixture's meta statements (identical inputs and hashes to
-    #     metadata-signature.json. The digest needs only the tuple
-    #     (variable_id, status, meta_version, meta_sig_hash_hex) — §4.3) ---
     def meta_hash(kind, environment_id, variable_id, name, status, meta_version,
                   prev_hash_hex, author_id, head_seq):
         ctx = {
@@ -6932,10 +6050,6 @@ def gen_env_manifest():
         api_v2_hash, admin_id, 12)
     legacy_ctx, legacy_hash = meta_hash(
         "variable", env_id, "var-legacy-0002", "LEGACY_TOKEN", "active", 1, "", member_id, 4)
-    # env-dev-0002's environment meta (bundled with the creation
-    # compound — the declared head is the current head before the
-    # append, seq 7. The env_meta binding target of the in-scope
-    # manifest by a listed issuer (the permissive side of 3′))
     dev_env_meta_ctx, dev_env_meta_v1_hash = meta_hash(
         "environment", "env-dev-0002", None, "Development", "active", 1, "", admin_id, 7)
 
@@ -6952,11 +6066,6 @@ def gen_env_manifest():
     api_v3_entry = digest_entry("var-api-key-0001", "deleted", 3, api_v3_hash)
     legacy_entry = digest_entry("var-legacy-0002", "active", 1, legacy_hash)
 
-    # A layout-v3 declared statement (identical inputs and hash to
-    # metadata-signature.json's var-v3-create-no-max-age — §4.2 layout v3).
-    # The entry / digest encoders are unchanged; "declared" merely appears
-    # as a new string value in status (§4.3's coverage of the schema
-    # fields — automatic inheritance with no manifest-layer change)
     declared_v3_ctx = {
         "kind": "variable",
         "domain": f"{suite}/var-meta-sig-v3",
@@ -7002,8 +6111,6 @@ def gen_env_manifest():
                       env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
                       head_seq, note, prev_base=None, key=None, chain_ref=None,
                       head_hash_hex=None):
-        # key / chain_ref / head_hash_hex (2026-09-20 DK): the key record
-        # and referenced chain of a positive signed with a device key
         digest_hex = variables_digest_hex(digest_entries)
         ctx = make_context(environment_id, epoch, manifest_version, digest_hex,
                            env_meta_version, env_meta_hash, prev_hash_hex, issuer_id,
@@ -7016,9 +6123,6 @@ def gen_env_manifest():
             "name": name,
             "context": ctx,
             "issuer_key_fingerprint_hex": key["key_fingerprint_hex"] if key is not None else fp_of(issuer_id),
-            # The digest's preimage (canonical form = byte-ascending by
-            # variable_id). The verifier re-digests this and compares
-            # against context's variables_digest_hex
             "entries": sorted(digest_entries, key=lambda e: e["variable_id"].encode("utf-8")),
             "signed_bytes_hex": signed.hex(),
             "signed_bytes_sha256_hex": sha256(signed).hex(),
@@ -7031,11 +6135,6 @@ def gen_env_manifest():
             vector["chain"] = chain_ref
         return vector
 
-    # --- Positives (session-27 §13-2): the manifest_version chain by
-    #     issue trigger. mv1 (environment creation) → mv2 (rotate) → mv3
-    #     (the enrolled coordinates of a removed issuer) → mv4 (variable
-    #     creation) → mv5 (rename) → mv6 (delete = a digest including the
-    #     tombstone) ---
     mv1 = make_manifest(
         "manifest-v1-create", env_id, 1, 1, [], 1, env_meta_v1_hash, "", member_id, 2,
         "the manifest bundled with the environment-creation compound (manifestVersion 1, empty variable set, "
@@ -7088,10 +6187,6 @@ def gen_env_manifest():
     )
     vectors = [mv1, mv2, mv3, mv4, mv5, mv6]
 
-    # --- fork (§14.2-5): two valid manifests with different contents on
-    #     the same (environment, manifestVersion, prev). Individually each
-    #     passes every check; only as a pair do they become cryptographic
-    #     evidence of equivocation (the signed_bytes_sha256 difference) ---
     fork_branches = [
         make_manifest(
             "manifest-fork-a", env_id, 2, 5, [api_v2_entry, legacy_entry], 1, env_meta_v1_hash,
@@ -7108,14 +6203,10 @@ def gen_env_manifest():
         ),
     ]
 
-    # --- Pinning the digest's LP canonical form (empty set / single / multiple / byte-ascending) ---
     order_entries = [
         digest_entry("alpha-var-0001", "active", 1, sha256(b"digest-fixture-alpha").hex()),
         digest_entry("Zeta-var-0002", "active", 2, sha256(b"digest-fixture-zeta").hex()),
     ]
-    # The surrogate-pair-boundary discriminants (session-31 M1-T2). One
-    # tombstone is mixed in, and it also pins that a non-ASCII
-    # variable_id puts status / meta_version on the canonical form
     surrogate_entries = [
         digest_entry("var-\U0001F511-0001", "active", 2,
                      sha256(b"digest-fixture-astral-key").hex()),
@@ -7156,13 +6247,6 @@ def gen_env_manifest():
                     "from locale and letter case)",
         },
         {
-            # The surrogate-pair boundary (session-31 M1-T2 — 2026-08-28):
-            # the existing cases stayed in ASCII / BMP and did not pin the
-            # pair where a UTF-16 code-unit comparison (JS's plain string
-            # comparison) and a UTF-8 byte comparison disagree (high-BMP
-            # U+E000–U+FFFF × astral). U+FFE5 (EF BF A5) < U+1F511
-            # (F0 9F 94 91) in byte order, but in UTF-16 the surrogate
-            # 0xD83D < 0xFFE5 reverses them
             "name": "surrogate-boundary-order",
             "entries": sorted(surrogate_entries, key=lambda e: e["variable_id"].encode("utf-8")),
             "digest_input_hex": variables_digest_input(surrogate_entries).hex(),
@@ -7175,8 +6259,6 @@ def gen_env_manifest():
                     "reaches this digest",
         },
         {
-            # The declared entry (§4.2 / §11's 0.8-draft entry — 2026-08-30;
-            # rebased onto the layout-v3 declared statement in 0.15-draft)
             "name": "declared-entry",
             "entries": sorted([legacy_entry, declared_v3_entry],
                               key=lambda e: e["variable_id"].encode("utf-8")),
@@ -7190,8 +6272,6 @@ def gen_env_manifest():
         },
     ]
 
-    # --- A derived chain for cross-tenure checks (identical contents
-    #     to value / metadata; chain-entries.json itself is unchanged) ---
     rejoined = make_user(pat(0x74, 32), pat(0x84, 32))
     readd_payload = {
         "target_user_id": member_id,
@@ -7200,7 +6280,7 @@ def gen_env_manifest():
         "role": "member",
         **scope_fields("all", []),
     }
-    head_seq = len(entries)  # the canonical chain's head (24 since 2026-09-14 ES + PF1)
+    head_seq = len(entries)
     readd_seq = head_seq + 1
     owner_fp = chain["keys"][owner_id]["key_fingerprint_hex"]
     readd_pb = lp_encode([readd_payload[k] for k in PAYLOAD_FIELD_ORDER["add_member"]])
@@ -7242,10 +6322,6 @@ def gen_env_manifest():
         },
     }
 
-    # --- Negatives (signature family): tampering / transplantation =
-    #     keep the original signature while substituting signed_bytes,
-    #     and pin that Ed25519 verification fails (the same form as
-    #     metadata-signature) ---
     base_sig = bytes.fromhex(mv4["signature_hex"])
     tampered_sig = bytearray(base_sig)
     tampered_sig[-1] ^= 0x01
@@ -7310,15 +6386,6 @@ def gen_env_manifest():
         ),
     ]
 
-    # --- Negatives (verification-rule family; kind = "authorization"):
-    #     the signature is valid, but the entry must be rejected under
-    #     §4.3 / §6.3's verification rules against the verified chain
-    #     history, the verified statement set, and the preceding manifest.
-    #     expected_reason pins the implementation's reason code.
-    #     verify_entries / verify_env_meta express the form where 'the
-    #     set / environment meta the verifier uses for recomputation'
-    #     disagrees with what was signed (omission, injection, hidden
-    #     tombstone) ---
     ghost = make_user(pat(0x78, 32), pat(0x88, 32))
     ghost_signer = Ed25519PrivateKey.from_private_bytes(pat(0x88, 32))
 
@@ -7507,12 +6574,6 @@ def gen_env_manifest():
         ),
     ]
 
-    # --- Negatives of the checkpoint binding (the §4.3 (2) revision —
-    #     2026-08-27 session 33 = PR-F3b; the old H+1 exception abolished).
-    #     The binding's comparison target (derived chains carrying
-    #     boundary checkpoint tuples) references chain-entries.json's
-    #     checkpoint-boundary-* (gen_checkpoint_boundary_chains appends
-    #     them after this function) ---
     rule_negatives += [
         rule_negative(
             "composite-head-without-checkpoint-create", env_id, 1, 1, [], 1,
@@ -7572,9 +6633,6 @@ def gen_env_manifest():
         ),
     ]
 
-    # --- 3′ authorization-time scope check (2026-09-14 ES — §6.3):
-    #     the issuer's scope must contain the environment. Right after
-    #     the role check (3), before prev / epoch consistency
     devmember_id = "user-devmember-0010"
     vectors.append(
         make_manifest(
@@ -7611,10 +6669,6 @@ def gen_env_manifest():
         ),
     ]
 
-    # --- The device axis (2026-09-20 DK — §6.3 'device-key selection
-    #     and effective authority'. The referenced chain is the derived
-    #     chain device-ops. The meaning of existing positives/negatives
-    #     and `canonical` is unchanged — convention 28)
     dk_chain = chain["extended_chains"]["device-ops"]["entries"]
 
     def dk_head_hash(seq: int) -> str:
@@ -7713,21 +6767,6 @@ def gen_env_manifest():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.8.5 Appending the boundary-checkpoint derived chains to
-#     chain-entries.json (2026-08-27 session 33 = PR-F3b — CRYPTO_SPEC
-#     §4.3 (2) / §6.3 / AUTH_SPEC §12-4)
-#
-# Pin the mandatory bundling of the environment-creation / rotate
-# compounds (a boundary checkpoint = the seq right after the compound
-# entry) as derived chains wired to the real manifest hashes
-# (env-manifest.json's manifest-v1-create / manifest-rotate). Because
-# the manifest hashes are needed, run this **after** gen_env_manifest:
-# load chain-entries.json and **append only** to extended_chains (the
-# existing sections do not change by one byte). env-manifest.json's
-# checkpoint-binding-mismatch / checkpoint-equivocation /
-# checkpoint-regressed and the 2 compound positives reference these
-# chains.
 
 
 def gen_checkpoint_boundary_chains():
@@ -7747,11 +6786,6 @@ def gen_checkpoint_boundary_chains():
     t0 = 1754006400000
     head3 = chain["entries"][2]["entry_hash_hex"]
     empty_values = env_values_digest_hex([])
-    # The values_digest for the rotate boundary is also the empty set: in
-    # this derived chain's world no value has been pushed to env-prod = the
-    # enumeration of current values at acceptance time is empty (an honest
-    # value consistent with AUTH_SPEC §12-4's 'build from the current
-    # values at acceptance time')
     rotate_payload = {
         "environment_id": env_id,
         "new_epoch": "2",
@@ -7777,12 +6811,6 @@ def gen_checkpoint_boundary_chains():
         ]),
         t0 + 5000, cb5["entry_hash_hex"],
     )
-    # A second checkpoint attesting the same coordinates (env-prod-0001,
-    # manifestVersion 2) under a different hash. Valid under chain
-    # consensus rules (non-regression allows equality and tuple contents
-    # are unverifiable by chain verification), but manifest verification
-    # (§4.3 (2)) rejects this coexistence as hard evidence of
-    # equivocation
     cb7 = build_chain_entry(
         7, "checkpoint", member_id, member,
         checkpoint_payload([
@@ -7849,36 +6877,12 @@ def gen_checkpoint_boundary_chains():
     write("chain-entries.json", chain)
 
 
-# ---------------------------------------------------------------------------
-# 3.9 invite-accept-signature.json — the §6.5 joint acceptance
-#     signature (Ed25519 + §2.1 LP. **Regenerated** as v2 in the
-#     2026-09-13 IV revision — the old token_hash-bound form is not
-#     kept)
-#
-# signed_bytes = LP(domain, project_id, link_pub_hex,
-#                   invitee_user_id, invitee_enc_pub_hex, invitee_sig_pub_hex)
-#   domain = "<suite>/invite-accept-v2" (suite binding is carried by
-#   the domain string — same form as §5.1. The old
-#   "<suite>/invite-accept" bound invite_token_hash_hex — structurally
-#   rejected by the version bump)
-#   link_pub_hex = the public key of the link key (a per-invite Ed25519
-#   key pair — derived by the inviter client from seed k. The seed rides
-#   only on the link's fragment and is never given to the server)
-#   Two signatures on the same byte string: accept_signature (the
-#   invitee's chain sig key — the verify key is invitee_sig_pub_hex
-#   inside the signed data) and link_signature (the link key — the
-#   verify key is link_pub_hex inside the signed data). Both are
-#   self-binding (no form that supplies a verify key from outside the
-#   signed data is ever built)
 
 INVITE_ACCEPT_FIELDS_ORDER = [
     "domain", "project_id", "link_pub_hex",
     "invitee_user_id", "invitee_enc_pub_hex", "invitee_sig_pub_hex",
 ]
 
-# The link key's seed (a deterministic dummy. Non-overlapping with the
-# pattern values of other vectors' seeds / DEKs — avoid 0xD4 / 0xD8 /
-# 0xDC, which chain-entries.json's environment DEKs use)
 INVITE_LINK_SEED = pat(0xD0, 32)
 OTHER_LINK_SEED = pat(0xE0, 32)
 
@@ -7894,14 +6898,10 @@ def invite_accept_signed_bytes(ctx: dict) -> bytes:
 
 
 def gen_invite_accept_signature():
-    # The invitee is an unregistered user = a fresh dummy key outside the
-    # chain (seed non-overlapping with other vectors). The key-swapping /
-    # signer-mismatch role uses the same key as chain-entries.json's
-    # user-member-0002
     invitee = make_user(pat(0xA4, 32), pat(0xB4, 32))
-    other = make_user(pat(0x30, 32), pat(0x40, 32))  # = chain-entries user-member-0002
+    other = make_user(pat(0x30, 32), pat(0x40, 32))
     link = make_link_key(INVITE_LINK_SEED)
-    other_link = make_link_key(OTHER_LINK_SEED)  # the link key of another invite (for transplant / forgery negatives)
+    other_link = make_link_key(OTHER_LINK_SEED)
 
     base_ctx = {
         "suite": "maruhi/v1",
@@ -7922,11 +6922,6 @@ def gen_invite_accept_signature():
         return bytes(out)
 
     def negative(name, overrides, note, signature=None, key_field="invitee_sig_pub_hex"):
-        # rebuild signed_bytes with overrides applied and verify the
-        # 'original signature' (the given signature when signature is
-        # passed) → it should fail. The verify key is always the key
-        # declared inside the context (acceptance signature =
-        # invitee_sig_pub_hex / link signature = link_pub_hex)
         ctx = dict(base_ctx, **overrides)
         return {
             "name": name,
@@ -7989,14 +6984,6 @@ def gen_invite_accept_signature():
             {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-accept-v2"},
             "a different suite means a different domain string, so cross-suite signature transplants fail verification",
         ),
-        # Presenting a **valid** acceptance of the old form (a proper
-        # signature over a byte string built with the v1 domain string)
-        # to the v2 verifier fails — pins the structural rejection of
-        # the old form (AUTH_SPEC §12-10 (2)). verify_signed_bytes_hex
-        # is the v1 byte string and the signature is valid over it (the
-        # independent verifier confirms 'it is a valid v1 signature';
-        # the implementation-side harness confirms 'it fails on the
-        # byte string built under v2')
         negative(
             "legacy-domain",
             {"domain": "maruhi/v1/invite-accept"},
@@ -8100,28 +7087,7 @@ def gen_invite_accept_signature():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.9a invite-link.json — §6.5 link-key derivation, issue signature,
-#     and OpenSSH encoding (IV)
-#
-# invite_issue_signed_bytes = LP("<suite>/invite-issue",
-#                                invite_id, project_id, link_pub_hex,
-#                                head_hash_hex, head_seq, role,
-#                                inviter_user_id, inviter_enc_pub_hex, inviter_sig_pub_hex)
-#   The verify key is inviter_sig_pub_hex inside the signed data
-#   (self-binding). The inviter and head reference chain-entries.json's
-#   canonical chain (owner = user-owner-0001, seq 12) (the same
-#   cross-file precedent as value-signature etc.)
-# The OpenSSH public-key line (interoperability with the backing source
-# = GitHub's SSH signing-key list):
-#   "ssh-ed25519 " + base64(uint32-BE len ‖ "ssh-ed25519" ‖ uint32-BE len ‖ 32-byte key)
-#   (RFC 4253 §6.6 / RFC 8709). The SSH wire form's length prefixes are
-#   the same uint32-BE as §2.1's LP (carries byte strings verbatim)
 
-# 2026-09-14 (CRYPTO_SPEC 0.11-draft §6.5 — ES): append the to-be-granted
-# scope (scope_kind, scope_environments_lp_hex — the same encoding as
-# §6.2) to the end of the issue document. The old 10-field form has no
-# compat route (the scope-dropped negative)
 INVITE_ISSUE_FIELDS_ORDER = [
     "domain", "invite_id", "project_id", "link_pub_hex", "head_hash_hex", "head_seq", "role",
     "inviter_user_id", "inviter_enc_pub_hex", "inviter_sig_pub_hex",
@@ -8146,11 +7112,11 @@ def gen_invite_link():
     owner_keys = chain["keys"]["user-owner-0001"]
     inviter = make_user(bytes.fromhex(owner_keys["enc_sk_seed_hex"]), bytes.fromhex(owner_keys["sig_sk_seed_hex"]))
     assert inviter["sig_pub_hex"] == owner_keys["sig_pub_hex"]
-    member = make_user(pat(0x30, 32), pat(0x40, 32))  # user-member-0002 (key-swap / signer-mismatch role)
+    member = make_user(pat(0x30, 32), pat(0x40, 32))
     head = chain["entries"][-1]
     link = make_link_key(INVITE_LINK_SEED)
     other_link = make_link_key(OTHER_LINK_SEED)
-    invitee = make_user(pat(0xA4, 32), pat(0xB4, 32))  # the invitee of invite-accept-signature.json
+    invitee = make_user(pat(0xA4, 32), pat(0xB4, 32))
 
     base_ctx = {
         "suite": "maruhi/v1",
@@ -8174,7 +7140,6 @@ def gen_invite_link():
     listed_ctx = dict(base_ctx, invite_id="invite-0003", **scope_fields("listed", listed_envs))
     listed_signed = invite_issue_signed_bytes(listed_ctx)
     listed_sig = inviter["sig_sk"].sign(listed_signed)
-    # Verifying a proper signature over a byte string of the old 10-field form (no scope) → fails
     dropped_signed = lp_encode([base_ctx[k] for k in INVITE_ISSUE_FIELDS_ORDER[:-2]])
     flat_signed = lp_encode(
         [listed_ctx[k] for k in INVITE_ISSUE_FIELDS_ORDER[:-1]]
@@ -8207,7 +7172,6 @@ def gen_invite_link():
         negative("transplant-inviter", {"inviter_user_id": "user-member-0002"}, "substituting the inviter user_id fails verification even under the same key"),
         negative("wrong-signer-key", {}, "a signature made under a key other than inviter_sig_pub fails verification (signer mismatch)", signature=member["sig_sk"].sign(base_signed)),
         negative("suite-mismatch", {"suite": "maruhi/v2", "domain": "maruhi/v2/invite-issue"}, "a different suite means a different domain string, so cross-suite signature transplants fail verification"),
-        # 2026-09-14 ES: the issue signature also covers scope (same standing as r — pins the scope of consent at issue time)
         negative("scope-kind-relabel", scope_fields("listed", ["env-dev-0002"]), "substituting the to-be-granted scope (all → listed{dev}) fails verification (detects tampering with the 'which environments I am entering' the invitee reads)"),
         {
             "name": "scope-environments-relabel",
@@ -8310,30 +7274,6 @@ def gen_invite_link():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.9b head-attestation.json — the §6.6 head attestation
-#     (Ed25519 + §2.1 LP; PR-M4)
-#
-# head_attestation_signed_bytes = LP("<suite>/head-attestation",
-#                                    project_id, attester_user_id,
-#                                    chain_head_hash_hex, chain_head_seq)
-#   - no timestamp or nonce (the semantics is attribution, not a
-#     freshness proof — §6.6; chain_head_seq orders recency of
-#     attestations)
-#   - burning attester_user_id is the same anti-relabeling measure as
-#     §5.1's signer_user_id
-#   - The verification-rule families that need chain state reference
-#     chain-entries.json's canonical 12-entry chain (the same precedent
-#     as value-signature / metadata-signature)
-#
-# The positives are session-27 §13-3's three forms (basic / a reader's
-# attestation / a past attestation to an in-tenure head by a removed
-# member). The third pins the intent 'it passes §6.6's signature and
-# head-time verification, but is never a distribution or comparison
-# target because the attester is not a current member' (the server
-# deletes the attestation row when accepting remove_member — §6.4 —
-# and a client does not use an attestation by a non-current attester as
-# comparison material — §6.6 (1)).
 
 HEAD_ATTESTATION_FIELDS_ORDER = [
     "domain", "project_id", "attester_user_id", "chain_head_hash_hex", "chain_head_seq",
@@ -8381,8 +7321,6 @@ def gen_head_attestation():
 
     def make_attestation(name, attester_id, head_seq, note, key=None, chain_ref=None,
                          head_hash_hex=None):
-        # key / chain_ref / head_hash_hex (2026-09-20 DK): the key record
-        # and referenced chain of a positive signed with a device key
         ctx = make_context(attester_id,
                            head_hash_hex if head_hash_hex is not None else head_hash(head_seq),
                            head_seq)
@@ -8427,9 +7365,6 @@ def gen_head_attestation():
         ),
     ]
 
-    # --- Negatives (signature family): keep the original signature
-    #     while substituting signed_bytes, and pin that Ed25519
-    #     verification fails (the same form as metadata-signature)
     base_sig = bytes.fromhex(basic["signature_hex"])
     tampered_sig = bytearray(base_sig)
     tampered_sig[-1] ^= 0x01
@@ -8480,11 +7415,6 @@ def gen_head_attestation():
         ),
     ]
 
-    # --- Negatives (verification-rule family; kind = "authorization"):
-    #     the signature is valid, but must be rejected under §6.6 /
-    #     §6.3-2's verification rules against a verified chain history.
-    #     expected_reason pins the implementation's reason code (the
-    #     same arrangement as value / meta)
     def rule_negative(name, attester_id, head_hash_hex, head_seq, expected_reason, note,
                       chain_ref="canonical", attester_key=None):
         ctx = make_context(attester_id, head_hash_hex, head_seq)
@@ -8534,11 +7464,6 @@ def gen_head_attestation():
     ]
 
 
-    # --- The device axis (2026-09-20 DK — §6.6 'device key': the
-    #     attester's key = the signing device. Whether a key was valid
-    #     at the attested-head time is judged by the device's validity
-    #     interval. The referenced chain is the derived chain
-    #     device-ops — convention 28)
     dk_chain = chain["extended_chains"]["device-ops"]["entries"]
 
     def dk_head_hash(seq: int) -> str:
@@ -8550,8 +7475,8 @@ def gen_head_attestation():
     def device_signer(label: str) -> Ed25519PrivateKey:
         return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(device_key(label)["sig_sk_seed_hex"]))
 
-    phone = device_key("user-owner-0001@phone")            # P: (owner, listed{}) — valid seq 26–34
-    readercap = device_key("user-owner-0015@reader-cap")   # L: effective (reader, all)
+    phone = device_key("user-owner-0001@phone")
+    readercap = device_key("user-owner-0015@reader-cap")
     owner3_id = "user-owner-0015"
     vectors += [
         make_attestation(
@@ -8594,33 +7519,9 @@ def gen_head_attestation():
     )
 
 
-# ---------------------------------------------------------------------------
-# 3.10 audit-head.json — the AUDIT_SPEC §5.1 audit-head cumulative
-#     hash (SHA-256 + §2.1 LP)
-#
-# row_digest = lower_hex(SHA-256(LP(seq, row_id, server_ts, client_ts, event,
-#                                   actor_type, actor_user_id,
-#                                   actor_key_fingerprint, actor_api_token_id,
-#                                   target_user_id, target_key_fingerprint,
-#                                   environment_id, variable_id, epoch, version,
-#                                   chain_seq, payload)))
-#   - the columns are AUDIT_SPEC §5.1's fixed 17-column order. Numbers
-#     are decimal-stringified (§2.1)
-#   - the nullable columns (the 13 columns other than seq / server_ts /
-#     event / actor_type) are tagged byte strings: NULL = the single
-#     byte 0x00; non-NULL = 0x01 + the value's bytes (never put NULL and
-#     the empty string on the same preimage — §5.1)
-#   - payload uses the stored TEXT's bytes verbatim (no JSON
-#     normalization)
-# h_n = lower_hex(SHA-256(LP("maruhi/v1/audit-head", h_{n-1}, seq, row_digest)))
-#   - h_0 = the empty string. h_{n-1} / row_digest both go into LP fields
-#     as lowercase hex **strings** (the only uniform representation
-#     consistent with the h_0 = "" provision — this vector pins that
-#     representation)
 
 AUDIT_HEAD_DOMAIN = "maruhi/v1/audit-head"
 
-# AUDIT_SPEC §5.1's fixed column order. Value None = NULL (tag 0x00)
 AUDIT_ROW_COLUMNS = [
     ("seq", "int"), ("row_id", "nullable-str"), ("server_ts", "int"),
     ("client_ts", "nullable-int"), ("event", "str"), ("actor_type", "str"),
@@ -8653,10 +7554,6 @@ def audit_head_hash_hex(prev_head_hex: str, seq: int, row_digest_hex: str) -> st
 
 
 def gen_audit_head():
-    # The canonical chain (the cumulative sequence): rows are realistic
-    # event forms of the project DO. row_id is positioned as a 16-byte
-    # random hex, but in the vector it is a deterministic pattern byte
-    # string
     def row(seq, **columns):
         base = {column: None for (column, _kind) in AUDIT_ROW_COLUMNS}
         base["seq"] = seq
@@ -8664,28 +7561,20 @@ def gen_audit_head():
         return {**base, **columns}
 
     rows = [
-        # 1: a chain-mirror row (with chain_seq, with payload)
         row(
             1, server_ts=1_755_500_000_000, client_ts=1_755_499_999_000,
             event="chain.genesis", actor_type="user", actor_user_id="user-owner-0001",
             actor_key_fingerprint=pat(0x10, 16).hex(), target_user_id="user-owner-0001",
             chain_seq=1, payload='{"role":"owner"}',
         ),
-        # 2: the minimal row with every nullable column NULL (system actor)
         row(2, row_id=None, server_ts=1_755_500_000_001, event="rotation.recommended",
             actor_type="system"),
-        # 3: a data row (numeric columns epoch / version non-NULL) + a
-        #    non-ASCII payload (the stored TEXT's bytes verbatim — pins that
-        #    no JSON normalization happens)
         row(
             3, server_ts=1_755_500_000_002, event="var.version_pushed", actor_type="user",
             actor_user_id="user-member-0002", actor_key_fingerprint=pat(0x20, 16).hex(),
             environment_id="env-prod-0001", variable_id="var-database-url-0001",
             epoch=3, version=7, payload='{"note":"㊙ reencryption","reencryption":true}',  # english-exempt: non-ASCII fixture data
         ),
-        # 4: non-NULL columns that are empty strings (target_user_id /
-        #    payload) — the tag bytes carry the preimage difference from
-        #    NULL (row 2)
         row(4, server_ts=1_755_500_000_003, event="var.read", actor_type="user",
             actor_user_id="user-reader-0003", target_user_id="", payload=""),
     ]
@@ -8701,7 +7590,6 @@ def gen_audit_head():
             "expected_head_hash_hex": head,
         })
 
-    # The NULL-vs-empty-string discriminants (vary only target_user_id of the same row)
     null_row = row(5, server_ts=1_755_500_000_004, event="dek.deleted", actor_type="user",
                    actor_user_id="user-owner-0001", environment_id="env-prod-0001", epoch=2)
     empty_row = {**null_row, "target_user_id": ""}
@@ -8727,8 +7615,6 @@ def gen_audit_head():
     )
 
 
-# ---------------------------------------------------------------------------
-# 4. recovery-wrap.json — the §8 master secret-key wrap by recovery code
 
 def gen_recovery_wrap():
     recovery_secret = pat(0x50, 32)
@@ -8736,14 +7622,10 @@ def gen_recovery_wrap():
     kek = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=None,  # RFC 5869: an unspecified salt is a HashLen-byte zero string = the implementation form of the 'salt = empty' provision
+        salt=None,
         info=b"maruhi/v1/recovery",
     ).derive(recovery_secret)
 
-    # The master secret-key blob to be wrapped. Because the serialization
-    # format is an implementation concern, the vector treats it as an
-    # opaque fixed 64 bytes (enc_sk 32B equivalent || sig_sk 32B
-    # equivalent)
     master_blob = pat(0x60, 64)
     nonce = pat(0xC0, 12)
     aad = lp_encode(["maruhi/v1/recovery-wrap", user_id])
@@ -8800,21 +7682,6 @@ def gen_recovery_wrap():
     )
 
 
-# ---------------------------------------------------------------------------
-# checkpoint-digest.json — §6.2's target selection of values_digest
-#     (excluding declared. 0.8-draft — 2026-08-30 session 46 / §11's
-#     0.8-draft entry)
-#
-# The values_digest encoder (LP canonical form, byte-ascending, no
-# duplicates) is already pinned and unchanged by chain-entries.json's
-# values_digests section. What this file pins is **the target-selection
-# rule**: only variables with status = active appear on v_j; a variable
-# with status = declared (§4.2 layout v2 — no value set) does not appear
-# in values_digest (no value exists, so there are no coordinates to
-# attest — §6.2). The exclusion of a tombstone (deleted) is the existing
-# rule (caught on the manifest side — §4.3); the mixed case pins all 3
-# statuses of the selection at once. chain-entries.json is unchanged
-# (does not touch the chain format — §11).
 
 
 def gen_checkpoint_digest():
@@ -8887,37 +7754,10 @@ def gen_checkpoint_digest():
     )
 
 
-# ---------------------------------------------------------------------------
-# recipient-sets.json — the recipient sets of an environment: R(E), the
-#     destinations of its DEK wraps (§6.2 — the device axis), and W(E), the
-#     recipients of its sealed value proposals (§5.3). No spec change: the
-#     CLI and the server each computed the sets until packages/crypto took
-#     the one definition (2026-10-24)
-#
-#   R(E) = {(m, d) | m a current member, d ∈ devices(m),
-#                    E ∈ scope(m) ∩ scope(d)}
-#          ∪ {valid grant_server g | E ∈ scope_environments(g)}
-#   W(E) = {(m, d) ∈ R(E) | min(role(m), role_cap(d)) ≥ member}
-#          — R(E) minus readers, reader-capped devices and the grants
-#
-# A DEK wrap is addressed by (recipient_user_id, recipient_enc_pub_hex):
-# §5's info binds the recipient id (a server key's FP — §9) and the Seal
-# goes to the enc key, §5.1's signed bytes bind both, and neither carries
-# the recipient class (AUTH_SPEC §12-6's slot). No two elements of R(E)
-# share an address: no two current devices share an enc key, and §6.2's key
-# uniqueness keeps every key a grant has named off them (2026-10-25). One
-# id can still name a member and a grant (add_member's target user_id is
-# free-form — AUTH_SPEC §11-1), with two keys: two addresses, both listed
-# (README convention 33).
-#
-# The inputs are verification states (§6.2's current members with their
-# active devices, and the valid grants), not chains: the sets read nothing
-# else. Every list is compared as a set (sorted here only to keep the file
-# stable); this file pins no order. It references no other file.
 
 
 def gen_recipient_sets():
-    role_rank = {"reader": 0, "member": 1, "admin": 2, "owner": 3}  # §6.2's role order
+    role_rank = {"reader": 0, "member": 1, "admin": 2, "owner": 3}
     prod, dev, stage, fresh = "env-prod-0101", "env-dev-0102", "env-stage-0103", "env-fresh-0104"
     all_scope = {"kind": "all"}
 
@@ -8954,7 +7794,6 @@ def gen_recipient_sets():
         return scope["kind"] == "all" or environment_id in scope["environments"]
 
     def receives(person: dict, dev_: dict, environment_id: str) -> bool:
-        # E ∈ scope(m) ∩ scope(d) ⟺ E ∈ scope(m) ∧ E ∈ scope(d)
         return includes(person["scope"], environment_id) and includes(dev_["scope"], environment_id)
 
     def member_entry(person: dict, dev_: dict) -> dict:
@@ -9032,8 +7871,6 @@ def gen_recipient_sets():
         ],
     }
 
-    # One recipient id for a member and a grant: the member's user id is
-    # server-z's fingerprint, and its device holds a key of its own
     server_z = server("server-z", [prod])
     named = {
         "members": [
@@ -9047,11 +7884,6 @@ def gen_recipient_sets():
         "server_grants": [server_z],
     }
 
-    # Sets this fixture adds nothing to; the order check of
-    # test/checks/recipient-sets.ts reads it (this file pins no order).
-    # The two user ids sort one way in UTF-16 code-unit order and the
-    # other way case-insensitively, and the two grants' fingerprint order
-    # is the reverse of their enc-key order
     order = {
         "members": [
             member("user-abe-0301", "member", all_scope, [
@@ -9070,9 +7902,6 @@ def gen_recipient_sets():
         grant_e["server_enc_pub_hex"] < grant_f["server_enc_pub_hex"])
 
     fixtures = {"project": project, "fingerprint-named-member": named, "order": order}
-    # Every fixture is a state a valid chain reaches (§6.2's key uniqueness:
-    # no two devices share an enc or a sig key, and no device holds a grant's
-    # key), checked here and by verify_reference.mjs
     for fixture in fixtures.values():
         devices = [dev_ for person in fixture["members"] for dev_ in person["devices"]]
         for kind in ("enc_pub_hex", "sig_pub_hex"):
@@ -9142,14 +7971,14 @@ if __name__ == "__main__":
     gen_chain_entries()
     gen_dek_wrap_signature()
     gen_dek_commitment()
-    gen_value_signature()  # generated later because it references chain-entries.json / the outputs above
-    gen_metadata_signature()  # same (references chain-entries.json)
-    gen_env_manifest()  # same (references chain-entries.json; §4.3)
-    gen_checkpoint_boundary_chains()  # later because it references the env-manifest hashes (§4.3 (2))
-    gen_head_attestation()  # same (references chain-entries.json; §6.6)
-    gen_audit_head()  # AUDIT_SPEC §5.1 (standalone — references no other file)
+    gen_value_signature()
+    gen_metadata_signature()
+    gen_env_manifest()
+    gen_checkpoint_boundary_chains()
+    gen_head_attestation()
+    gen_audit_head()
     gen_invite_accept_signature()
-    gen_invite_link()  # references chain-entries.json (the §6.5 issue signature)
+    gen_invite_link()
     gen_recovery_wrap()
-    gen_checkpoint_digest()  # §6.2 target selection of values_digest (standalone — references no other file)
-    gen_recipient_sets()  # §6.2 R(E) / §5.3 W(E) (standalone — references no other file)
+    gen_checkpoint_digest()
+    gen_recipient_sets()

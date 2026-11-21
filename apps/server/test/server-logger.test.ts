@@ -1,9 +1,3 @@
-// The server logger (server-logger.ts): Effect log calls reach the console
-// exactly as the plain console.warn / console.error lines they replace —
-// WARN on console.warn, ERROR / FATAL on console.error, the message parts as
-// the console arguments, and nothing else (no date / level / fiber prefix,
-// no annotations, no spans, no Cause). INFO and below are dropped.
-
 import { Cause, Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -12,7 +6,6 @@ import { CAUSE_ONLY_LINE, ServerLoggerLive } from "../src/server-logger.ts";
 const CONSOLE_METHODS = ["log", "info", "warn", "error", "debug"] as const;
 type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
 
-/** Spies on every console method; the returned function reads each method's recorded calls. */
 function spyConsole(): () => Record<ConsoleMethod, unknown[][]> {
   const spies = CONSOLE_METHODS.map(
     (method) => [method, vi.spyOn(console, method).mockImplementation(() => {})] as const,
@@ -56,7 +49,6 @@ describe("server logger (server-logger.ts)", () => {
     const collect = spyConsole();
     const detail = { count: 3 };
     await run(Effect.logWarning("text", "TypeError", detail));
-    // The same arguments console.warn("text", "TypeError", detail) received
     expect(collect().warn).toEqual([["text", "TypeError", detail]]);
   });
 

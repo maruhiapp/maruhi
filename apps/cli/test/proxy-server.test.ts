@@ -1,12 +1,3 @@
-// Tests for the forward proxy (proxy-server.ts — PF4 rulings P1 / P2 / P4
-// / P6 / P7), end to end over real sockets: a client does what every
-// HTTPS client does behind HTTPS_PROXY (CONNECT, then TLS trusting the
-// run's CA), the proxy terminates the brokered host, substitutes the
-// placeholder toward the origin only, scrubs the real value out of the
-// response, tunnels unbrokered hosts untouched, and refuses misuse with
-// a message that names the variable and the rule. The origins are
-// loopback stand-ins reached through the upstream test seam.
-
 import { lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,7 +108,6 @@ async function proxyWith(input: {
   readonly listen?: { readonly host: string; readonly port: number };
   readonly advertise?: { readonly host: string; readonly port: number };
   readonly lookup?: Lookup;
-  /** Records the targets the proxy connects upstream for (what address it chose). */
   readonly connected?: Target[];
 }): Promise<ProxyHandle> {
   const hopDir = mkdtempSync(join(tmpdir(), "mh-hop-"));
@@ -132,7 +122,6 @@ async function proxyWith(input: {
     ...(input.advertise === undefined ? {} : { advertise: input.advertise }),
     onDecision: (decision) => input.decisions?.push(decision),
     upstream: {
-      // The rule's hosts resolve to the loopback origins
       connect: (target) => {
         input.connected?.push(target);
         return target.scheme === "https"
@@ -185,14 +174,12 @@ describe("the forward proxy", () => {
       headers: { authorization: `Bearer ${github.placeholder}`, "x-note": github.placeholder },
     });
     expect(response.status).toBe(200);
-    // The origin received the real value, in both headers
     const seen = secureOrigin.seen[0];
     expect(seen?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
     expect(seen?.headers["x-note"]).toBe(REAL_TOKEN);
     expect(seen?.headers.host).toBe("api.example.test");
     expect(seen?.headers["accept-encoding"]).toBe("identity");
     expect(seen?.url).toBe("/echo?q=1");
-    // The echo came back with the placeholder, not the value — in the body and in a header
     const body = response.body.toString("utf8");
     expect(body).not.toContain(REAL_TOKEN);
     expect(body).toContain(`Bearer ${github.placeholder}`);
@@ -223,8 +210,6 @@ describe("the forward proxy", () => {
     expect(Buffer.from(auth.replace(/^Basic /, ""), "base64").toString()).toBe(
       `x-access-token:${REAL_TOKEN}`,
     );
-    // The origin echoes the re-encoded header (body and header): the proxy's own
-    // Base64 is scrubbed back to the blob the client sent (§21 R-21)
     const echoed = JSON.parse(response.body.toString()) as { authorization: string };
     expect(echoed.authorization).toBe(`Basic ${basic}`);
     expect(response.headers["x-echo-authorization"]).toBe(`Basic ${basic}`);
@@ -234,7 +219,6 @@ describe("the forward proxy", () => {
   it("refuses a placeholder toward a host its rule does not name, naming the variable (the request is not sent)", async () => {
     const decisions: ProxyDecision[] = [];
     const proxy = await proxyWith({ credentials: [github, plainKey], decisions });
-    // PLAIN_KEY's rule names only the plain host; using it toward the brokered API host is refused
     const response = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
@@ -283,7 +267,6 @@ describe("the forward proxy", () => {
     expect(seen?.url).toBe(`/echo?key=${REAL_KEY}`);
     expect(seen?.body).toBe(`secret=${REAL_KEY}&other=1`);
     expect(seen?.headers["content-length"]).toBe(String(Buffer.byteLength(seen?.body ?? "")));
-    // and the echo is scrubbed back to the placeholder
     const text = response.body.toString();
     expect(text).not.toContain(REAL_KEY);
     expect(text).toContain(plainKey.placeholder);
@@ -292,8 +275,6 @@ describe("the forward proxy", () => {
   it("tunnels a host no rule names untouched: the client's own TLS reaches the origin and nothing is substituted", async () => {
     const decisions: ProxyDecision[] = [];
     const proxy = await proxyWith({ credentials: [github], decisions });
-    // other.example.test is served by the same origin (leaf for api.example.test), so the client
-    // must trust the origin's CA and name the origin's host for its own verification
     const tunnel = await openTunnel(proxy.port, "other.example.test:443");
     if ("refused" in tunnel) {
       throw new Error("tunnel refused");
@@ -308,7 +289,6 @@ describe("the forward proxy", () => {
     });
     secure.destroy();
     expect(response.status).toBe(200);
-    // Not inspected: the placeholder went out as it was
     expect(secureOrigin.seen[0]?.headers.authorization).toBe(`Bearer ${github.placeholder}`);
     expect(decisions).toEqual([
       { kind: "tunnelled", target: { scheme: "https", host: "other.example.test", port: 443 } },
@@ -327,7 +307,6 @@ describe("the forward proxy", () => {
       url: "http://elsewhere.example.test/x",
     });
     expect(plain.status).toBe(403);
-    // A brokered host still works
     const ok = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
@@ -410,7 +389,6 @@ describe("the forward proxy", () => {
     const secure = await secureTunnel(tunnel.socket, "api.example.test", [runCa.certPem]);
     const { Agent } = await import("node:http");
     const agent = new Agent({ keepAlive: true, maxSockets: 1 });
-    // Every request of this agent rides the one tunnel socket
     (agent as unknown as { createConnection: () => unknown }).createConnection = () => secure;
     const first = await requestOver(secure, {
       method: "GET",
@@ -459,7 +437,6 @@ describe("the forward proxy", () => {
     });
     expect(ok.status).toBe(200);
     expect(secureOrigin.seen[0]?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
-    // The credential is a hop-by-hop header: never forwarded to the origin
     expect(secureOrigin.seen[0]?.headers["proxy-authorization"]).toBeUndefined();
     const plainOk = await httpViaProxy({
       proxyPort: proxy.port,
@@ -486,7 +463,6 @@ describe("the forward proxy", () => {
       known: () => (mints > 0 ? [minted] : []),
     };
     const proxy = await proxyWith({ credentials: [github, connector] });
-    // A brokered request that uses only GITHUB_TOKEN: the connector is not touched
     const first = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
@@ -495,7 +471,6 @@ describe("the forward proxy", () => {
     });
     expect(first.status).toBe(200);
     expect(mints).toBe(0);
-    // A request that uses the connector's placeholder mints once
     const second = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
@@ -507,7 +482,6 @@ describe("the forward proxy", () => {
     expect(secureOrigin.seen[1]?.headers.authorization).toBe(
       "Bearer ghs_minted_value_000000000000",
     );
-    // … and its echo is scrubbed from the body with the connector's placeholder
     expect(second.body.toString()).toContain(`Bearer ${connector.placeholder}`);
     expect(second.body.toString()).not.toContain("ghs_minted_value");
   });
@@ -528,7 +502,6 @@ describe("the forward proxy", () => {
       url: "https://api.example.test/echo",
       headers: { authorization: `Bearer ${quoted.placeholder}` },
     });
-    // The origin's JSON echo carries the value escaped (`va\"lue…`); the scrub still catches it
     const text = echo.body.toString();
     expect(text).not.toContain("lue-with-quote");
     expect(text).toContain(quoted.placeholder);
@@ -561,12 +534,9 @@ describe("the forward proxy", () => {
     ]);
   });
 
-  /** A sandbox-mode proxy (bound beyond the loopback) with a scripted resolver and a record of upstream connections. */
   async function sandboxProxy() {
     const decisions: ProxyDecision[] = [];
     const connected: Target[] = [];
-    // A resolver under the sandbox's control answers a public address first
-    // and the metadata service next (query counting — §21 R-19)
     const rebind = { answers: 0 };
     const fixed = new Map<string, string>([
       ["metadata.example.test", "169.254.169.254"],
@@ -593,7 +563,6 @@ describe("the forward proxy", () => {
     return { proxy, decisions, connected, rebind };
   }
 
-  /** Opens a tunnel that must be refused and returns the 403's body. */
   async function refusedTunnel(proxyPort: number, authority: string): Promise<string> {
     const tunnel = await openTunnel(proxyPort, authority);
     if (!("refused" in tunnel)) {
@@ -604,7 +573,6 @@ describe("the forward proxy", () => {
     return tunnel.refused.body.toString();
   }
 
-  /** Opens a tunnel that must succeed and closes it at once. */
   async function clearedTunnel(proxyPort: number, authority: string): Promise<void> {
     const tunnel = await openTunnel(proxyPort, authority);
     if ("refused" in tunnel) {
@@ -615,11 +583,9 @@ describe("the forward proxy", () => {
 
   it("in sandbox mode refuses host-local destinations no rule names — by literal in any form, by name, and by resolution (§21 R-12 / R-16)", async () => {
     const { proxy, decisions } = await sandboxProxy();
-    // CONNECT to the loopback by literal
     expect(await refusedTunnel(proxy.port, `127.0.0.1:${secureOrigin.port}`)).toContain(
       "127.0.0.1 is a host-local destination (this machine's loopback or link-local, shared address space, or the cloud metadata service); in sandbox mode the proxy reaches only destinations outside this machine unless a rule names them",
     );
-    // The loopback and the metadata services in other textual forms (§21 R-16 / R-20)
     for (const authority of [
       `0:0:0:0:0:0:0:1:${secureOrigin.port}`,
       `::ffff:7f00:1:${secureOrigin.port}`,
@@ -631,15 +597,12 @@ describe("the forward proxy", () => {
         "is a host-local destination",
       );
     }
-    // A name that resolves to the metadata service's link-local address
     expect(await refusedTunnel(proxy.port, "metadata.example.test:443")).toContain(
       "metadata.example.test resolves to a host-local address (169.254.169.254",
     );
-    // A name that cannot be resolved is refused too (fail closed)
     expect(await refusedTunnel(proxy.port, "nowhere.example.test:443")).toContain(
       "nowhere.example.test cannot be resolved",
     );
-    // Plain HTTP toward `localhost` by name, and a bracketed IPv6 literal (classified, not resolved)
     for (const url of [
       `http://localhost:${plainOrigin.port}/x`,
       `http://[::1]:${plainOrigin.port}/x`,
@@ -658,21 +621,17 @@ describe("the forward proxy", () => {
 
   it("in sandbox mode connects a cleared name by the address it checked — one resolution, no rebinding — and keeps the hosts a rule names (§21 R-19)", async () => {
     const { proxy, connected, rebind } = await sandboxProxy();
-    // A public destination is tunnelled (the seam connects it to the origin),
-    // and the connection is asked for the address the guard checked, not the name
     await clearedTunnel(proxy.port, "public.example.test:443");
     expect(connected.at(-1)).toMatchObject({
       host: "public.example.test",
       resolved: "203.0.113.7",
     });
-    // The rebinding resolver: the one lookup's answer is what the proxy connects to
     await clearedTunnel(proxy.port, "rebind.example.test:443");
     expect(rebind.answers).toBe(1);
     expect(connected.at(-1)).toMatchObject({
       host: "rebind.example.test",
       resolved: "203.0.113.9",
     });
-    // Plain HTTP toward a cleared name goes to the checked address too
     const relayed = await httpViaProxy({
       proxyPort: proxy.port,
       url: "http://public.example.test/r",
@@ -683,7 +642,6 @@ describe("the forward proxy", () => {
       host: "public.example.test",
       resolved: "203.0.113.7",
     });
-    // A host a rule names is the member's decision: `http://plain.localhost` still brokers
     const named = await httpViaProxy({
       proxyPort: proxy.port,
       url: "http://plain.localhost/echo",
@@ -719,7 +677,6 @@ describe("the forward proxy", () => {
   it("puts the hop servers on Unix sockets inside the private directory, never on a TCP port (§21 R-2)", async () => {
     const proxy = await proxyWith({ credentials: [github, plainKey] });
     const hopDir = hopDirs.at(-1) ?? "";
-    // Before any request: the plain-HTTP hop only
     expect(readdirSync(hopDir)).toEqual(["plain"]);
     const brokered = await httpsViaProxy({
       proxyPort: proxy.port,
@@ -728,7 +685,6 @@ describe("the forward proxy", () => {
       headers: { authorization: `Bearer ${github.placeholder}` },
     });
     expect(brokered.status).toBe(200);
-    // One TLS-terminated hop per brokered authority, a socket file (not a port)
     expect(readdirSync(hopDir).toSorted()).toEqual(["h1", "plain"]);
     for (const name of readdirSync(hopDir)) {
       expect(lstatSync(join(hopDir, name)).isSocket(), name).toBe(true);
@@ -753,7 +709,6 @@ describe("the forward proxy", () => {
       known: () => [enc.encode("line1\nline2")],
     };
     const proxy = await proxyWith({ credentials: [awkward, multiline] });
-    // A multi-line value substituted only into the body is sent as it is (§21 R-9)
     const inBody = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
@@ -771,7 +726,6 @@ describe("the forward proxy", () => {
     });
     expect(query.status).toBe(200);
     expect(plainOrigin.seen[0]?.url).toBe(`/echo?key=${encodeURIComponent("a b&c=d#e/f%")}`);
-    // The origin echoes the URL percent-encoded — the proxy's own wire form is scrubbed too (§21 R-21)
     expect((JSON.parse(query.body.toString()) as { url: string }).url).toBe(
       `/echo?key=${awkward.placeholder}`,
     );
@@ -801,7 +755,6 @@ describe("the forward proxy", () => {
     expect(head.status).toBe(200);
     expect(head.headers["content-length"]).toBe("2");
     expect(head.body.length).toBe(0);
-    // `api.example.test.` is the same host
     const dotted = await httpsViaProxy({
       proxyPort: proxy.port,
       ca: [runCa.certPem],
@@ -810,7 +763,6 @@ describe("the forward proxy", () => {
     });
     expect(dotted.status).toBe(200);
     expect(secureOrigin.seen[1]?.headers.authorization).toBe(`Bearer ${REAL_TOKEN}`);
-    // An open blind tunnel does not hold close() open
     const tunnel = await openTunnel(proxy.port, "other.example.test:443");
     expect("socket" in tunnel).toBe(true);
     const started = Date.now();

@@ -1,18 +1,3 @@
-// Unit + command tests for the backing source `github-signing-keys`
-// (CRYPTO_SPEC §6.5 — IV2).
-//
-// Properties pinned down:
-//  1. checkSigningKeyBacking: sends only the login, fixed host, fail-closed
-//     (failures and impossibility come back as types, never as CliError),
-//     and skips anything that isn't ssh-ed25519
-//  2. `key publish`: prints the OpenSSH line (stdout is the key line alone)
-//     and `--gh` calls gh (stdin = the key line, GH_ENV); a gh failure is
-//     an error carrying the manual steps
-//  3. The registration path forward (ruling G (6)): `yes` right after `key
-//     generate` registers; non-interactive / no / agent / `identityBacking
-//     = none` never ask, or only print guidance
-//  4. `config set identityBacking` acceptance checks
-
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -58,13 +43,11 @@ function loggedIn(env: TestEnv, origin: string, user: TestUser): void {
       token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
       userId: user.userId,
       tokenId: "tok_1",
-      // 2100-01-01 (outside the near-expiry warning window)
       expiresAtMs: 4_102_444_800_000,
     }),
   );
 }
 
-/** The correct answer to the recovery-code save confirmation (the final group from the shown stderr). */
 function saveConfirmation(env: TestEnv): () => string {
   return () => {
     const line = env.errors.find((item) => /^ {4}[A-Z2-7]{4}(-[A-Z2-7]{4})+$/.test(item));
@@ -99,7 +82,6 @@ describe("checkSigningKeyBacking (querying the backing source)", () => {
     const env = await makeTestEnv();
     env.setVendorOrigin("api.github.com", github.origin);
     expect(await verdictOf(env, "bob", bob.sigPubHex)).toEqual({ kind: "match" });
-    // Only the login is sent (no query, no body)
     expect(requests).toEqual(["GET /users/bob/ssh_signing_keys"]);
   });
 
@@ -119,8 +101,6 @@ describe("checkSigningKeyBacking (querying the backing source)", () => {
     expect(await verdictOf(env, "ghost", bob.sigPubHex)).toEqual({ kind: "no-user" });
     expect((await verdictOf(env, "limited", bob.sigPubHex)).kind).toBe("unavailable");
     expect((await verdictOf(env, "odd", bob.sigPubHex)).kind).toBe("unavailable");
-    // A malformed login never even issues the query (treated as
-    // impossible)
     expect((await verdictOf(env, "-bad-", bob.sigPubHex)).kind).toBe("unavailable");
   });
 });
@@ -198,7 +178,6 @@ describe("the registration path forward right after key generation (ruling G (6)
     expect(env2.errors.join("\n")).toContain("register it later with `maruhi key publish`");
     expect(env2.keychain.get(masterKeyEntryName(maruhi.origin, bob.userId))).toBeDefined();
 
-    // EOF (answers exhausted) also means "do not register"
     const env3 = await makeTestEnv();
     loggedIn(env3, maruhi.origin, bob);
     await seedConfig(env3, { server: maruhi.origin });
@@ -213,8 +192,6 @@ describe("the registration path forward right after key generation (ruling G (6)
     const env = await makeTestEnv();
     loggedIn(env, maruhi.origin, bob);
     await seedConfig(env, { server: maruhi.origin });
-    // Agent environment: it performs neither recovery-code issuance nor
-    // the registration prompt on your behalf (guidance only)
     env.setAgent({ isAgent: true, name: "test-agent" });
     expect(await runCli(["key", "generate"], env.layer)).toBe(0);
     expect(env.prompts).toHaveLength(0);

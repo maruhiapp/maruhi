@@ -1,8 +1,3 @@
-// `maruhi member add`: the §6.5 independent verification of the list's
-// acceptance block + issuance-pin cross-check -> the invitee confirmation
-// (member-add-ceremony.ts) -> add_member append (CAS retry) -> backfill of
-// every environment × every epoch (the group's overview lives in member.ts).
-
 import { type EnvironmentId, type UserId } from "@maruhi/core";
 import {
   type ChainDevice,
@@ -61,34 +56,16 @@ import {
   type MemberOpOutcome,
 } from "./member.ts";
 
-// ---------------------------------------------------------------------------
-// member add
-// ---------------------------------------------------------------------------
-
 export interface MemberAddSummary {
-  /** Whether it was appended to the chain (false = already a member under the same key — a backfill-only resume). */
   readonly appended: boolean;
   readonly targetUserId: UserId;
   readonly role: Role;
-  /** The number of wraps newly registered by the backfill. */
   readonly registered: number;
-  /** The number of wraps already registered (a re-run's convergence). */
   readonly alreadyRegistered: number;
-  /** The number deleted → re-registered on stale-key-wrap suspicion (the re-addition auto-repair — §12-6). */
   readonly repaired: number;
-  /** The environments whose backfill failed (§7 — never skipped silently). */
   readonly failed: readonly { readonly environmentId: EnvironmentId; readonly message: string }[];
 }
 
-/**
- * The key-FP re-registration warning (design record K5-K / K6-I): warns
- * when the acceptance key appears on a different membership interval of
- * the verified chain's history (not a refusal — §6.2 permits a return
- * under the same key). Distinguishes the same user_id's past membership
- * from a different user_id's membership. The judgment material is
- * `keyHistory` (covers additions via proposals too — K6-C). Shown before
- * signing on both the direct-append and proposal paths.
- */
 function warnKeyReuse(
   verified: VerifiedProject,
   acceptance: InviteAcceptance,
@@ -104,7 +81,6 @@ function warnKeyReuse(
   );
 }
 
-/** Early check of the add_member actor-role rule (§6.2) (a reason string when unmet). */
 function addActorRejection(actor: ActorAuthority | undefined, role: Role): string | null {
   if (actor === undefined || ROLE_RANK[actor.role] < ROLE_RANK.admin) {
     return "Only admins and above can run add_member (CRYPTO_SPEC §6.2)";
@@ -115,7 +91,6 @@ function addActorRejection(actor: ActorAuthority | undefined, role: Role): strin
   return null;
 }
 
-/** Early check of key uniqueness (§6.2 duplicate-member-key) for the acceptance key (a reason when unmet). */
 function duplicateMemberKeyRejection(
   verified: VerifiedProject,
   acceptance: InviteAcceptance,
@@ -134,7 +109,6 @@ function duplicateMemberKeyRejection(
   return `The acceptance key ${held} (consensus rule duplicate-member-key — CRYPTO_SPEC §6.2). add_member cannot proceed with this acceptance`;
 }
 
-/** The pre-append check of add_member (re-run after a CAS retry's resync as well). */
 const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
@@ -159,8 +133,6 @@ const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
     if (
       memberHasKeys(existing, input.acceptance.inviteeEncPubHex, input.acceptance.inviteeSigPubHex)
     ) {
-      // Already appended (a previous run's interruption / a concurrent
-      // run) — resume as backfill-only
       return { alreadyAdded: true };
     }
     return yield* Effect.fail(
@@ -173,13 +145,6 @@ const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
   if (keyRejection !== null) {
     return yield* Effect.fail(cliError(keyRejection));
   }
-  // Principle 1 (§6.2 scope-not-contained — check order is also §6.2's:
-  // after the duplicate family): add's permission-change environment set
-  // = the new scope (the invite row). The issuance-time check (K4-G) is
-  // the issuer's; the add's actor may be a different person at a
-  // different time (independent review S1). Dropped before the ceremony.
-  // An already-appended resume (above), like remove / change-role, asks
-  // no containment (what remains is only the backfill)
   const invited = memberScopeOf(input.scope);
   if (!scopeContains(permission.scope, invited)) {
     return yield* Effect.fail(
@@ -191,13 +156,6 @@ const ensureAddable = Effect.fn("member-add.ensureAddable")(function* (input: {
   return { alreadyAdded: false };
 });
 
-/**
- * Signs an add_member entry right after the current head (the shared core
- * = chain-append.ts). scope is the invite row's to-be-granted scope
- * (AUTH_SPEC §15-2 — an inviter cannot grant a different scope after
- * acceptance: the consent's range is fixed by the issuance signature at
- * issuance)
- */
 function signAddMemberEntry(input: {
   readonly verified: VerifiedProject;
   readonly signerUserId: UserId;
@@ -224,28 +182,12 @@ function signAddMemberEntry(input: {
   });
 }
 
-/** The result of one environment's backfill. */
 interface MemberBackfillResult {
   readonly registered: number;
   readonly alreadyRegistered: number;
   readonly repaired: number;
 }
 
-/**
- * The backfill of one environment's every epoch addressed to the new
- * member (CRYPTO_SPEC §7 — a new member can read history too. Shared core
- * = backfill.ts).
- *
- * **The re-addition auto-repair (ruling B1b + §12-6 supplement)**: a
- * per-epoch 409 may mean "a stale-key wrap from the previous membership is
- * occupying the slot". Left alone the re-added member cannot decrypt that
- * epoch (treating the 409 as already-registered makes it invisible), so
- * when judged a stale-key wrap, the §12-6 repair path (delete →
- * re-register) replaces it with a new-key wrap. The judgment is made by the
- * **exact comparison** of the 409 response's stored recipient enc public
- * key (`storedRecipientEncPubHex` — AUTH_SPEC §12-6) with the acceptance
- * key (decryptability = enc-key equality itself).
- */
 const backfillMemberEnvironment = Effect.fn("member-add.backfillMemberEnvironment")(
   function* (input: {
     readonly client: MaruhiClient;
@@ -256,9 +198,6 @@ const backfillMemberEnvironment = Effect.fn("member-add.backfillMemberEnvironmen
     readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
   }): Effect.fn.Return<MemberBackfillResult, CliError> {
-    // Of the target's **all devices**, those whose effective scope
-    // includes E (the device expansion of R(E) — CRYPTO_SPEC §6.2, DK K4).
-    // Each device has its own slot, so register per device
     const devices = devicesOf(input.target).filter((device) =>
       deviceReceivesEnvironment(input.target, device, input.environmentId),
     );
@@ -275,7 +214,6 @@ const backfillMemberEnvironment = Effect.fn("member-add.backfillMemberEnvironmen
   },
 );
 
-/** The backfill of one environment × one device of the target (slot = (epoch, user_id, enc key)). */
 function backfillMemberDevice(input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -299,15 +237,9 @@ function backfillMemberDevice(input: {
     signingKeyPair: input.signingKeyPair,
     onSlotConflict: (wrap, storedRecipientEncPubHex) =>
       Effect.gen(function* () {
-        // Whether the occupied slot is a stale-key wrap: the exact
-        // comparison against the response's stored enc public key (a match
-        // = registered under the current key = idempotent)
         if (storedRecipientEncPubHex === targetDevice.encPubHex) {
           return "already-registered" as const;
         }
-        // The repair path (§12-6): delete the occupied slot and
-        // re-register the new-key wrap. The reference names down to the
-        // device's enc key
         yield* input.client.deks
           .remove({
             params: { projectId: input.verified.projectId, environmentId: input.environmentId },
@@ -326,16 +258,10 @@ function backfillMemberDevice(input: {
             Effect.asVoid,
             Effect.catchTag(
               "DekWrapNotFound",
-              // When a concurrent repair made the slot disappear, only the re-registration is needed
               () => Effect.void,
               (error) => Effect.fail(toCliError(error)),
             ),
           );
-        // delete → re-register is not atomic: if the re-register fails
-        // here the slot stays empty. The state is made explicit instead of
-        // blending into a generic failure wording (a re-run becomes a
-        // direct registration into an empty slot, so it is itself the
-        // recovery path)
         const retried = yield* register([wrap]).pipe(
           Effect.mapError((error) =>
             cliError(
@@ -343,28 +269,16 @@ function backfillMemberDevice(input: {
             ),
           ),
         );
-        // When a concurrent run registered between the delete and the
-        // re-register, the acceptance check (§12-6's recipient match)
-        // passed on the current chain's key, so it converged as a new-key
-        // wrap
         return retried.kind === "ok" ? ("repaired" as const) : ("already-registered" as const);
       }),
   });
 }
 
-/**
- * The prologue of member add: choose the invite → issuance-pin cross-check
- * → §6.5 independent verification → pre-append checks → the
- * FP-confirmation ceremony. The ceremony runs regardless of whether an
- * append happens (even on a backfill-only re-run, never skip verifying the
- * key wraps are about to be dealt to — same discipline as server grant).
- */
 const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
   readonly inviteId: string | null;
   readonly expectFingerprintHex: string | null;
-  /** `--github <login>` (the backing source's match target. Beats the issuance pin's destination). */
   readonly githubLogin: string | null;
   readonly identityBacking: IdentityBacking;
   readonly pins: InvitePins | null;
@@ -382,11 +296,6 @@ const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (inp
   const listed = yield* listInvitations(input.client, input.verified.projectId);
   const row = yield* selectInvitation(listed, input.inviteId);
 
-  // Verifying the issuance text (CRYPTO_SPEC §6.5 — IV): the row's
-  // issuance signature is verified with the chain-derived inviter key.
-  // For a row I issued, my own key settles "is it my issuance" (independent
-  // of the issuance pin). Failure = the row was substituted / tampered →
-  // refuse
   const issuance = yield* verifyIssuance({ verified: input.verified, row });
   if (!issuance.ok) {
     return yield* Effect.fail(
@@ -394,11 +303,6 @@ const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (inp
     );
   }
 
-  // The issuance-pin cross-check (SHOULD — agreement of the
-  // issuance-time link_pub / role with the server's claims). Without a
-  // pin (issued on another device, beyond the retention window) only the
-  // issuance signature's verification pins the row (the IV revision moved
-  // the source of truth to the issuance signature)
   const pin = pinMismatchOf(input.pins, row);
   if (pin === "mismatch") {
     return yield* Effect.fail(
@@ -413,7 +317,6 @@ const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (inp
     );
   }
 
-  // §6.5's independent verification (never trusting the server's claimed verification result): the link signature → the acceptance signature
   const acceptanceVerified = yield* verifyAcceptanceBlock({
     projectId: input.verified.projectId,
     issuance: row.issuance,
@@ -439,7 +342,6 @@ const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (inp
     yield* warnKeyReuse(input.verified, row.acceptance);
   }
 
-  // Adequacy form 4 (backing source) → if unmet, adequacy forms 1-3 (ceremony / flag / book)
   const backed = yield* confirmInviteeViaBacking({
     identityBacking: input.identityBacking,
     flagLogin: input.githubLogin,
@@ -460,14 +362,12 @@ const prepareMemberAdd = Effect.fn("member-add.prepareMemberAdd")(function* (inp
   return { row, alreadyAdded: first.alreadyAdded };
 });
 
-/** The all-environment sweep of the backfill (one environment's failure doesn't stop the rest — §7). */
 export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironments")(
   function* (input: {
     readonly client: MaruhiClient;
     readonly verified: VerifiedProject;
     readonly recipient: DekRecipient;
     readonly target: ChainMember;
-    /** The environments to backfill (default = all environments of the target's scope). An explicit list is re-narrowed by the scope. */
     readonly environments?: readonly EnvironmentId[];
     readonly signerUserId: UserId;
     readonly signingKeyPair: SigningKeyPair;
@@ -475,11 +375,6 @@ export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironm
     Pick<MemberAddSummary, "registered" | "alreadyRegistered" | "repaired" | "failed">,
     CliError
   > {
-    // The target scope's environments (chain-derived, chain-deleted ones
-    // excluded) × every epoch (CRYPTO_SPEC §7 "every epoch DEK of every
-    // environment in the target's scope" — 2026-09-15 ES K4. The
-    // `environments` explicit list is used for change-role's widening
-    // backfill)
     const deletedVerified = chainDeletedEnvironments(input.verified);
     const environments = (input.environments ?? chainEnvironmentIds(input.verified))
       .filter(
@@ -494,7 +389,6 @@ export const backfillAllEnvironments = Effect.fn("member-add.backfillAllEnvironm
   },
 );
 
-/** add_member's inner op (the same payload for a direct append and a proposal — the invite row's scope). */
 function addMemberOperation(
   row: AddableRow,
 ): Extract<ProposableOperation, { readonly op: "add_member" }> {
@@ -511,13 +405,6 @@ function addMemberOperation(
   };
 }
 
-/**
- * The backfill addressed to the new member (the aftermath of add_member's
- * append — CRYPTO_SPEC §7 / AUTH_SPEC §12-6). Shared between a direct
- * append's add and the fulfillment of the approver who completes the
- * application under four-eyes (§12-6's fifth path — approval-approve.ts).
- * The target is the current member after resync (`target`).
- */
 export const backfillNewMember = Effect.fn("member-add.backfillNewMember")(function* (input: {
   readonly client: MaruhiClient;
   readonly verified: VerifiedProject;
@@ -531,15 +418,6 @@ export const backfillNewMember = Effect.fn("member-add.backfillNewMember")(funct
   CliIo
 > {
   const io = yield* CliIo;
-  // Guidance on a re-addition (a past membership under a different key):
-  // does the key history carry a binding different from the current key.
-  // The 409 judgment is the exact comparison against the response's
-  // stored enc public key (AUTH_SPEC §12-6 supplement); this is guidance
-  // only. The server auto-cleans stale-key wraps on add_member acceptance
-  // (same supplement), so normally a 409 only ever means "registered under
-  // the current key". "A different key" = a history binding that matches
-  // none of the target's current device set (with multiple devices, a
-  // current device's key is not a stale key — DK K4)
   const readdedWithNewKey = (input.verified.keyHistory.get(input.target.userId) ?? []).some(
     (binding) => !memberHasKeys(input.target, binding.encPubHex, binding.sigPubHex),
   );
@@ -591,10 +469,6 @@ export const memberAddOp = Effect.fn("member-add.memberAddOp")(function* (input:
       signingKeyPair: input.signingKeyPair,
     });
 
-  // Four-eyes (K6-A / K6-D): if the policy targets add_member, propose
-  // and finish. The ceremony (prepareMemberAdd) was done by the proposer,
-  // and the backfill is done by the approver who completes the
-  // application
   if (!alreadyAdded && isApprovalTarget(inner, input.verified.state.approvalPolicy)) {
     const proposal = yield* proposeOperation(
       input,
@@ -636,7 +510,6 @@ export const memberAddOp = Effect.fn("member-add.memberAddOp")(function* (input:
     verified = outcome.verified;
   }
 
-  // The post-acceptance resync confirms the listing (the server's claim is never the source of truth)
   verified = yield* resyncExtended(input.resync, verified);
   const target = verified.state.members.get(row.acceptance.inviteeUserId);
   if (

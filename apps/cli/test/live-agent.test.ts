@@ -1,11 +1,3 @@
-// Pins `maruhi agent`'s production path (live.ts's runAgentSession —
-// Bun.spawn and signal passthrough, plus agent.ts's teardown) with a real
-// process. Since vitest runs under Node, `bun` launches bin.ts and we
-// observe from outside (same trick as live-exec.test.ts). Interactive
-// signal delivery is not checked — what is checked is "when the child
-// exits, agent exits too, inherits the exit code, and the socket's
-// directory is gone".
-
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
@@ -36,8 +28,6 @@ describeUnix("maruhi agent (live — a real process)", () => {
   it("agent listens only while the child lives, inherits its exit code, and removes the socket directory", () => {
     const configDir = scratchDir("maruhi-agent-live-cfg-");
     const runtimeDir = scratchDir("maruhi-agent-live-run-");
-    // Child: prints the socket path to stdout, fetches status from inside
-    // the session, exits with 7
     const script = [
       'printf "sock=%s\\n" "$MARUHI_AGENT_SOCK"',
       `bun "${BIN}" agent status`,
@@ -57,11 +47,9 @@ describeUnix("maruhi agent (live — a real process)", () => {
     const socketPath = /^sock=(.+)$/m.exec(result.stdout)?.[1] ?? "";
     expect(socketPath.startsWith(`${runtimeDir}/maruhi-agent-`)).toBe(true);
     expect(socketPath.endsWith("/agent.sock")).toBe(true);
-    // status from inside the session reaches agent (it holds nothing yet)
     expect(result.stdout).toContain(`socket:      ${socketPath}`);
     expect(result.stdout).toContain("holding:     nothing yet");
     expect(result.stderr).toContain("Agent session started");
-    // Once the child exits, neither socket nor directory remains
     expect(existsSync(socketPath)).toBe(false);
     expect(existsSync(join(socketPath, ".."))).toBe(false);
   });
