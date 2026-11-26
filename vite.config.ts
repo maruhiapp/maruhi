@@ -15,6 +15,9 @@ effectTsgoRules["effecttsgo/any-unknown-in-error-context"] = "off";
 effectTsgoRules["effecttsgo/prefer-schema-over-json"] = "off";
 effectTsgoRules["effecttsgo/schema-class-missing-brand"] = "off";
 effectTsgoRules["effecttsgo/unstable-api-usage"] = "off";
+effectTsgoRules["effecttsgo/flat-map-map-to-zip-with"] = "off";
+effectTsgoRules["effecttsgo/promise-all-in-effect"] = "error";
+effectTsgoRules["effecttsgo/promise-race-in-effect"] = "error";
 
 export default defineConfig({
   fmt: {

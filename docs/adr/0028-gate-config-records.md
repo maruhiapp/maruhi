@@ -183,7 +183,9 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L4: Lint config lives in vite.config.ts because vite-plus reads only the workspace root's lint block; the Effect diagnostics gate lives here too
 - L50: Formatter config (formerly .oxfmtrc.json): import sorting is part of the format, and prose / generated files stay unformatted
 - L66: effecttsgo is supplied at runtime by the effect-tsgo wrapper (hence the cast); a bare `vp lint` fails to parse this config loudly, by design
-- L76: The ten typescript/* ports are wanted at error but inert under tsrs (probe-proven); pinned off, to flip back on a --tsrs-lint bump
+- L76: The ten typescript/* ports are wanted at error but inert under tsrs (probe-proven); pinned off, to flip back on a --tsrs-lint bump. Re-probed 2026-11-26 on the 7.1.0-beta.tsrs4 pin (@effect/tsgo 0.73.7): textbook repros (floating promise, await of a non-thenable, async forEach callback, delete on an array index, string setTimeout, for-in over an array, unsafe enum comparison, unsafe unary minus, mixed-type plus, meaningless void) still fire nothing while the type-aware effecttsgo rules fire on the same file, so the ports stay off
+- L18: effecttsgo/flat-map-map-to-zip-with (new in @effect/tsgo 0.73.0) is pinned off explicitly: it is a style rule, and style rules stay off in this config
+- L19: effecttsgo/promise-all-in-effect and effecttsgo/promise-race-in-effect (new since @effect/tsgo 0.71.0) are adopted at error: a diagnostics census over every workspace project on 2026-11-26 found zero hits, and the rules guard against unbounded, uninterrupted promise fan-out inside Effect code
 - L149: consistent-function-scoping off for tests: promoted to correctness by oxlint 1.85; moving helpers out of tests is a large migration
 - L156: Outbound HTTP goes through packages/core/src/egress.ts only: Effect's clients add trace headers, which 'say nothing' rules out
 - L218: packages/core/src/egress.ts is the one place allowed to wrap Effect's fetch client (no-restricted-imports off there)
