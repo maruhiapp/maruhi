@@ -18,28 +18,28 @@
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
     "importlint": "import-lint",
-    "lint": "effect-tsgo --tsrs-lint=0.25.0-ts7.1.0-beta vp lint --deny-warnings",
+    "lint": "effect-tsgo --tsrs-lint=7.1.0-beta.tsrs4 vp lint --deny-warnings",
     "prepare": "bun run --filter @maruhi/site sync",
     "test": "vp test run",
     "test:app-unit": "bun scripts/test-suite.mjs run app-unit",
     "test:cli": "bun scripts/test-suite.mjs run cli",
     "test:packages": "bun scripts/test-suite.mjs run packages",
     "test:server": "bun scripts/test-suite.mjs run server",
-    "typecheck": "effect-tsgo --tsrs-lint=0.25.0-ts7.1.0-beta vp check --no-fmt --no-lint"
+    "typecheck": "effect-tsgo --tsrs-lint=7.1.0-beta.tsrs4 vp check --no-fmt --no-lint"
   },
   "devDependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.87",
     "@effect/platform-bun": "4.1.6",
     "@effect/platform-node": "4.1.6",
-    "@effect/tsgo": "0.70.0",
+    "@effect/tsgo": "0.73.7",
     "@import-lint/cli": "0.1.10",
     "@stylexjs/eslint-plugin": "0.19.2",
     "alchemy": "2.0.0-beta.87",
     "effect": "4.1.6",
     "fallow": "3.42.0",
-    "oxlint-plugin-eslint": "1.94.0",
+    "oxlint-plugin-eslint": "1.95.0",
     "typescript": "7.0.2",
-    "vite-plus": "1.7.0"
+    "vite-plus": "1.8.0"
   },
   "overrides": {
     "@cloudflare/config>zod": "4.6.6",
