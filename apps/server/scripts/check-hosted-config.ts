@@ -195,9 +195,12 @@ function normWrangler(config: WranglerLike): Norm {
       directory: config.assets.directory,
       htmlHandling: config.assets.html_handling,
       notFoundHandling: config.assets.not_found_handling,
-      runWorkerFirst: Array.isArray(config.assets.run_worker_first)
-        ? config.assets.run_worker_first
-        : undefined,
+      runWorkerFirst:
+        typeof config.assets.run_worker_first === "boolean"
+          ? config.assets.run_worker_first
+            ? ["/*"]
+            : []
+          : config.assets.run_worker_first,
     },
     doExports,
   };
