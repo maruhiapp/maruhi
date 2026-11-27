@@ -65,51 +65,65 @@ interface Norm {
 }
 
 interface WranglerLike {
-  name?: string;
-  main?: string;
-  compatibility_date?: string;
-  compatibility_flags?: readonly string[];
-  workers_dev?: boolean;
-  preview_urls?: boolean;
-  limits?: { cpu_ms?: number };
-  durable_objects?: {
-    bindings?: ReadonlyArray<{
-      name: string;
-      class_name: string;
-      script_name?: string;
-    }>;
-  };
-  ratelimits?: ReadonlyArray<{
-    name: string;
-    namespace_id: string;
-    simple: { limit: number; period: number };
-  }>;
-  secrets_store_secrets?: ReadonlyArray<{
-    binding: string;
-    store_id: string;
-    secret_name: string;
-  }>;
-  d1_databases?: ReadonlyArray<{
-    binding: string;
-    database_name: string;
-    database_id: string;
-  }>;
-  r2_buckets?: ReadonlyArray<{ binding: string; bucket_name: string }>;
-  triggers?: { crons?: readonly string[] };
-  routes?: ReadonlyArray<{ pattern: string; custom_domain?: boolean }>;
-  observability?: {
-    enabled?: boolean;
-    redact_query_string?: boolean;
-    logs?: { invocation_logs?: boolean; head_sampling_rate?: number };
-  };
-  assets?: {
-    directory?: string;
-    html_handling?: string;
-    not_found_handling?: string;
-    run_worker_first?: readonly string[];
-  };
-  exports?: Record<string, { type?: string; storage?: string }>;
-  migrations?: ReadonlyArray<{ new_sqlite_classes?: readonly string[] }>;
+  name?: string | undefined;
+  main?: string | undefined;
+  compatibility_date?: string | undefined;
+  compatibility_flags?: readonly string[] | undefined;
+  workers_dev?: boolean | undefined;
+  preview_urls?: boolean | undefined;
+  limits?: { cpu_ms?: number } | undefined;
+  durable_objects?:
+    | {
+        bindings?: ReadonlyArray<{
+          name: string;
+          class_name: string;
+          script_name?: string | undefined;
+        }>;
+      }
+    | undefined;
+  ratelimits?:
+    | ReadonlyArray<{
+        name: string;
+        namespace_id: string;
+        simple: { limit: number; period: number };
+      }>
+    | undefined;
+  secrets_store_secrets?:
+    | ReadonlyArray<{
+        binding: string;
+        store_id: string;
+        secret_name: string;
+      }>
+    | undefined;
+  d1_databases?:
+    | ReadonlyArray<{
+        binding: string;
+        database_name?: string | undefined;
+        database_id?: string | undefined;
+      }>
+    | undefined;
+  r2_buckets?: ReadonlyArray<{ binding: string; bucket_name?: string | undefined }>;
+  triggers?: { crons?: readonly string[] } | undefined;
+  routes?:
+    | ReadonlyArray<string | { pattern: string; custom_domain?: boolean | undefined }>
+    | undefined;
+  observability?:
+    | {
+        enabled?: boolean | undefined;
+        redact_query_string?: boolean | undefined;
+        logs?: { invocation_logs?: boolean; head_sampling_rate?: number } | undefined;
+      }
+    | undefined;
+  assets?:
+    | {
+        directory?: string | undefined;
+        html_handling?: string | undefined;
+        not_found_handling?: string | undefined;
+        run_worker_first?: boolean | readonly string[] | undefined;
+      }
+    | undefined;
+  exports?: Record<string, { type?: string; storage?: string }> | undefined;
+  migrations?: ReadonlyArray<{ new_sqlite_classes?: readonly string[] }> | undefined;
 }
 
 type CfWorker = UnwrapConfig<typeof cfConfig>["worker"];
@@ -140,7 +154,7 @@ function normWrangler(config: WranglerLike): Norm {
   }
   const r2: Norm["r2"] = {};
   for (const bucket of config.r2_buckets ?? []) {
-    r2[bucket.binding] = bucket.bucket_name;
+    r2[bucket.binding] = bucket.bucket_name ?? "";
   }
   const storeSecrets: Norm["storeSecrets"] = {};
   for (const secret of config.secrets_store_secrets ?? []) {
@@ -167,10 +181,10 @@ function normWrangler(config: WranglerLike): Norm {
     d1:
       db === undefined
         ? undefined
-        : { binding: db.binding, name: db.database_name, id: db.database_id },
+        : { binding: db.binding, name: db.database_name ?? "", id: db.database_id },
     r2,
     crons: config.triggers?.crons ?? [],
-    routes: (config.routes ?? []).map((r) => r.pattern),
+    routes: (config.routes ?? []).map((r) => (typeof r === "string" ? r : r.pattern)),
     observability: config.observability && {
       enabled: config.observability.enabled,
       redactQueryString: config.observability.redact_query_string,
@@ -181,7 +195,9 @@ function normWrangler(config: WranglerLike): Norm {
       directory: config.assets.directory,
       htmlHandling: config.assets.html_handling,
       notFoundHandling: config.assets.not_found_handling,
-      runWorkerFirst: config.assets.run_worker_first,
+      runWorkerFirst: Array.isArray(config.assets.run_worker_first)
+        ? config.assets.run_worker_first
+        : undefined,
     },
     doExports,
   };

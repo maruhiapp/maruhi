@@ -16,7 +16,9 @@ checked against the help of cf 1.0.0-beta.20, again without a real deploy.
 On 2026-11-18 every `cf` command here was checked against the help of cf
 1.0.0-rc.1 and the deploy dry-runs (default / hosted / restore) were run,
 again without a real deploy; the two commands that the release renamed are
-updated below.
+updated below. On 2026-11-27 the same check was repeated against cf
+1.0.0-rc.6: no command used here was renamed in rc.2–rc.6, and the three
+deploy dry-runs pass again.
 
 ## What comes up
 
@@ -35,7 +37,7 @@ Plaintext secrets are stored nowhere (E2EE — the server keeps ciphertext only)
 - A GitHub account (authentication is GitHub OAuth only — AUTH_SPEC)
 - Bun 1.4.4 (pinned in the repository `engines`. `cf` is a dependency)
 - Node.js 22.23 or later in 22.x, 24.22 or later in 24.x, or 26.12 or later in 26.x
-  (the range cf 1.0.0-rc.1 supports). `bunx cf` runs cf on the `node` it
+  (the range cf 1.0.0-rc.6 supports). `bunx cf` runs cf on the `node` it
   finds on `PATH`. With Bun alone, `cf deploy` stops with "cloudflare.config.ts
   loading is not supported on Bun"
 
@@ -422,8 +424,8 @@ reading of the platform's "10 GB".
 The warning and rejection lines are **static messages**: they carry no project
 id (a project id is effectively a capability — AUTH_SPEC §11-2) and no user
 id. To find out which project is affected, use the Durable Object id in the
-Workers Logs / `wrangler tail` event envelope (cf has no tail command in the
-beta — wrangler remains installed for this): it is `idFromName(projectId)`,
+Workers Logs / `cf observability tail` event envelope: it is
+`idFromName(projectId)`,
 so you can compute it for a project a tenant reports and compare, but the log
 line itself never reveals the project. The hourly operations job (see
 "Backups and operations" below) additionally reports the **number** of projects
