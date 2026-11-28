@@ -12,12 +12,12 @@ import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
-  chainHandlerOf,
+  chainSequenceHandlerOf,
   chainV1,
   type CreateBody,
   type CreateEcho,
   dek1,
-  deksHandlerOf,
+  dekSequenceHandlerOf,
   distributedStatementOf,
   ENV_ID,
   envStatement,
@@ -35,8 +35,8 @@ describe("maruhi push", () => {
     const createCalls: CreateBody[] = [];
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
@@ -92,9 +92,7 @@ describe("maruhi push", () => {
     expect(body.manifest.epoch).toBe(1);
     expect(body.manifest.chainHeadSeq).toBe(chainV1.entries.length);
     expect(body.manifest.variablesDigestHex).toBe(
-      await distributedVariablesDigestOf(chainV1.projectId, [
-        { ...body.statement, authorUserId: owner.userId },
-      ]),
+      await distributedVariablesDigestOf(chainV1.projectId, [distributedStatementOf(body)]),
     );
     expect(body.manifest.signatureHex).toMatch(/^[0-9a-f]{128}$/);
     expect(env.logs.join("\n")).toContain("version=1");
@@ -118,8 +116,8 @@ describe("maruhi push", () => {
   it("when the post-acceptance server echo disagrees with the locally signed value, it is reported as a typed error", async () => {
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
@@ -163,8 +161,8 @@ describe("maruhi push", () => {
   it("if appending the intent (3-F) fails, never send the variable creation (fail-closed journal-before-send)", async () => {
     let createCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]]),
       onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => {
         createCalls += 1;
@@ -191,8 +189,8 @@ describe("maruhi push", () => {
     let created: CreateBody | null = null;
     let metadataCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       onRequest(
         "GET",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
@@ -264,8 +262,8 @@ describe("maruhi push", () => {
     });
     let created: CreateBody | null = null;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       onRequest(
         "GET",
         `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,

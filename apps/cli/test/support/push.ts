@@ -13,14 +13,16 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
-  type WireEncryptedPayload,
+  type WireDistributedValue,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiPayload, ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll } from "vite-plus/test";
 
+import { servedChainResponse } from "./chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { rotatedEnvironmentFor } from "./rotated-environment.ts";
-import { type MockHandler, MockServer, onRequest } from "./server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./server.ts";
 
 export const ENV_ID = "dev";
 
@@ -37,11 +39,11 @@ export let servers: MockServer[] = [];
 export async function entryOf(
   variableId: string,
   name: string,
-  value: WireEncryptedPayload,
+  value: WireDistributedValue,
 ): Promise<{
   variableId: string;
   statement: WireDistributedVariableStatement;
-  value: WireEncryptedPayload;
+  value: WireDistributedValue;
 }> {
   return {
     variableId,
@@ -82,31 +84,26 @@ afterEach(async () => {
   servers = [];
 });
 
-export function chainHandlerOf(chains: readonly BuiltChain[]): MockHandler {
+export function chainSequenceHandlerOf(chains: readonly BuiltChain[]): MockHandler {
   let call = 0;
-  return onRequest("GET", `/projects/${chainV1.projectId}/chain`, () => {
+  return onEndpoint("membership.get", { projectId: chainV1.projectId }, () => {
     const built = chains[Math.min(call, chains.length - 1)] as BuiltChain;
     call += 1;
-    return {
-      status: 200,
-      json: {
-        projectId: chainV1.projectId,
-        entries: built.entries,
-        headSeq: built.entries.length,
-        headHashHex: built.hashes[built.hashes.length - 1],
-        attestations: [],
-      },
-    };
+    return servedChainResponse(chainV1.projectId, built.entries, built.hashes);
   });
 }
 
-export function deksHandlerOf(sets: readonly (readonly WireRecipientDek[])[]): MockHandler {
+export function dekSequenceHandlerOf(sets: readonly (readonly WireRecipientDek[])[]): MockHandler {
   let call = 0;
-  return onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/deks`, () => {
-    const deks = sets[Math.min(call, sets.length - 1)] ?? [];
-    call += 1;
-    return { status: 200, json: { deks } };
-  });
+  return onEndpoint(
+    "deks.listMine",
+    { projectId: chainV1.projectId, environmentId: ENV_ID },
+    () => {
+      const deks = sets[Math.min(call, sets.length - 1)] ?? [];
+      call += 1;
+      return { status: 200, json: { deks } };
+    },
+  );
 }
 
 export async function manifestOf(
@@ -114,7 +111,7 @@ export async function manifestOf(
   currentEpoch = 1,
   manifestVersion = 1,
   prevManifestSigHashHex?: string,
-): Promise<unknown> {
+): Promise<WireDistributedManifest> {
   return distributedManifest({
     projectId: chainV1.projectId,
     environmentId: ENV_ID,
@@ -132,13 +129,13 @@ export async function pullJsonOf(
   variables: readonly {
     variableId: string;
     statement: WireDistributedVariableStatement;
-    value: WireEncryptedPayload;
+    value: WireDistributedValue;
   }[],
   deks: readonly WireRecipientDek[],
   currentEpoch = 1,
   manifestVersion = 1,
   prevManifestSigHashHex?: string,
-): Promise<unknown> {
+): Promise<ApiSuccess<"variables.pull">> {
   return {
     environmentId: ENV_ID,
     currentEpoch,
@@ -164,12 +161,7 @@ export async function manifestHashAt(
 ): Promise<string> {
   return distributedManifestHashOf(
     chainV1.projectId,
-    (await manifestOf(
-      statements,
-      currentEpoch,
-      manifestVersion,
-      prevManifestSigHashHex,
-    )) as WireDistributedManifest,
+    await manifestOf(statements, currentEpoch, manifestVersion, prevManifestSigHashHex),
   );
 }
 
@@ -177,13 +169,13 @@ export function pullHandlerOf(
   variables: readonly {
     variableId: string;
     statement: WireDistributedVariableStatement;
-    value: WireEncryptedPayload;
+    value: WireDistributedValue;
   }[],
   deks: readonly WireRecipientDek[],
 ): MockHandler {
-  return onRequest(
-    "GET",
-    `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
+  return onEndpoint(
+    "variables.pull",
+    { projectId: chainV1.projectId, environmentId: ENV_ID },
     async () => ({
       status: 200,
       json: await pullJsonOf(variables, deks),
@@ -201,7 +193,7 @@ export function distributedStatementOf(body: CreateBody): WireDistributedVariabl
     ...body.statement,
     authorUserId: owner.userId,
     authorKeyFingerprintHex: owner.fingerprintHex,
-  } as WireDistributedVariableStatement;
+  };
 }
 
 export function pullMetadataHandlerOf(
@@ -214,20 +206,20 @@ export function pullMetadataHandlerOf(
   const manifestAt = async (index: number): Promise<WireDistributedManifest> => {
     for (let position = manifests.length; position <= index; position += 1) {
       const previous = manifests[position - 1];
-      manifests[position] = (await manifestOf(
+      manifests[position] = await manifestOf(
         variants[position] ?? [],
         currentEpoch,
         position + 1,
         previous === undefined
           ? undefined
           : await distributedManifestHashOf(chainV1.projectId, previous),
-      )) as WireDistributedManifest;
+      );
     }
     return manifests[index] as WireDistributedManifest;
   };
-  return onRequest(
-    "GET",
-    `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+  return onEndpoint(
+    "variables.pullMetadata",
+    { projectId: chainV1.projectId, environmentId: ENV_ID },
     async () => {
       if (echo !== undefined && echo.body !== null) {
         return {
@@ -280,19 +272,4 @@ export async function startEnv(handlers: readonly MockHandler[], stdin: string):
   return env;
 }
 
-export interface CreateBody {
-  readonly statement: WireDistributedVariableStatement;
-  readonly value: WireEncryptedPayload;
-  readonly manifest: {
-    readonly environmentId: string;
-    readonly epoch: number;
-    readonly manifestVersion: number;
-    readonly variablesDigestHex: string;
-    readonly envMetaVersion: number;
-    readonly envMetaSigHashHex: string;
-    readonly prevManifestSigHashHex: string;
-    readonly chainHeadHashHex: string;
-    readonly chainHeadSeq: number;
-    readonly signatureHex: string;
-  };
-}
+export type CreateBody = Extract<ApiPayload<"variables.create">, { readonly value: unknown }>;

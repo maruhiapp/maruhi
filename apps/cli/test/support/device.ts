@@ -18,6 +18,7 @@ import {
   testEnvironmentId,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiPayload, ApiReply, ApiSuccess } from "@maruhi/test-kit/api";
 import { Effect } from "effect";
 import { afterEach, beforeAll } from "vite-plus/test";
 
@@ -30,17 +31,14 @@ import {
 } from "../../src/own-devices.ts";
 import {
   acceptAppendedEntry,
+  type AppendInjection,
   appendableProjectHandlers,
   injectedAppendResponse,
+  servedChain,
+  servedChainResponse,
 } from "./chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
-import {
-  type MockHandler,
-  type MockRequest,
-  type MockResponse,
-  MockServer,
-  onRequest,
-} from "./server.ts";
+import { type MockHandler, MockServer, offSpec, type OffSpecReply, onEndpoint } from "./server.ts";
 
 export const ENV_ID = "env-app";
 export const FAR_FUTURE_MS = Date.now() + 10 * 60 * 1000;
@@ -101,7 +99,7 @@ export interface ServerState {
   readonly handlers: MockHandler[];
   readonly appended: ChainEntry[];
   readonly appendedTo: { readonly projectId: string; readonly entry: ChainEntry }[];
-  readonly registered: { environmentId: string; deks: readonly Record<string, unknown>[] }[];
+  readonly registered: { environmentId: string; deks: ApiPayload<"deks.register">["deks"] }[];
   readonly registry: {
     keyFingerprintHex: string;
     encPubHex: string;
@@ -111,43 +109,49 @@ export interface ServerState {
     tokenId?: string;
   }[];
   readonly tokenRevokes: string[];
-  readonly registryPuts: { fp: string; body: Record<string, unknown> }[];
+  readonly registryPuts: { fp: string; body: ApiPayload<"devices.register"> }[];
   readonly registryDeletes: string[];
   readonly requestCancels: string[];
   readonly paths: () => readonly string[];
 }
 
-export async function makeServer(input: {
-  readonly built: BuiltChain;
-  readonly withEnvironment: boolean;
-  readonly requests?: readonly Record<string, unknown>[];
-  readonly registryRows?: readonly ServerState["registry"][number][];
-  readonly tokensStatus?: number;
-  readonly tokens?: readonly Record<string, unknown>[];
-  readonly tokenRevokeStatus?: number;
-  readonly extra?: readonly MockHandler[];
-  readonly environmentsStatus?: number;
-  readonly registryPutStatuses?: readonly number[];
-  readonly requestCreate?: {
-    readonly expiresAtMs: number;
-    readonly signal: boolean;
-    readonly conflict?: "request-exists" | "device-registered";
-  };
-  readonly extraProjects?: readonly BuiltChain[];
-  readonly dekRegisterStatus?: number;
-  readonly listMine?:
-    | { readonly rows: readonly Record<string, unknown>[] }
-    | { readonly status: number };
-  readonly pendingRequests?: readonly Record<string, unknown>[];
-  readonly projectsStatus?: number;
-  readonly brokenProjects?: readonly {
+type DeviceRequestRow = ApiSuccess<"devices.requestGet">;
+
+export type TokenRow = ApiSuccess<"auth.listTokens">["tokens"][number];
+
+export type ListMineInjection =
+  | { readonly rows: readonly WireRecipientDek[] }
+  | { readonly status: number };
+
+export async function makeServer(
+  input: AppendInjection & {
     readonly built: BuiltChain;
-    readonly mode: "unavailable" | "tampered";
-  }[];
-  readonly unlistedProjects?: readonly BuiltChain[];
-  readonly onAppend?: (call: number) => MockResponse | undefined;
-  readonly chainAfterConflict?: BuiltChain;
-}): Promise<{ server: MockServer; state: ServerState }> {
+    readonly withEnvironment: boolean;
+    readonly requests?: readonly DeviceRequestRow[];
+    readonly registryRows?: readonly ServerState["registry"][number][];
+    readonly tokensStatus?: number;
+    readonly tokens?: readonly TokenRow[];
+    readonly tokenRevokeStatus?: number;
+    readonly extra?: readonly MockHandler[];
+    readonly environmentsStatus?: number;
+    readonly registryPutStatuses?: readonly number[];
+    readonly requestCreate?: {
+      readonly expiresAtMs: number;
+      readonly signal: boolean;
+      readonly conflict?: "request-exists" | "device-registered";
+    };
+    readonly extraProjects?: readonly BuiltChain[];
+    readonly dekRegisterStatus?: number;
+    readonly listMine?: ListMineInjection;
+    readonly pendingRequests?: readonly DeviceRequestRow[];
+    readonly projectsStatus?: number;
+    readonly brokenProjects?: readonly {
+      readonly built: BuiltChain;
+      readonly mode: "unavailable" | "tampered";
+    }[];
+    readonly unlistedProjects?: readonly BuiltChain[];
+  },
+): Promise<{ server: MockServer; state: ServerState }> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
@@ -181,33 +185,23 @@ export async function makeServer(input: {
       })
     : null;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
-      status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
-    })),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
+    onEndpoint("membership.get", { projectId }, () =>
+      servedChainResponse(projectId, entries, hashes),
+    ),
+    onEndpoint("membership.append", { projectId }, async (request) => {
       const injected = injectedAppendResponse(input, appendCalls, entries, hashes);
       appendCalls += 1;
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as { readonly entry: ChainEntry };
-      appended.push(body.entry);
-      appendedTo.push({ projectId, entry: body.entry });
-      return acceptAppendedEntry(projectId, entries, hashes, body.entry);
-    },
-    onRequest("GET", `/projects/${projectId}/environments`, () =>
+      const entry = request.body.entry as ChainEntry;
+      appended.push(entry);
+      appendedTo.push({ projectId, entry });
+      return acceptAppendedEntry(projectId, entries, hashes, entry);
+    }),
+    onEndpoint("environments.list", { projectId }, () =>
       input.environmentsStatus !== undefined && input.environmentsStatus !== 200
-        ? { status: input.environmentsStatus, json: { _tag: "Internal" } }
+        ? offSpec({ status: input.environmentsStatus, json: { _tag: "Internal" } })
         : {
             status: 200,
             json: {
@@ -219,27 +213,19 @@ export async function makeServer(input: {
             },
           },
     ),
-    (request: MockRequest) => {
-      const base = `/projects/${projectId}/environments/${ENV_ID}/deks`;
-      if (request.path !== base) {
-        return null;
+    onEndpoint("deks.listMine", { projectId, environmentId: ENV_ID }, () =>
+      listMineResponse(input.listMine, ownWrap),
+    ),
+    onEndpoint("deks.register", { projectId, environmentId: ENV_ID }, (request) => {
+      if (input.dekRegisterStatus !== undefined) {
+        return offSpec({ status: input.dekRegisterStatus, json: { _tag: "Internal" } });
       }
-      if (request.method === "GET") {
-        return listMineResponse(input.listMine, ownWrap);
-      }
-      if (request.method === "POST") {
-        if (input.dekRegisterStatus !== undefined) {
-          return { status: input.dekRegisterStatus, json: { _tag: "Internal" } };
-        }
-        const body = request.body as { readonly deks: readonly Record<string, unknown>[] };
-        registered.push({ environmentId: ENV_ID, deks: body.deks });
-        return { status: 204 };
-      }
-      return null;
-    },
-    onRequest("GET", "/projects", () =>
+      registered.push({ environmentId: ENV_ID, deks: request.body.deks });
+      return { status: 204 };
+    }),
+    onEndpoint("membership.list", () =>
       input.projectsStatus !== undefined && input.projectsStatus !== 200
-        ? { status: input.projectsStatus, json: { _tag: "Internal" } }
+        ? offSpec({ status: input.projectsStatus, json: { _tag: "Internal" } })
         : {
             status: 200,
             json: {
@@ -252,17 +238,14 @@ export async function makeServer(input: {
           },
     ),
     ...(input.brokenProjects ?? []).map((broken) =>
-      onRequest("GET", `/projects/${broken.built.projectId}/chain`, () =>
+      onEndpoint("membership.get", { projectId: broken.built.projectId }, () =>
         broken.mode === "unavailable"
-          ? { status: 500, json: { _tag: "Internal" } }
+          ? offSpec({ status: 500, json: { _tag: "Internal" } })
           : {
               status: 200,
               json: {
-                projectId: broken.built.projectId,
-                entries: broken.built.entries,
+                ...servedChain(broken.built.projectId, broken.built.entries, broken.built.hashes),
                 headSeq: broken.built.entries.length + 1,
-                headHashHex: broken.built.hashes[broken.built.hashes.length - 1],
-                attestations: [],
               },
             },
       ),
@@ -272,78 +255,63 @@ export async function makeServer(input: {
         appendedTo.push({ projectId: built.projectId, entry }),
       ),
     ),
-    onRequest("GET", "/auth/devices", () => ({ status: 200, json: { devices: registry } })),
-    (request: MockRequest) => {
-      const match = /^\/auth\/devices\/([0-9a-f]{32})$/.exec(request.path);
-      if (match === null) {
-        return null;
+    onEndpoint("devices.list", () => ({ status: 200, json: { devices: registry } })),
+    onEndpoint("devices.register", (request) => {
+      const { fp } = request.params;
+      registryPuts.push({ fp, body: request.body });
+      const status = registryPutStatuses.shift() ?? 204;
+      if (status === 429) {
+        return {
+          status,
+          json: { _tag: "DeviceRegistryLimit", reason: "device-rows", limit: 32 },
+        };
       }
-      const fp = match[1] ?? "";
-      if (request.method === "PUT") {
-        registryPuts.push({ fp, body: request.body as Record<string, unknown> });
-        const status = registryPutStatuses.shift() ?? 204;
-        if (status === 429) {
-          return {
-            status,
-            json: { _tag: "DeviceRegistryLimit", reason: "device-rows", limit: 32 },
-          };
-        }
-        if (status !== 204) {
-          return { status, json: { _tag: "Internal" } };
-        }
-        const body = request.body as { encPubHex: string; sigPubHex: string; label: string };
-        registry.push({ keyFingerprintHex: fp, ...body, createdAtMs: Date.now() });
-        return { status: 204 };
+      if (status !== 204) {
+        return offSpec({ status, json: { _tag: "Internal" } });
       }
-      if (request.method === "DELETE") {
-        registryDeletes.push(fp);
-        return { status: 204 };
-      }
-      return null;
-    },
-    onRequest("GET", "/auth/devices/requests", () => ({
+      registry.push({ keyFingerprintHex: fp, ...request.body, createdAtMs: Date.now() });
+      return { status: 204 };
+    }),
+    onEndpoint("devices.remove", (request) => {
+      registryDeletes.push(request.params.fp);
+      return { status: 204 };
+    }),
+    onEndpoint("devices.requestList", () => ({
       status: 200,
       json: { requests: input.requests ?? [] },
     })),
-    (request: MockRequest) => {
-      const match = /^\/auth\/devices\/requests\/([0-9a-f]{32})$/.exec(request.path);
-      if (match === null) {
-        return null;
-      }
-      if (request.method === "DELETE") {
-        requestCancels.push(match[1] ?? "");
-        return { status: 204 };
-      }
-      const pending = input.pendingRequests?.find((row) => row["keyFingerprintHex"] === match[1]);
+    onEndpoint("devices.requestCancel", (request) => {
+      requestCancels.push(request.params.fp);
+      return { status: 204 };
+    }),
+    onEndpoint("devices.requestGet", (request) => {
+      const pending = input.pendingRequests?.find(
+        (row) => row.keyFingerprintHex === request.params.fp,
+      );
       return pending === undefined
         ? { status: 404, json: { _tag: "DeviceNotFound" } }
         : { status: 200, json: pending };
-    },
-    onRequest("GET", "/auth/tokens", () =>
+    }),
+    onEndpoint("auth.listTokens", () =>
       input.tokensStatus === 403
         ? { status: 403, json: { _tag: "Forbidden", reason: "insufficient-scope" } }
         : { status: 200, json: { tokens: input.tokens ?? [] } },
     ),
-    (request: MockRequest) => {
-      const match = /^\/auth\/tokens\/([^/]+)$/.exec(request.path);
-      if (match === null || request.method !== "DELETE") {
-        return null;
-      }
-      tokenRevokes.push(decodeURIComponent(match[1] ?? ""));
+    onEndpoint("auth.revokeTokenById", (request) => {
+      tokenRevokes.push(request.params.tokenId);
       const status = input.tokenRevokeStatus ?? 204;
-      return status === 204
-        ? { status }
-        : { status, json: { _tag: status === 404 ? "TokenNotFound" : "Internal" } };
-    },
-    async (request: MockRequest) => {
-      if (
-        request.method !== "POST" ||
-        request.path !== "/auth/devices/requests" ||
-        input.requestCreate === undefined
-      ) {
+      if (status === 204) {
+        return { status };
+      }
+      return status === 404
+        ? { status, json: { _tag: "TokenNotFound" } }
+        : offSpec({ status, json: { _tag: "Internal" } });
+    }),
+    onEndpoint("devices.requestCreate", async (request) => {
+      if (input.requestCreate === undefined) {
         return null;
       }
-      const body = request.body as { encPubHex: string; sigPubHex: string; label: string };
+      const body = request.body;
       if (input.requestCreate.signal) {
         const fp = await computeUserKeyFingerprint(
           hexBytes(body.encPubHex),
@@ -359,7 +327,7 @@ export async function makeServer(input: {
         };
       }
       return { status: 200, json: { expiresAtMs: input.requestCreate.expiresAtMs } };
-    },
+    }),
     ...(input.extra ?? []),
   ];
   const server = await MockServer.start(handlers);
@@ -382,17 +350,14 @@ export async function makeServer(input: {
 }
 
 function listMineResponse(
-  listMine:
-    | { readonly rows: readonly Record<string, unknown>[] }
-    | { readonly status: number }
-    | undefined,
+  listMine: ListMineInjection | undefined,
   ownWrap: WireRecipientDek | null,
-): { status: number; json: unknown } {
+): ApiReply<"deks.listMine"> | OffSpecReply {
   if (listMine === undefined) {
     return { status: 200, json: { deks: ownWrap === null ? [] : [ownWrap] } };
   }
   return "status" in listMine
-    ? { status: listMine.status, json: { _tag: "Internal" } }
+    ? offSpec({ status: listMine.status, json: { _tag: "Internal" } })
     : { status: 200, json: { deks: listMine.rows } };
 }
 
@@ -407,7 +372,7 @@ export async function startEnv(
   return env;
 }
 
-export function requestRowOf(device: GeneratedIdentity, label = "laptop"): Record<string, unknown> {
+export function requestRowOf(device: GeneratedIdentity, label = "laptop"): DeviceRequestRow {
   return {
     keyFingerprintHex: device.fingerprintHex,
     encPubHex: device.encPubHex,

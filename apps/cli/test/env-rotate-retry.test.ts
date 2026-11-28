@@ -9,6 +9,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import {
   chainBase,
   chainRotated,
@@ -233,7 +234,7 @@ describe("maruhi env rotate", () => {
               json: {
                 _tag: "ChainHeadConflict",
                 currentHeadSeq: chainBase.entries.length,
-                currentHeadHashHex: chainBase.hashes[chainBase.hashes.length - 1],
+                currentHeadHashHex: lastHashOf(chainBase.hashes),
               },
             }
           : undefined,

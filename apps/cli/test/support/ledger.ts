@@ -5,7 +5,7 @@ import { Redacted } from "effect";
 
 import { serializeStoredMasterKey, type StoredMasterKey } from "../../src/keychain.ts";
 import { formatRecoveryCode } from "../../src/reserve.package/recovery-code.ts";
-import { type MockHandler, onRequest } from "./server.ts";
+import { type MockHandler, onEndpoint } from "./server.ts";
 
 export function storedMasterRecord(user: GeneratedIdentity): StoredMasterKey {
   return {
@@ -34,7 +34,7 @@ export async function ledgerHandlerFor(
   if (!wrapped.ok) {
     throw new Error("test wrap failed");
   }
-  const handler = onRequest("GET", "/auth/recovery", () => ({
+  const handler = onEndpoint("auth.recoveryGet", () => ({
     status: 200,
     json: {
       suite: "maruhi/v1",

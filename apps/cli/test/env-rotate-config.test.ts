@@ -23,6 +23,7 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import {
   chainBase,
   dek1,
@@ -38,7 +39,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import type { TestEnv } from "./support/env.ts";
-import type { MockHandler } from "./support/server.ts";
+import { type MockHandler, offSpec } from "./support/server.ts";
 import {
   makeValueEnvironmentServer,
   type StoredVariable,
@@ -402,7 +403,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
         onPush: (_call, variableId) =>
-          variableId === "vbb" ? { status: 503, bodyText: "unavailable" } : undefined,
+          variableId === "vbb" ? offSpec({ status: 503, bodyText: "unavailable" }) : undefined,
       },
       receipts: [
         await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
@@ -422,7 +423,9 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         deks: [await devWrap(chainWithReceipts, 1, dek1)],
         currentEpoch: 1,
         onPush: (call, variableId) =>
-          variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
+          variableId === "vbb" && call < 4
+            ? offSpec({ status: 503, bodyText: "unavailable" })
+            : undefined,
       },
       receipts: [
         await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
@@ -562,7 +565,8 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
           pushed.push(variableId);
           return undefined;
         },
-        onChain: () => (pushed.length === 2 ? { status: 503, bodyText: "unavailable" } : undefined),
+        onChain: () =>
+          pushed.length === 2 ? offSpec({ status: 503, bodyText: "unavailable" }) : undefined,
       },
       receipts: [
         await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
@@ -662,7 +666,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
                   projectId: chainBase.projectId,
                   entries: chainBase.entries,
                   headSeq: chainBase.entries.length,
-                  headHashHex: chainBase.hashes[chainBase.hashes.length - 1],
+                  headHashHex: lastHashOf(chainBase.hashes),
                   attestations: [],
                 },
               }

@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import { dek1, ENV_ID, makeServer, owner, startEnv } from "./support/env-rotate.ts";
 
 describe("env rotate racing a delete_environment", () => {
@@ -49,7 +50,7 @@ describe("env rotate racing a delete_environment", () => {
           json: {
             _tag: "ChainHeadConflict",
             currentHeadSeq: post.entries.length,
-            currentHeadHashHex: post.hashes[post.hashes.length - 1],
+            currentHeadHashHex: lastHashOf(post.hashes),
           },
         }),
         chainAfterRotateAttempt: post,

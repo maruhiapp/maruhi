@@ -12,7 +12,7 @@ import {
 } from "@maruhi/test-kit";
 
 import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
-import type { MockHandler, MockRequest, MockResponse } from "./server.ts";
+import { type MockHandler, type MockRequest, onEndpoint } from "./server.ts";
 
 export interface StoredVariable {
   readonly variableId: string;
@@ -43,17 +43,6 @@ export interface ValueEnvironmentServerInput {
   readonly tamperRange?: (values: readonly WireDistributedValue[]) => WireDistributedValue[];
 }
 
-interface CreateBody {
-  readonly statement: WireDistributedVariableStatement;
-  readonly value: WireEncryptedPayload;
-  readonly manifest: WireDistributedManifest;
-}
-
-interface VersionBody {
-  readonly value: WireEncryptedPayload;
-  readonly sameValueAs?: number;
-}
-
 export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): {
   readonly state: ValueEnvironmentState;
   readonly handlers: readonly MockHandler[];
@@ -70,9 +59,8 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       ]),
     ),
   };
-  const base = `/projects/${input.chain.projectId}/environments/${input.environmentId}`;
-  const versionPattern = new RegExp(`^${base}/variables/([^/]+)/versions$`);
-  const valuesPattern = new RegExp(`^${base}/variables/([^/]+)/versions/values$`);
+  const projectId = input.chain.projectId;
+  const environmentId = input.environmentId;
   const head = headOf(input.chain, input.chain.entries.length);
 
   const distributedValue = (value: WireEncryptedPayload): WireDistributedValue => ({
@@ -94,71 +82,48 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
       statements: [...state.variables.map((entry) => entry.statement), ...state.declared],
     });
 
-  type Found = {
-    readonly variableId: string;
-    readonly versions: readonly { value: WireDistributedValue; sameValueAs?: number }[];
-  };
-  const historyFor = (request: MockRequest, pattern: RegExp): Found | MockResponse | null => {
-    const match = request.path.match(pattern);
-    if (request.method !== "GET" || match === null) {
-      return null;
-    }
-    const variableId = match[1] ?? "";
-    const versions = state.history.get(variableId);
-    return versions === undefined
-      ? { status: 404, json: { _tag: "VariableNotFound", variableId } }
-      : { variableId, versions };
-  };
+  const variableNotFound = (variableId: string) =>
+    ({ status: 404, json: { _tag: "VariableNotFound", variableId } }) as const;
 
   const handlers: MockHandler[] = [
     chainHandlerOf(input.chain),
-    deksHandlerOf(input.chain.projectId, input.environmentId, wraps),
-    async (request) => {
-      if (request.method !== "GET" || request.path !== `${base}/pull`) {
-        return null;
-      }
-      return {
-        status: 200,
-        json: {
-          environmentId: input.environmentId,
-          currentEpoch,
-          statement: input.envStatement,
-          variables: state.variables.map((entry) => ({
-            variableId: entry.variableId,
-            statement: entry.statement,
-            value: entry.value,
-          })),
-          deletedVariables: [],
-          ...(state.declared.length === 0 ? {} : { declaredVariables: state.declared }),
-          deks: wraps,
-          manifest: await manifest(),
-          schemaPolicy: "enabled" as const,
-        },
-      };
-    },
-    async (request) => {
-      if (request.method !== "GET" || request.path !== `${base}/pull/metadata`) {
-        return null;
-      }
-      return {
-        status: 200,
-        json: {
-          environmentId: input.environmentId,
-          currentEpoch,
-          statement: input.envStatement,
-          variables: [...state.variables.map((entry) => entry.statement), ...state.declared],
-          deletedVariables: [],
-          manifest: await manifest(),
-          schemaPolicy: "enabled" as const,
-        },
-      };
-    },
-    (request) => {
-      if (request.method !== "POST" || request.path !== `${base}/variables`) {
-        return null;
-      }
+    deksHandlerOf(projectId, environmentId, wraps),
+    onEndpoint("variables.pull", { projectId, environmentId }, async () => ({
+      status: 200,
+      json: {
+        environmentId,
+        currentEpoch,
+        statement: input.envStatement,
+        variables: state.variables.map((entry) => ({
+          variableId: entry.variableId,
+          statement: entry.statement,
+          value: entry.value,
+        })),
+        deletedVariables: [],
+        ...(state.declared.length === 0 ? {} : { declaredVariables: state.declared }),
+        deks: wraps,
+        manifest: await manifest(),
+        schemaPolicy: "enabled" as const,
+      },
+    })),
+    onEndpoint("variables.pullMetadata", { projectId, environmentId }, async () => ({
+      status: 200,
+      json: {
+        environmentId,
+        currentEpoch,
+        statement: input.envStatement,
+        variables: [...state.variables.map((entry) => entry.statement), ...state.declared],
+        deletedVariables: [],
+        manifest: await manifest(),
+        schemaPolicy: "enabled" as const,
+      },
+    })),
+    onEndpoint("variables.create", { projectId, environmentId }, (request) => {
       state.writes.push({ kind: "create", request });
-      const body = request.body as CreateBody;
+      const body = request.body;
+      if (!("value" in body)) {
+        throw new Error("value-env: this server takes a create with a value only");
+      }
       const statement = {
         ...body.statement,
         authorUserId: input.owner.userId,
@@ -178,19 +143,15 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
         status: 200,
         json: { variableId: statement.variableId, version: 1, epoch: currentEpoch },
       };
-    },
-    (request) => {
-      const match = request.path.match(versionPattern);
-      if (request.method !== "POST" || match === null) {
-        return null;
-      }
-      const variableId = match[1] ?? "";
+    }),
+    onEndpoint("variables.push", { projectId, environmentId }, (request) => {
+      const { variableId } = request.params;
       const stored = state.variables.find((entry) => entry.variableId === variableId);
       if (stored === undefined) {
-        return { status: 404, json: { _tag: "VariableNotFound" } };
+        return variableNotFound(variableId);
       }
       state.writes.push({ kind: "version", request });
-      const body = request.body as VersionBody;
+      const body = request.body;
       stored.value = distributedValue(body.value);
       state.history.set(variableId, [
         ...(state.history.get(variableId) ?? []),
@@ -203,13 +164,13 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
         status: 200,
         json: { variableId, version: body.value.aad.version, epoch: currentEpoch },
       };
-    },
-    (request) => {
-      const found = historyFor(request, versionPattern);
-      if (found === null || !("versions" in found)) {
-        return found;
+    }),
+    onEndpoint("variables.history", { projectId, environmentId }, (request) => {
+      const { variableId } = request.params;
+      const versions = state.history.get(variableId);
+      if (versions === undefined) {
+        return variableNotFound(variableId);
       }
-      const { variableId, versions } = found;
       return {
         status: 200,
         json: {
@@ -225,13 +186,13 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
           })),
         },
       };
-    },
-    (request) => {
-      const found = historyFor(request, valuesPattern);
-      if (found === null || !("versions" in found)) {
-        return found;
+    }),
+    onEndpoint("variables.versionValues", { projectId, environmentId }, (request) => {
+      const { variableId } = request.params;
+      const versions = state.history.get(variableId);
+      if (versions === undefined) {
+        return variableNotFound(variableId);
       }
-      const { variableId, versions } = found;
       const fromVersion = Number(request.query["fromVersion"]);
       const selected = versions
         .map((entry) => entry.value)
@@ -245,7 +206,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
           values: input.tamperRange?.(selected) ?? selected,
         },
       };
-    },
+    }),
   ];
   return { state, handlers };
 }

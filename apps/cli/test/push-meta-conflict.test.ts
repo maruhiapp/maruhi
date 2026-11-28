@@ -10,12 +10,12 @@ import { describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
-  chainHandlerOf,
+  chainSequenceHandlerOf,
   chainV1,
   type CreateBody,
   type CreateEcho,
   dek1,
-  deksHandlerOf,
+  dekSequenceHandlerOf,
   entryOf,
   ENV_ID,
   manifestHashAt,
@@ -75,8 +75,8 @@ describe("maruhi push", () => {
     });
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[statementV2]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -158,8 +158,8 @@ describe("maruhi push", () => {
     });
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[statementV1]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -236,8 +236,8 @@ describe("maruhi push", () => {
     });
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -288,8 +288,8 @@ describe("maruhi push", () => {
     let pullCalls = 0;
     let pushedVersion = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -335,8 +335,8 @@ describe("maruhi push", () => {
     const createCalls: CreateBody[] = [];
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
@@ -385,8 +385,8 @@ describe("maruhi push", () => {
     let attempts = 0;
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1]),
-        deksHandlerOf([[wrap1]]),
+        chainSequenceHandlerOf([chainV1]),
+        dekSequenceHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
         pullHandlerOf([entryExisting], [wrap1]),
         onRequest(
@@ -429,7 +429,7 @@ describe("maruhi push", () => {
     });
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1]),
+        chainSequenceHandlerOf([chainV1]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
         onRequest(
           "GET",
@@ -464,7 +464,7 @@ describe("maruhi push", () => {
       status: "deleted",
     });
     const env = await startEnv(
-      [chainHandlerOf([chainV1]), pullMetadataHandlerOf([[deletedStatement]])],
+      [chainSequenceHandlerOf([chainV1]), pullMetadataHandlerOf([[deletedStatement]])],
       "value",
     );
     expect(await runCli(["push", "API_KEY"], env.layer)).toBe(1);

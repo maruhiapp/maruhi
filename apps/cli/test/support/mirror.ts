@@ -13,10 +13,17 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiPayload, ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll } from "vite-plus/test";
 
 import { chainHandlerOf } from "./chain-handler.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  type MockRequest,
+  MockServer,
+  onEndpoint,
+} from "./server.ts";
 import { type StoredVariable } from "./value-env.ts";
 
 export const ENV_ID = "prod";
@@ -97,41 +104,36 @@ export const SOURCE_MUTATION_SEQ = 5;
 export const exportHeadOfChain = () => ({ ...headOfChain(), mutationSeq: SOURCE_MUTATION_SEQ });
 
 export interface MirrorState {
-  readonly pages: {
-    readonly sequence: number;
-    readonly lines: readonly string[];
-    readonly sourceMutationSeq: number;
-  }[];
+  readonly pages: ApiPayload<"mirror.pages">[];
   readonly bearers: string[];
-  status: Record<string, unknown>;
-  lastPage: { readonly status: number; readonly json: unknown } | null;
+  status: ApiSuccess<"mirror.status">;
+  lastPage: EndpointAnswer<"mirror.pages"> | null;
 }
 
 export function mirrorHandlers(state: MirrorState): MockHandler[] {
-  const path = `/projects/${built.projectId}/mirror`;
+  const projectId = built.projectId;
   return [
     (request: MockRequest) => {
       state.bearers.push(String(request.headers["authorization"] ?? ""));
       return null;
     },
     chainHandlerOf(built),
-    onRequest("GET", path, () => ({ status: 200, json: state.status })),
-    onRequest("PUT", path, (request) => {
-      const body = request.body as { readonly sourceOrigin: string };
+    onEndpoint("mirror.status", { projectId }, () => ({ status: 200, json: state.status })),
+    onEndpoint("mirror.mark", { projectId }, (request) => {
       state.status = {
         ...state.status,
         mirror: true,
-        sourceOrigin: body.sourceOrigin,
+        sourceOrigin: request.body.sourceOrigin,
         markedAtMs: 1,
       };
       return { status: 200, json: state.status };
     }),
-    onRequest("DELETE", path, () => {
-      state.status = { mirror: false, head: state.status["head"] };
+    onEndpoint("mirror.unmark", { projectId }, () => {
+      state.status = { mirror: false, head: state.status.head };
       return { status: 200, json: state.status };
     }),
-    onRequest("PUT", `${path}/pages`, (request) => {
-      const body = request.body as MirrorState["pages"][number];
+    onEndpoint("mirror.pages", { projectId }, (request) => {
+      const body = request.body;
       state.pages.push(body);
       const trailer = body.lines.some((line) => line.includes('"kind":"trailer"'));
       if (trailer && state.lastPage !== null) {
@@ -152,7 +154,7 @@ export function mirrorHandlers(state: MirrorState): MockHandler[] {
           }
         : { status: 200, json: { nextSequence: body.sequence + 1 } };
     }),
-    onRequest("GET", "/auth/me", () => ({
+    onEndpoint("auth.me", () => ({
       status: 200,
       json: { userId: owner.userId, orgs: [] },
     })),

@@ -16,7 +16,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 - `packages/crypto` — the E2EE core (WebCrypto + HPKE); runs in browsers, Bun, and workerd
 - `packages/core` — domain types, Effect Schemas, and shared logic
 - `packages/api-schema` — the HttpApi definition shared by the server and the CLI client
-- `packages/test-kit` — test data builders shared by the CLI and server tests (never shipped)
+- `packages/test-kit` — test data builders shared by the CLI and server tests, and mock routes typed from the API definition (never shipped)
 - `apps/server` — Cloudflare Workers + Durable Objects + D1
 - `apps/cli` — the `maruhi` / `mh` CLI
 - `apps/web` — the dashboard (`my.maruhi.app`)

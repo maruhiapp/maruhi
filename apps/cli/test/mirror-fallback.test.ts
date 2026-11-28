@@ -20,6 +20,7 @@ import {
   headOfChain,
   mirrorHandlers,
   mirrorState,
+  type MirrorState,
   owner,
   start,
   wrap,
@@ -32,7 +33,7 @@ function seedMirrorSession(env: TestEnv, mirrorOrigin: string): void {
   env.keychain.delete(masterKeyEntryName(mirrorOrigin, owner.userId));
 }
 
-function readMirrorHandlers(sourceOrigin: string, status?: Record<string, unknown>): MockHandler[] {
+function readMirrorHandlers(sourceOrigin: string, status?: MirrorState["status"]): MockHandler[] {
   const value = makeValueEnvironmentServer({
     chain: built,
     owner,

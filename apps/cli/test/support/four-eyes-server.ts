@@ -1,4 +1,3 @@
-import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
 import {
@@ -11,44 +10,49 @@ import {
   type WireDistributedManifest,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiPayload, ApiSuccess } from "@maruhi/test-kit/api";
 
 import {
   acceptAppendedEntry,
+  type AppendInjection,
   injectedAppendResponse,
+  lastHashOf,
   servedChainResponse,
 } from "./chain-handler.ts";
 import type { WireRotateBody } from "./env-rotate.ts";
-import { type MockHandler, type MockResponse, onRequest } from "./server.ts";
+import { type MockHandler, onEndpoint } from "./server.ts";
+
+type RegisteredDeks = ApiPayload<"deks.register">["deks"];
 
 export interface FourEyesServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
   readonly rotateBodies: WireRotateBody[];
-  readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
+  readonly registerBodies: { environmentId: string; deks: RegisteredDeks }[];
   readonly counters: { appendAttempts: number };
   readonly entries: ChainEntry[];
   readonly hashes: string[];
 }
 
-export async function makeFourEyesServer(input: {
-  readonly built: BuiltChain;
-  readonly environments: Readonly<
-    Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
-  >;
-  readonly actor: GeneratedIdentity;
-  readonly author?: GeneratedIdentity;
-  readonly authConfig?: Record<string, unknown>;
-  readonly invitations?: readonly Record<string, unknown>[];
-  readonly onAppend?: (call: number) => MockResponse | undefined;
-  readonly chainAfterConflict?: BuiltChain;
-}): Promise<FourEyesServerState> {
+export async function makeFourEyesServer(
+  input: AppendInjection & {
+    readonly built: BuiltChain;
+    readonly environments: Readonly<
+      Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
+    >;
+    readonly actor: GeneratedIdentity;
+    readonly author?: GeneratedIdentity;
+    readonly authConfig?: ApiSuccess<"auth.authConfig">;
+    readonly invitations?: ApiSuccess<"invites.list">["invitations"];
+  },
+): Promise<FourEyesServerState> {
   const actor = input.actor;
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
   const rotateBodies: WireRotateBody[] = [];
-  const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
+  const registerBodies: { environmentId: string; deks: RegisteredDeks }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
   const manifests = new Map<string, WireDistributedManifest>();
@@ -64,35 +68,29 @@ export async function makeFourEyesServer(input: {
       }),
     ),
   );
-  const environmentRoute = (suffix: string) =>
-    new RegExp(`^/projects/${projectId}/environments/([^/]+)/${suffix}$`);
-
   const handlers: MockHandler[] = [
-    onRequest("GET", "/auth/config", () => ({
+    onEndpoint("auth.authConfig", () => ({
       status: 200,
       json: input.authConfig ?? { githubClientId: "dummy-client-id", signupPolicy: "open" },
     })),
-    onRequest("GET", `/projects/${projectId}/chain`, () =>
+    onEndpoint("membership.get", { projectId }, () =>
       servedChainResponse(projectId, entries, hashes),
     ),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
+    onEndpoint("membership.append", { projectId }, async (request) => {
       const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as { readonly entry: ChainEntry };
-      appendedEntries.push(body.entry);
-      return acceptAppendedEntry(projectId, entries, hashes, body.entry);
-    },
-    onRequest("GET", `/projects/${projectId}/invites`, () => ({
+      const entry = request.body.entry as ChainEntry;
+      appendedEntries.push(entry);
+      return acceptAppendedEntry(projectId, entries, hashes, entry);
+    }),
+    onEndpoint("invites.list", { projectId }, () => ({
       status: 200,
       json: { invitations: input.invitations ?? [] },
     })),
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
+    onEndpoint("environments.list", { projectId }, () => ({
       status: 200,
       json: {
         environments: listedStatements.map((statement) => ({
@@ -103,19 +101,15 @@ export async function makeFourEyesServer(input: {
         schemaPolicy: "enabled",
       },
     })),
-    async (request) => {
-      const match = environmentRoute("pull").exec(request.path);
-      if (match === null || request.method !== "GET") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    onEndpoint("variables.pull", { projectId }, async (request) => {
+      const { environmentId } = request.params;
       const environment = environments[environmentId];
-      if (environment === undefined) {
+      const statement = listedStatements.find((item) => item.environmentId === environmentId);
+      if (environment === undefined || statement === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
       }
-      const statement = listedStatements.find((item) => item.environmentId === environmentId);
       let manifest = manifests.get(environmentId);
-      if (manifest === undefined && statement !== undefined) {
+      if (manifest === undefined) {
         manifest = await distributedManifest({
           projectId,
           environmentId,
@@ -142,13 +136,9 @@ export async function makeFourEyesServer(input: {
           schemaPolicy: "enabled" as const,
         },
       };
-    },
-    async (request) => {
-      const match = environmentRoute("rotate").exec(request.path);
-      if (match === null || request.method !== "POST") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    }),
+    onEndpoint("environments.rotate", { projectId }, async (request) => {
+      const { environmentId } = request.params;
       const environment = environments[environmentId];
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
@@ -192,30 +182,25 @@ export async function makeFourEyesServer(input: {
           environmentId,
           currentEpoch: environment.currentEpoch,
           headSeq: entries.length,
-          headHashHex: hashes[hashes.length - 1],
+          headHashHex: lastHashOf(hashes),
         },
       };
-    },
-    (request) => {
-      const match = environmentRoute("deks").exec(request.path);
-      if (match === null) {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    }),
+    onEndpoint("deks.listMine", { projectId }, (request) => {
+      const { environmentId } = request.params;
       const environment = environments[environmentId];
-      if (environment === undefined) {
+      return environment === undefined
+        ? { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } }
+        : { status: 200, json: { deks: environment.deks } };
+    }),
+    onEndpoint("deks.register", { projectId }, (request) => {
+      const { environmentId } = request.params;
+      if (environments[environmentId] === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
       }
-      if (request.method === "GET") {
-        return { status: 200, json: { deks: environment.deks } };
-      }
-      if (request.method === "POST") {
-        const body = request.body as { readonly deks: readonly WrappedDek[] };
-        registerBodies.push({ environmentId, deks: body.deks });
-        return { status: 204 };
-      }
-      return null;
-    },
+      registerBodies.push({ environmentId, deks: request.body.deks });
+      return { status: 204 };
+    }),
   ];
   return { handlers, appendedEntries, rotateBodies, registerBodies, counters, entries, hashes };
 }

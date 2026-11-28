@@ -32,7 +32,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onRequest } from "./support/server.ts";
 
 describe("maruhi env rotate", () => {
   it("if the 409's winner chains into a diverged history, it aborts without re-pointing prev (§12-5)", async () => {
@@ -535,7 +535,7 @@ describe("maruhi env rotate", () => {
           variables[0] = winnerA;
           return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } };
         }
-        return { status: 502, bodyText: "bad gateway" };
+        return offSpec({ status: 502, bodyText: "bad gateway" });
       },
     });
     const env = await startEnv(state.handlers, owner);

@@ -12,11 +12,13 @@ import {
   type WireDistributedVariableStatement,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll } from "vite-plus/test";
 
+import { servedChainResponse } from "./chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { rotatedEnvironmentFor } from "./rotated-environment.ts";
-import { type MockHandler, MockServer, onRequest } from "./server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./server.ts";
 
 export const ENV_ID = "prod";
 
@@ -25,7 +27,7 @@ export interface Fixture {
   readonly built: BuiltChain;
   readonly dek1: Uint8Array;
   readonly dek2: Uint8Array;
-  readonly wraps: readonly WireRecipientDek[];
+  readonly wraps: readonly [WireRecipientDek, WireRecipientDek];
   readonly valueAlpha: WireDistributedValue;
   readonly valueBeta: WireDistributedValue;
   readonly envStatement: WireDistributedEnvironmentStatement;
@@ -171,88 +173,90 @@ afterEach(async () => {
 
 export function chainHandler(): MockHandler {
   const { built } = fixture;
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
-    status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
-  }));
+  return onEndpoint("membership.get", { projectId: built.projectId }, () =>
+    servedChainResponse(built.projectId, built.entries, built.hashes),
+  );
 }
 
+type PullBody = ApiSuccess<"variables.pull">;
+
 function digestStatementsOf(
-  variables: readonly unknown[],
-  deletedVariables: readonly unknown[],
-  declaredVariables: readonly unknown[] = [],
+  variables: PullBody["variables"],
+  deletedVariables: PullBody["deletedVariables"],
+  declaredVariables: readonly WireDistributedVariableStatement[] = [],
 ): readonly WireDistributedVariableStatement[] {
   const digestInputs = new Map<string, WireDistributedVariableStatement>();
-  for (const entry of variables as readonly {
-    readonly statement: WireDistributedVariableStatement;
-  }[]) {
+  for (const entry of variables) {
     digestInputs.set(entry.statement.variableId, entry.statement);
   }
-  for (const declared of declaredVariables as readonly WireDistributedVariableStatement[]) {
+  for (const declared of declaredVariables) {
     digestInputs.set(declared.variableId, declared);
   }
-  for (const tombstone of deletedVariables as readonly WireDistributedVariableStatement[]) {
+  for (const tombstone of deletedVariables) {
     digestInputs.set(tombstone.variableId, tombstone);
   }
   return [...digestInputs.values()];
 }
 
 export function pullHandler(overrides?: {
-  readonly deks?: readonly unknown[];
-  readonly variables?: readonly unknown[];
-  readonly deletedVariables?: readonly unknown[];
-  readonly declaredVariables?: readonly unknown[];
-  readonly statement?: unknown;
-  readonly digestDeclared?: readonly unknown[];
+  readonly deks?: PullBody["deks"];
+  readonly variables?: PullBody["variables"];
+  readonly deletedVariables?: PullBody["deletedVariables"];
+  readonly declaredVariables?: readonly WireDistributedVariableStatement[];
+  readonly statement?: PullBody["statement"];
+  readonly digestDeclared?: readonly WireDistributedVariableStatement[];
 }): MockHandler {
   const { built, wraps, entryAlpha, entryBeta, envStatement } = fixture;
-  const resolved = {
-    statement: envStatement as unknown,
-    variables: [entryAlpha, entryBeta] as readonly unknown[],
-    deletedVariables: [] as readonly unknown[],
-    declaredVariables: [] as readonly unknown[],
-    deks: wraps as readonly unknown[],
-    digestDeclared: undefined as readonly unknown[] | undefined,
+  const resolved: {
+    readonly statement: PullBody["statement"];
+    readonly variables: PullBody["variables"];
+    readonly deletedVariables: PullBody["deletedVariables"];
+    readonly declaredVariables: readonly WireDistributedVariableStatement[];
+    readonly deks: PullBody["deks"];
+    readonly digestDeclared?: readonly WireDistributedVariableStatement[];
+  } = {
+    statement: envStatement,
+    variables: [entryAlpha, entryBeta],
+    deletedVariables: [],
+    declaredVariables: [],
+    deks: wraps,
     ...overrides,
-    schemaPolicy: "enabled" as const,
   };
-  return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    const manifest = await distributedManifest({
-      projectId: built.projectId,
-      environmentId: ENV_ID,
-      epoch: 2,
-      issuer: fixture.owner,
-      head: headOf(built, 3),
-      envStatement: resolved.statement as WireDistributedEnvironmentStatement,
-      statements: digestStatementsOf(
-        resolved.variables,
-        resolved.deletedVariables,
-        resolved.digestDeclared ?? resolved.declaredVariables,
-      ),
-    });
-    return {
-      status: 200,
-      json: {
+  return onEndpoint(
+    "variables.pull",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    async () => {
+      const manifest = await distributedManifest({
+        projectId: built.projectId,
         environmentId: ENV_ID,
-        currentEpoch: 2,
-        statement: resolved.statement,
-        variables: resolved.variables,
-        deletedVariables: resolved.deletedVariables,
-        ...(resolved.declaredVariables.length === 0
-          ? {}
-          : { declaredVariables: resolved.declaredVariables }),
-        deks: resolved.deks,
-        manifest,
-        schemaPolicy: "enabled" as const,
-      },
-    };
-  });
+        epoch: 2,
+        issuer: fixture.owner,
+        head: headOf(built, 3),
+        envStatement: resolved.statement,
+        statements: digestStatementsOf(
+          resolved.variables,
+          resolved.deletedVariables,
+          resolved.digestDeclared ?? resolved.declaredVariables,
+        ),
+      });
+      return {
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          currentEpoch: 2,
+          statement: resolved.statement,
+          variables: resolved.variables,
+          deletedVariables: resolved.deletedVariables,
+          ...(resolved.declaredVariables.length === 0
+            ? {}
+            : { declaredVariables: resolved.declaredVariables }),
+          deks: resolved.deks,
+          manifest,
+          schemaPolicy: "enabled" as const,
+        },
+      };
+    },
+  );
 }
 
 export async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {

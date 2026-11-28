@@ -5,10 +5,12 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": "./lib/index.ts"
+    ".": "./lib/index.ts",
+    "./api": "./lib/api-route.ts"
   },
   "dependencies": {
     "@maruhi/api-schema": "workspace:*",
-    "@maruhi/crypto": "workspace:*"
+    "@maruhi/crypto": "workspace:*",
+    "effect": "4.1.6"
   }
 }
