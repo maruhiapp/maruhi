@@ -478,6 +478,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L284: Layout already matched at this point: only the both-v1 case (no schema fields) reaches here
 - L299: Predecessor checks run only after the metaVersion CAS: a stale-view statement is a 409, never a 422 (§12-5 check order)
 - L334: Meta CAS (§12-5): only declared == latest + 1; the 409 returns the latest number only
+- L205 (2026-11-28 tree): `metaVersionsExceeded`, the cap on metaVersion row count (the interim ruling recorded under `apps/server/src/quotas.ts` L113), lives beside its one caller. In quotas.ts it made a file cycle: the package index re-exports this module, this module called quotas.ts, and quotas.ts reads `DataStore` through the index. quotas.ts now depends on the package one way, and the predicate stays a pure function exported through the index for its unit test
 - L359: Meta acceptance pipeline order is pinned: bound, CAS, predecessor fetch, predecessor match, description policy, signature
 - L384: The support-range check runs first (see ensureSupportedLayout — ruling CR)
 - L404: Description policy does not apply to deletes: byte-exact preservation governs, and limits must never block deletion (§12-8)

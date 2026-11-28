@@ -41,7 +41,6 @@ export {
   type EnvironmentSummaryValue,
   type EnvManifestInput,
   type MetaStatementInput,
-  type MetaStatementStatusInput,
   optionalCheckpointSnapshot,
   projectIdOf,
   type PulledVariableValue,
@@ -89,6 +88,7 @@ export {
   ensureNfcName,
   ensureSupportedLayout,
   type MetaOperation,
+  metaVersionsExceeded,
   statementLayoutVersion,
 } from "./verify-meta.ts";
 export { ensureValueCas, ensureValueSignature } from "./verify-value.ts";

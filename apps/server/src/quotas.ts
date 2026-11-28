@@ -2,7 +2,6 @@ import type { EnvironmentId, VariableId } from "@maruhi/core";
 import type { PendingProposal } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MetaStatementStatusInput } from "./data.package/index.ts";
 import { DataStore, rejectData } from "./data.package/index.ts";
 import {
   MAX_ACTIVE_ENVIRONMENTS,
@@ -15,7 +14,6 @@ import {
   MAX_PROJECT_DEK_WRAP_ROWS,
   MAX_PROPOSAL_LIFETIME_MS,
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
-  MAX_VERSIONS_PER_VARIABLE,
 } from "./policy.ts";
 
 export function projectQuotaExceeded(activeProjectCount: number): boolean {
@@ -84,13 +82,6 @@ export const ensureVariableQuota = Effect.fn("quotas.ensureVariableQuota")(funct
     });
   }
 });
-
-export function metaVersionsExceeded(
-  latestMetaVersion: number,
-  status: MetaStatementStatusInput,
-): boolean {
-  return status !== "deleted" && latestMetaVersion + 1 > MAX_VERSIONS_PER_VARIABLE;
-}
 
 export function environmentBytesExceeded(
   totalBytes: number,

@@ -2,8 +2,8 @@ import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
+import { metaVersionsExceeded } from "../src/data.package/index.ts";
 import { MAX_VERSIONS_PER_VARIABLE } from "../src/policy.ts";
-import { metaVersionsExceeded } from "../src/quotas.ts";
 import { metaSignedBytesHashOf, signMetaStatementAs, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   testEnvironmentId,

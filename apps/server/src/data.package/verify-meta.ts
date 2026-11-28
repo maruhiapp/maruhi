@@ -12,9 +12,8 @@ import { Effect } from "effect";
 
 import { catchCryptoErrors } from "../crypto-catch.ts";
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS, MAX_VERSIONS_PER_VARIABLE } from "../policy.ts";
-import { metaVersionsExceeded } from "../quotas.ts";
 import type { MemberWithDevice } from "./data-guards.ts";
-import type { MetaStatementInput } from "./data-plane.ts";
+import type { MetaStatementInput, MetaStatementStatusInput } from "./data-plane.ts";
 import type { DataRejectedError, MetaStatementRejectReason } from "./data-rejection.ts";
 import { rejectData } from "./data-rejection.ts";
 import type { MetaAnchor } from "./data-store.ts";
@@ -202,6 +201,13 @@ export const ensureMetaCas = (
     : Effect.fail(
         rejectData({ kind: "meta-version-conflict", currentMetaVersion: latestMetaVersion }),
       );
+
+export function metaVersionsExceeded(
+  latestMetaVersion: number,
+  status: MetaStatementStatusInput,
+): boolean {
+  return status !== "deleted" && latestMetaVersion + 1 > MAX_VERSIONS_PER_VARIABLE;
+}
 
 const ensureMetaQuota = (
   latestMetaVersion: number,
