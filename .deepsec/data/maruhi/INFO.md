@@ -59,7 +59,8 @@ plaintext to disk. Hosted web (`apps/web`) is metadata-only (ADR-0018)
   `do/chain-commit.ts`, `data/verify-manifest.ts`,
   `checkpoint-accept.ts`, `attestation-accept.ts`, or the mirror /
   snapshot accept paths (`do/do-mirror.ts` and the `do/do-mirror-*.ts`
-  modules it calls, `do/do-snapshot-restore.ts`).
+  modules it calls, `do/do-snapshot-restore.ts`, and the chain fold both
+  read, `do/chain-anchors.ts`).
 - Four-eyes: a proposal completes only at `requiredApprovals`
   distinct live owner votes; the proposer's proposal counts as one
   vote and a further approve from the proposer is a duplicate. An

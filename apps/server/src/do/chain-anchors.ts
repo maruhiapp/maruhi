@@ -1,7 +1,4 @@
-import { stagingOf } from "./do-mirror-state.ts";
-import { CHAIN_TABLE } from "./do-snapshot.ts";
-
-interface CheckpointTuple {
+export interface CheckpointTuple {
   readonly seq: number;
   readonly entryHashHex: string;
   readonly epoch: number;
@@ -25,7 +22,20 @@ export const strField = (record: Record<string, unknown>, key: string): string |
   return typeof value === "string" ? value : null;
 };
 
-export interface StagedChainAnchors {
+const strArrayField = (record: Record<string, unknown>, key: string): readonly string[] | null => {
+  const value = record[key];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? (value as string[])
+    : null;
+};
+
+export interface ChainRow {
+  readonly seq: number;
+  readonly entryJson: string;
+  readonly entryHashHex: string | null;
+}
+
+export interface ChainAnchors {
   readonly headSeq: number;
   readonly hashBySeq: ReadonlyMap<number, string>;
   readonly epochStarts: ReadonlyMap<string, readonly (readonly [number, number])[]>;
@@ -47,25 +57,22 @@ export interface StagedChainAnchors {
     { readonly epoch: number; readonly sig: string } | "conflict"
   >;
   readonly latest: ReadonlyMap<string, CheckpointTuple>;
+  readonly grantScopes: ReadonlyMap<number, readonly string[]>;
   readonly complete: boolean;
 }
 
 const ANCHORS_IGNORED_OPS: ReadonlySet<string> = new Set([
   "genesis",
   "change_role",
-  "grant_server",
   "revoke_server",
   "set_approval_policy",
   "add_device",
-  "propose",
-  "approve",
   "withdraw",
 ]);
 
 // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
 // fallow-ignore-next-line complexity -- a per-op fold over the chain's entry taxonomy in seq order (the mirror of chain-history's recorder); the branches are the entry kinds the anchors are read from
-export function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
-  const staging = stagingOf(CHAIN_TABLE);
+export function foldChainAnchors(rows: Iterable<ChainRow>): ChainAnchors {
   const hashBySeq = new Map<number, string>();
   const epochStarts = new Map<string, [number, number][]>();
   const deletedSeq = new Map<string, number>();
@@ -75,19 +82,18 @@ export function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
   const revokedDevices: { seq: number; targetUserId: string; fingerprints: string[] }[] = [];
   const tupleFor = new Map<string, { readonly epoch: number; readonly sig: string } | "conflict">();
   const latest = new Map<string, CheckpointTuple>();
+  const grantScopes = new Map<number, readonly string[]>();
+  const proposedGrants = new Map<string, readonly string[]>();
   let headSeq = 0;
   let complete = true;
-  const rows = sql
-    .exec(`SELECT seq, entry_json, entry_hash_hex FROM ${staging} ORDER BY seq`)
-    .toArray();
-  for (const row of rows) {
-    const seq = Number(row["seq"]);
-    const entryHashHex = String(row["entry_hash_hex"]);
-    hashBySeq.set(seq, entryHashHex);
+  for (const { seq, entryJson, entryHashHex } of rows) {
+    if (entryHashHex !== null) {
+      hashBySeq.set(seq, entryHashHex);
+    }
     headSeq = Math.max(headSeq, seq);
     let parsed: unknown;
     try {
-      parsed = JSON.parse(String(row["entry_json"]));
+      parsed = JSON.parse(entryJson);
     } catch {
       complete = false;
       continue;
@@ -157,13 +163,39 @@ export function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
       }
       continue;
     }
+    if (op === "grant_server") {
+      const scope = strArrayField(payload, "scopeEnvironmentIds");
+      if (scope !== null) {
+        grantScopes.set(seq, scope);
+      }
+      continue;
+    }
+    if (op === "propose") {
+      const inner = asRecord(payload["inner"]);
+      const innerPayload = inner === null ? null : asRecord(inner["payload"]);
+      if (inner !== null && innerPayload !== null && strField(inner, "op") === "grant_server") {
+        const scope = strArrayField(innerPayload, "scopeEnvironmentIds");
+        if (scope !== null && entryHashHex !== null) {
+          proposedGrants.set(entryHashHex, scope);
+        }
+      }
+      continue;
+    }
+    if (op === "approve") {
+      const hash = strField(payload, "proposalHashHex");
+      const scope = hash === null ? undefined : proposedGrants.get(hash);
+      if (scope !== undefined) {
+        grantScopes.set(seq, scope);
+      }
+      continue;
+    }
     if (op !== "checkpoint") {
       if (!ANCHORS_IGNORED_OPS.has(op)) {
         complete = false;
       }
       continue;
     }
-    if (!Array.isArray(payload["environments"])) {
+    if (!Array.isArray(payload["environments"]) || entryHashHex === null) {
       complete = false;
       continue;
     }
@@ -223,12 +255,13 @@ export function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
     revokedDevices,
     tupleFor,
     latest,
+    grantScopes,
     complete,
   };
 }
 
 export function epochAt(
-  anchors: StagedChainAnchors,
+  anchors: ChainAnchors,
   environmentId: string,
   seq: number,
 ): number | undefined {
@@ -244,4 +277,33 @@ export function epochAt(
     epoch = value;
   }
   return epoch;
+}
+
+export function checkpointRowsMatchLatest(
+  rows: Iterable<Record<string, unknown>>,
+  latest: ReadonlyMap<string, CheckpointTuple>,
+): boolean {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const environmentId = String(row["environment_id"]);
+    seen.add(environmentId);
+    const tuple = latest.get(environmentId);
+    if (
+      tuple === undefined ||
+      Number(row["chain_seq"]) !== tuple.seq ||
+      String(row["entry_hash_hex"]) !== tuple.entryHashHex ||
+      Number(row["epoch"]) !== tuple.epoch ||
+      Number(row["manifest_version"]) !== tuple.manifestVersion ||
+      String(row["manifest_sig_hash_hex"]) !== tuple.manifestSigHashHex ||
+      String(row["values_digest_hex"]) !== tuple.valuesDigestHex
+    ) {
+      return false;
+    }
+  }
+  for (const environmentId of latest.keys()) {
+    if (!seen.has(environmentId)) {
+      return false;
+    }
+  }
+  return true;
 }

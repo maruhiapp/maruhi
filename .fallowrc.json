@@ -156,31 +156,13 @@
   // reports; a change to either copy, or a third copy, gives a new key that
   // is reported again. fallow says nothing about a key that matches no
   // clone, so a change that removes a kept clone removes its key and note:
-  // - dup:54dc2654:2, dup:015e31c1:2, dup:fd94bdcb:2 are the mirror
-  //   (apps/server/src/do/do-mirror-anchors.ts, do-mirror-chain-verify.ts)
-  //   and do-snapshot-restore.ts carrying parallel copies of the same
-  //   chain bindings: the stagedChainAnchors folds (the membership ops,
-  //   the checkpoint tuples) and the checkpoint-row equality pass. The
-  //   mirror applies them inside the trailer's transaction over its
-  //   staging tables and refuses with MirrorPageRefused; the restore
-  //   applies the subset its pre-promotion point supports, over the
-  //   restore reader's staging and its own anchors shape, and refuses
-  //   with RestoreRefusedError.
-  //   Sharing them would couple the restore reader to the mirror's
-  //   staging vocabulary for four small, stable folds; each copy changes
-  //   only when its own pipeline's binding changes. The JSON field
-  //   readers (asRecord, intField, strField) are a fourth parallel copy
-  //   with no key: each reader in the mirror's copy carries `export`,
-  //   which splits the run into pieces below fallow's smallest clone,
-  //   so fallow reports none.
-  // - dup:40b1c298:2 is the staged-row iteration preamble
-  //   verifyStagedCheckpoints and verifyStagedManifests open with, and
-  //   dup:7b9fce37:2 is the live-row preservation loop verifyStagedWraps
-  //   and verifyStagedAttestations share. In both pairs the repeated
-  //   lines are the setup only: the refusal logic that follows diverges
-  //   per table (the manifest counting predicate, the wrap epoch
-  //   admission, the attestation removal exemptions), so one shared loop
-  //   would need a switch for each check it feeds.
+  // - dup:7b9fce37:2 is the live-row preservation loop verifyStagedWraps
+  //   and verifyStagedAttestations share
+  //   (apps/server/src/do/do-mirror-chain-verify.ts). The repeated lines
+  //   are the setup only: the refusal logic that follows diverges per
+  //   table (the wrap epoch admission, the attestation removal
+  //   exemptions), so one shared loop would need a switch for each
+  //   check it feeds.
   // The duplication baseline (fallow-baselines/dupes.json) holds only real
   // debt and is shrink-only (scripts/check-dupes-baseline.mjs, CI 5b).
   // fallow reports a clone group at warn, which fails neither `fallow
@@ -210,13 +192,7 @@
       // regeneration. Site code outside src/ (scripts/, test/) stays gated
       "apps/site/src/**"
     ],
-    "ignoredClones": [
-      "dup:54dc2654:2",
-      "dup:015e31c1:2",
-      "dup:fd94bdcb:2",
-      "dup:40b1c298:2",
-      "dup:7b9fce37:2"
-    ],
+    "ignoredClones": ["dup:7b9fce37:2"],
     "threshold": 0.0001
   },
   "health": {

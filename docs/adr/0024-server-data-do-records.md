@@ -551,6 +551,15 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L293: Inserts the composite's 2 entries (H+1 / H+2 — already through verifyAcceptableEntryPair) + mirror + side effects (synchronous, in seq…
 - L321: Per-op acceptance side effects (after the mirror append, inside the same task).
 
+### `apps/server/src/do/chain-anchors.ts`
+
+- L32 (2026-11-28 tree): `ChainRow` (seq, entry JSON, entry hash) is the fold's one input: rows and not a table, so the restore reader does not depend on the mirror's staging tables, which was the reason the two folds were kept apart (the kept-clone note in `.fallowrc.json`; owner approval to revise it 2026-11-28). Each caller normalises its own rows: the mirror stringifies the hash column, and the restore reader skips a row whose seq is not a safe integer and passes a hash that is not a string as null.
+- L60 (2026-11-28 tree): `grantScopes` is for the restore reader. It is sound only when a missing entry hash reaches the fold as null: under the mirror's normalisation a NULL hash on a `propose` row becomes the proposal key "null", which an `approve` naming "null" would match. The mirror does not read the field.
+- L75 (2026-11-28 tree): foldChainAnchors is the one server-side reading of the chain's entry taxonomy for a replica. The mirror and the restore reader each take the anchors they need from one fold; before, each carried its own fold.
+- L75 (2026-11-28 tree): `complete` turns false on an entry that cannot be read or an op the fold does not know. The mirror skips its chain-anchored checks on an incomplete fold; the restore reader does not read the flag, as its own fold skipped such entries silently. A `grant_server`, `propose` or `approve` entry never turns it false, whatever its payload: the restore reader's fold read those three, the mirror's ignored them, and neither treated a malformed one as unreadable. Sharing the fold changed neither behavior (old and new compared over 200,000 random chains per seed, malformed rows included).
+- L75 (2026-11-28 tree): a row whose entry hash is null gives no `hashBySeq` entry, no proposal key and no checkpoint tuple. A `checkpoint` row without a hash turns `complete` false; a `propose` row without one does not. Only the restore reader can pass null: it reads the hash column as is, and the mirror stringifies it.
+- L282 (2026-11-28 tree): checkpointRowsMatchLatest is the checkpoint binding in both directions (every row equals the chain's latest tuple for its environment, every latest tuple has a row). The caller owns the refusal: MirrorPageRefused in the mirror, RestoreRefusedError in the restore reader.
+
 ### `apps/server/src/do/chain-commit.ts`
 
 - L1: Shared write phase that records §3.4 mirror events alongside acceptance of a chain append (generic append = programs-chain.ts /…
