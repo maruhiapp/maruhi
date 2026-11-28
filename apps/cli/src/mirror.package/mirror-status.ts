@@ -3,7 +3,8 @@ import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { VerifiedProject } from "../chain-sync.ts";
-import { type CliServices, openSession } from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import { openSession } from "../context.ts";
 import { formatUtcMinutes } from "../display.ts";
 import { type CliError, evidenceError } from "../errors.ts";
 import { CliIo } from "../io.ts";

@@ -1,6 +1,7 @@
 import { Clock, Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
+import type { CliServices } from "../cli.ts";
 import {
   NonBlank,
   commonFlags,
@@ -16,7 +17,6 @@ import {
   loadRotateConfig,
   configNamesProject as rotateConfigNamesProject,
 } from "../connector.package/index.ts";
-import type { CliServices } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";

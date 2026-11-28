@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 
-import type { CliServices, ProjectContextBase, SessionContext } from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import type { ProjectContextBase, SessionContext } from "../context.ts";
 import type { CliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";
 import { CliIo } from "../io.ts";

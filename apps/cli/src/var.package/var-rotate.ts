@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@maruhi/core";
 import { Effect, Redacted, Stdio } from "effect";
 
+import type { CliServices } from "../cli.ts";
 import {
   companionsOf,
   type ConnectorError,
@@ -19,7 +20,7 @@ import {
   type RotationOutcome,
   ruleFor,
 } from "../connector.package/index.ts";
-import type { CliServices, EnvironmentContext } from "../context.ts";
+import type { EnvironmentContext } from "../context.ts";
 import { floorHandleFor } from "../context.ts";
 import { environmentKeysFor } from "../deks.ts";
 import { countNoun, displayText, formatUtcDate } from "../display.ts";

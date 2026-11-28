@@ -4,12 +4,8 @@ import { Clock, Effect } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "../api.ts";
-import {
-  type CliServices,
-  openProject,
-  type ProjectContext,
-  type ProjectContextBase,
-} from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import { openProject, type ProjectContext, type ProjectContextBase } from "../context.ts";
 import type { DekRecipient } from "../deks.ts";
 import { describeBackfill, reportRegisteredDevice } from "../device-approve.ts";
 import { describeGapFillRoute } from "../device-gaps.ts";

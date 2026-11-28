@@ -5,7 +5,8 @@ import { Clock, Effect, Result } from "effect";
 
 import { ensureDeviceApproveAllowed } from "./agent-gate.ts";
 import type { MaruhiClient } from "./api.ts";
-import { type CliServices, openProject, type ProjectContext } from "./context.ts";
+import type { CliServices } from "./cli.ts";
+import { openProject, type ProjectContext } from "./context.ts";
 import { describeGapFillRoute } from "./device-gaps.ts";
 import { capWithinSignerCap, describeCap, findOwnDevice, reAddDeviceRoute } from "./device-key.ts";
 import { appendAddDevice, backfillToDevice, type DeviceBackfillOutcome } from "./device-ops.ts";

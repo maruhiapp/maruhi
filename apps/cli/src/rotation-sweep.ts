@@ -15,11 +15,28 @@ import type { VerifiedProject } from "./chain-sync.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { chainDeletedEnvironments } from "./deks.ts";
 import { displayText } from "./display.ts";
-import type { RotationSummary } from "./env.package/index.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
 import { compareCodePoints, environmentsOfScopeAt, scopeChangeAt } from "./scope.ts";
+
+export interface RotationSummary {
+  readonly mode: "rotated" | "resumed" | "up-to-date";
+  readonly previousEpoch: number;
+  readonly epoch: number;
+  readonly reencrypted: number;
+  readonly alreadyCurrent: number;
+  readonly remaining: number;
+  readonly remainingExact: boolean;
+  readonly failure: string | null;
+  readonly written: readonly ReencryptedVariable[];
+  readonly warnings: readonly string[];
+}
+
+export interface ReencryptedVariable {
+  readonly name: string;
+  readonly version: number;
+}
 
 export type SweepRotateMode = "force" | "verify";
 

@@ -5,7 +5,6 @@ import type { MaruhiClient } from "./api.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";
 import type { CliIo } from "./io.ts";
 import { logNote } from "./notice.ts";
-import type { DecryptedVariable } from "./pull.ts";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DUE_SOON_DAYS = 14;
@@ -147,7 +146,11 @@ export const notePastDueValues = Effect.fn("max-age.notePastDueValues")(function
   readonly client: MaruhiClient;
   readonly projectId: ProjectId;
   readonly environmentId: EnvironmentId;
-  readonly variables: readonly DecryptedVariable[];
+  readonly variables: readonly {
+    readonly variableId: VariableId;
+    readonly name: string;
+    readonly maxAgeDays: number | null;
+  }[];
 }): Effect.fn.Return<void, never, CliIo> {
   const candidates = input.variables.flatMap((variable): MaxAgeCandidate[] =>
     variable.maxAgeDays === null

@@ -148,7 +148,7 @@ apps/
 ### Layers (enforced by fallow `boundaries` in `.fallowrc.json`)
 
 - Workspace packages sit below the apps. `crypto` imports no other workspace package, `core` may import `crypto`, and `api-schema` may import `core` and `crypto`. Packages never import an app, and apps (`cli`, `server`, `web`, `site`) never import each other.
-- CLI (`apps/cli/src`): the entry files (`bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`) are on top, the command layer (`commands/**` and each `*.package/command.ts`) is next, and every other file is the domain layer. The domain layer never imports the command layer, and imports the entry files only for types.
+- CLI (`apps/cli/src`): the entry files (`bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`) are on top, the command layer (`commands/**` and each `*.package/command.ts`) is next, and every other file is the domain layer. The domain layer never imports the command layer. The command layer and the domain layer import the entry files only for types (`CliServices`, the service set the entry provides, is declared in `cli.ts`).
 - Server (`apps/server/src`): `index.ts` is the only file that imports `handlers/**`. `programs/`, `do/`, `ops/`, the `*.package/` directories, and the root files form one zone, because the DO programs run inside the chain DO and the two import each other.
 - Web (`apps/web/src`): the shell (`App.tsx`, `Root.tsx`, `pages/**`) may import the views (`dashboard/**`, `components/**`, and every other file under `src`). The views never import the shell.
 - Zones match in order, first match wins. A new entry file or top-level directory that does not fit is a design question: propose the change to `.fallowrc.json` and this section together to a human.

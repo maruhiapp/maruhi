@@ -4,6 +4,7 @@ import { MAX_META_MAX_AGE_DAYS, type MetaVarType } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command, CliError as EffectCliError, Flag } from "effect/cli";
 
+import type { CliServices } from "../cli.ts";
 import {
   NonBlank,
   commonFlags,
@@ -12,7 +13,6 @@ import {
   singleValued,
 } from "../commands/flags.ts";
 import { openEnvironment, openMetadataEnvironment } from "../commands/lazy.ts";
-import type { CliServices } from "../context.ts";
 import { displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";

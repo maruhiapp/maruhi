@@ -19,8 +19,8 @@ import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "../api.ts";
+import type { CliServices } from "../cli.ts";
 import type { IdentityBacking } from "../config.ts";
-import type { CliServices } from "../context.ts";
 import { displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";

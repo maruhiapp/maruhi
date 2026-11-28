@@ -3,6 +3,7 @@ import { type EnvironmentId, type ProjectId, type UserId, type VariableId } from
 import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
+import type { CliServices } from "./cli.ts";
 import {
   configNamesProject,
   DEFAULT_ROTATE_CONFIG_PATH,
@@ -10,7 +11,7 @@ import {
   type RotateConfig,
   ruleFor,
 } from "./connector.package/index.ts";
-import type { CliServices, ProjectContextBase } from "./context.ts";
+import type { ProjectContextBase } from "./context.ts";
 import { floorHandleFor } from "./context.ts";
 import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate } from "./display.ts";

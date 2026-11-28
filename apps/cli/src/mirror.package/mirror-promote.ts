@@ -4,14 +4,9 @@ import type { HttpClient } from "effect/http";
 
 import { makeApiClient, type MaruhiClient } from "../api.ts";
 import { syncProject, type VerifiedProject } from "../chain-sync.ts";
+import type { CliServices } from "../cli.ts";
 import type { CliConfig as MaruhiCliConfig } from "../config.ts";
-import {
-  type CliServices,
-  openSession,
-  openSessionWith,
-  resolveProjectId,
-  type SessionContext,
-} from "../context.ts";
+import { openSession, openSessionWith, resolveProjectId, type SessionContext } from "../context.ts";
 import { countNoun, displayText } from "../display.ts";
 import { type CliError, cliError } from "../errors.ts";
 import { isNoAnswer, toCliError } from "../failure.ts";

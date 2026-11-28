@@ -25,12 +25,8 @@ import type { HttpClient } from "effect/http";
 
 import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
 import type { MaruhiClient } from "../api.ts";
-import {
-  type CliServices,
-  type CommonFlags,
-  openMetadataProject,
-  openSession,
-} from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import { type CommonFlags, openMetadataProject, openSession } from "../context.ts";
 import { devicesOf } from "../device-key.ts";
 import { countNoun, displayText } from "../display.ts";
 import { cliError, type CliError, usageError } from "../errors.ts";

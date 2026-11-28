@@ -8,8 +8,9 @@ import {
   parseProposalExpiry,
 } from "../approval-rules.ts";
 import type { ProposalInput, ProposedSummary } from "../approval.package/index.ts";
+import type { CliServices } from "../cli.ts";
 import { ConfigStore, type IdentityBacking, identityBackingOf, loadCliConfig } from "../config.ts";
-import type { CliServices, CommonFlags, EnvironmentContext, ProjectContext } from "../context.ts";
+import type { CommonFlags, EnvironmentContext, ProjectContext } from "../context.ts";
 import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { GITHUB_LOGIN } from "../invite-link.ts";

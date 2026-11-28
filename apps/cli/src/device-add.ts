@@ -4,7 +4,8 @@ import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
-import { type CliServices, type ProjectContextBase } from "./context.ts";
+import type { CliServices } from "./cli.ts";
+import type { ProjectContextBase } from "./context.ts";
 import { type DekRecipient, environmentKeysFor, missingEpochsOf } from "./deks.ts";
 import { describeMissingOwnEpochs, gapFillCommandOf } from "./device-gaps.ts";
 import { reAddDeviceRoute } from "./device-key.ts";

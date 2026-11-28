@@ -1,7 +1,8 @@
 import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect, Redacted } from "effect";
 
-import type { CliServices, EnvironmentContext } from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import type { EnvironmentContext } from "../context.ts";
 import { displayText } from "../display.ts";
 import { asCleanupOutcome, type CliError, usageError } from "../errors.ts";
 import type { FloorHandle } from "../floor-check.ts";

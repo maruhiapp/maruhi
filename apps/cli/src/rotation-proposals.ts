@@ -3,13 +3,14 @@ import { type EnvironmentId, type VariableId, cryptoEffect } from "@maruhi/core"
 import { decodeHex, openProposedValue } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
+import type { CliServices } from "./cli.ts";
 import {
   describeShape,
   lineCountWarning,
   shapeOf,
   type ValueShape,
 } from "./connector.package/index.ts";
-import type { CliServices, EnvironmentContext, ProjectContextBase } from "./context.ts";
+import type { EnvironmentContext, ProjectContextBase } from "./context.ts";
 import { cryptoErrorKind } from "./crypto-error-kind.ts";
 import { environmentKeysFor } from "./deks.ts";
 import { countNoun, displayText, formatUtcDate, formatUtcMinutes, logWarnings } from "./display.ts";

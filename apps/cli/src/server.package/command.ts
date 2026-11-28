@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import type { MaruhiClient } from "../api.ts";
+import type { CliServices } from "../cli.ts";
 import { projectFlags, proposalFlags, singleValued } from "../commands/flags.ts";
 import {
   normalizeHttpOrigin,
@@ -11,7 +12,7 @@ import {
   sweepRotateFor,
 } from "../commands/lazy.ts";
 import { proposalInputOf, reportProposed, reportSweepOutcome } from "../commands/shared.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
+import type { CommonFlags } from "../context.ts";
 import { countNoun } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseFingerprintFlag } from "../fingerprint-flag.ts";

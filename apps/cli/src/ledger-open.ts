@@ -2,7 +2,7 @@ import { Effect, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
 import type { MaruhiClient } from "./api.ts";
-import type { CliServices } from "./context.ts";
+import type { CliServices } from "./cli.ts";
 import { ledgerKeyVerdictOf, type ReserveVerdict } from "./device-standing.ts";
 import { describeProjects, describeUnmarkedLedgerKey } from "./display.ts";
 import { cliError, type CliError } from "./errors.ts";

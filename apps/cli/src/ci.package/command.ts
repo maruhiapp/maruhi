@@ -2,6 +2,7 @@ import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
+import type { CliServices } from "../cli.ts";
 import {
   environmentIdFlag,
   NonBlank,
@@ -17,7 +18,6 @@ import {
   loadRotateConfig,
   configNamesProject as rotateConfigNamesProject,
 } from "../connector.package/index.ts";
-import type { CliServices } from "../context.ts";
 import { displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";

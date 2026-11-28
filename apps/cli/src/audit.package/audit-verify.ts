@@ -12,7 +12,8 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
 import { proposalIndexOf } from "../chain-applied.ts";
-import type { CliServices, ProjectContextBase } from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import type { ProjectContextBase } from "../context.ts";
 import { countNoun, displayText } from "../display.ts";
 import type { CliError } from "../errors.ts";
 import { cliError } from "../errors.ts";
