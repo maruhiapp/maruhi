@@ -385,6 +385,10 @@ async function confirmRevoke(page: Page): Promise<void> {
   await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
 }
 
+function focusedTestId(page: Page): Promise<string | null> {
+  return page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null);
+}
+
 function panelDisplay(page: Page, tab: string): Promise<string> {
   return page.locator(`#project-panel-${tab}`).evaluate((el) => getComputedStyle(el).display);
 }
@@ -816,16 +820,20 @@ describe("web e2e: read dashboard (W2 — S3-S7, mocked API via page.route)", ()
     await page.close();
   });
 
-  it("shows the server-reported gone wording when a revocation races to 410 (S8)", async () => {
+  it("shows the server-reported gone wording when a revocation races to 410, and focuses it once the row is no longer revocable (S8)", async () => {
     const page = await browser.newPage();
+    let gone = false;
     await routeProjectOverview(page);
     await page.route(
       (url) => url.pathname === `/projects/${PROJECT_1}/invites`,
-      (route) => fulfillJson(route, 200, invitationsFixture),
+      (route) => fulfillJson(route, 200, gone ? invitationsAfterRevoke : invitationsFixture),
     );
     await page.route(
       (url) => url.pathname === `/projects/${PROJECT_1}/invites/inv-pending`,
-      (route) => fulfillJson(route, 410, { _tag: "InviteGone", reason: "completed" }),
+      (route) => {
+        gone = true;
+        return fulfillJson(route, 410, { _tag: "InviteGone", reason: "completed" });
+      },
     );
     await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
     await page.getByRole("tab", { name: "Invites" }).click();
@@ -834,6 +842,40 @@ describe("web e2e: read dashboard (W2 — S3-S7, mocked API via page.route)", ()
     await confirmRevoke(page);
     await page.getByText("The server reports this invitation as completed.").waitFor();
     await expect(page.getByTestId("revocation-success").count()).resolves.toBe(0);
+    await page.getByText("revoked", { exact: true }).waitFor();
+    await expect(page.getByRole("button", { name: "Revoke" }).count()).resolves.toBe(1);
+    await expect.poll(() => focusedTestId(page)).toBe("revocation-failure");
+    await page.close();
+  });
+
+  it("keeps focus on the row's Revoke button when a revocation fails and the row stays revocable (S8)", async () => {
+    const page = await browser.newPage();
+    let listCalls = 0;
+    await routeProjectOverview(page);
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites`,
+      (route) => {
+        listCalls += 1;
+        return fulfillJson(route, 200, invitationsFixture);
+      },
+    );
+    await page.route(
+      (url) => url.pathname === `/projects/${PROJECT_1}/invites/inv-pending`,
+      (route) => route.abort(),
+    );
+    await page.goto(`${BASE}/dashboard/projects/${PROJECT_1}`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: "Invites" }).click();
+    await page.getByTestId("invite-table").waitFor();
+    const pendingRevoke = page.getByRole("button", {
+      name: /^Revoke pending member invitation from user_e2e, expires /,
+    });
+    await pendingRevoke.click();
+    await confirmRevoke(page);
+    await page.getByText("Could not reach the server").waitFor();
+    await expect.poll(() => listCalls).toBe(2);
+    await expect.poll(() => pendingRevoke.isEnabled()).toBe(true);
+    await expect(pendingRevoke.evaluate((el) => el === document.activeElement)).resolves.toBe(true);
+    await expect(focusedTestId(page)).resolves.toBeNull();
     await page.close();
   });
 

@@ -642,6 +642,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L19: DP3 amendment 4 replaced ruling CO's in-row two-step confirm with the modal AlertDialogAsyncAction shape because in-row buttons stacked in a narrow column and changed other rows' heights.
 - L93: On revocation success focus moves to the announcement banner itself, because the revoked row disappears on re-fetch and the focus the dialog returned is lost with it.
 - L117: RevocationOutcome was promoted to a shared surface when DK K5 produced a third screen; the success message is built at confirm time because the object may not remain in the list after re-fetch.
+- Added 2026-11-28 (after the audit; no base line): after a failed revocation the dialog returns focus to the row's Revoke button, and focus stays there while the row is still revocable, so a retry is one key press away. When the re-fetch draws the row without its button (a 410 race), focus fell to the document body (reproduced in the web e2e). `RevocationFailure` wraps FailureNotice in a focusable container and takes focus once the re-fetch has settled with focus on the body. Focus moves only in that case: moving it on every failure would take it off the retry control on S8, S9 and S11.
 
 ### `apps/web/src/dashboard/routes.ts`
 
