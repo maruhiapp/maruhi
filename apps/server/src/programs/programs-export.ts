@@ -6,7 +6,7 @@ import type { DataActor, DataRejectedError } from "../data.package/index.ts";
 import { dataEvent, DataStore, rejectData, requireMemberState } from "../data.package/index.ts";
 import type { StateCache } from "../do/chain-store.ts";
 import type { ChainStore } from "../do/chain-store.ts";
-import { readMirrorState } from "../do/do-mirror.ts";
+import { readMirrorState } from "../do/do-mirror-state.ts";
 import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../do/do-schema.ts";
 import {
   decodeExportCursor,

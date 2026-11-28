@@ -117,7 +117,7 @@ import type { StorageMeter } from "../storage-guard.ts";
 import { storageGuardDecision, storageMeterLayer } from "../storage-guard.ts";
 import type { ChainStore, StateCache } from "./chain-store.ts";
 import { chainStoreLayer } from "./chain-store.ts";
-import { readMirrorState } from "./do-mirror.ts";
+import { readMirrorState } from "./do-mirror-state.ts";
 import type { OpsBackupInput, OpsBackupOutcome, OpsRestoreOutcome } from "./do-ops.ts";
 import { backupProgram, restoreBody, restoreProgram } from "./do-ops.ts";
 import { ensureProjectDoTables, projectDoInitialized } from "./do-schema.ts";
