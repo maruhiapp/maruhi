@@ -936,7 +936,7 @@ The read API is not built per §6–§7 (Phase 2).
     via chain sync. The additional `chain_seq` condition (2026-08-25 deepsec
     S1) exists so the visibility predicate does not hide tamper evidence: the
     append boundary rejects `chain_seq` on non-`chain.*` as a defect, and the
-    only thing an honest writer can set this column on is `chainMirrorEvent` =
+    only thing an honest writer can set this column on is `chainMirrorEvents` =
     `chain.*` mirrors, so no legitimate class-2 row is disclosed and only a
     forged provenance claim naming an event one step outside the namespace
     reaches all members' verification. `server.*` is the disclosure
