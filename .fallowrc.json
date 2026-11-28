@@ -3,24 +3,11 @@
   // See ADR-0028.
   "minimumVersion": "3.34.0",
   "failOnParseError": true,
-  // Tools referenced only from CLI / lint config are never imported, so they
-  // are excluded from unused-dependency checks
-  // (@stylexjs/unplugin and @stylexjs/eslint-plugin are referenced indirectly
-  // via @astryxdesign/build / the oxlint config in vite.config.ts;
-  // @effect/tsgo supplies the effecttsgo oxlint preset that vite.config.ts
-  // imports and the patched tsrs its CLI runs the root `lint` and
-  // `typecheck` scripts through).
-  // pagefind (apps/site) is the same class: the Nimbus integration runs
-  // the pagefind binary after the build to index the site; it is never
-  // imported from site code
-  "ignoreDependencies": [
-    "@effect/tsgo",
-    "@import-lint/cli",
-    "oxlint-plugin-eslint",
-    "@stylexjs/unplugin",
-    "@stylexjs/eslint-plugin",
-    "pagefind"
-  ],
+  // pagefind (apps/site) is never imported, so it is excluded from the
+  // unused-dependency check: the Nimbus integration runs the pagefind
+  // binary after the build to index the site. fallow resolves the other
+  // CLI-only and lint-config tools itself
+  "ignoreDependencies": ["pagefind"],
   // The scoped overrides in package.json are security pins, not leftovers:
   // they lift exact-pinned copies to patched releases so `bun audit` stays
   // clean. undici 7.29.1 becomes 7.30.1 in every miniflare copy (the one
@@ -83,21 +70,21 @@
   // pages.css referenced by invite.html — AUTH_SPEC §15-3); they sit off the
   // module graph and would be falsely flagged unreachable.
   // For apps/site (Nimbus on Astro), astro.config.ts is the entry read by
-  // the Astro CLI; src/content (MDX) plus public/ static assets are off
-  // the module graph (src/pages routes are analyzed — fallow detects
-  // Astro routes and layouts as entry points itself).
+  // the Astro CLI; src/content (MDX) is off the module graph (src/pages
+  // routes are analyzed — fallow detects Astro routes and layouts as entry
+  // points itself).
   // .astro/ is Astro's generated types/cache directory (gitignored)
   "ignorePatterns": [
     ".agents/**",
     ".claude/**",
     ".deepsec/**",
     "apps/web/public/**",
-    "apps/site/public/**",
     "apps/site/src/content/**",
     "apps/site/.astro/**",
     "packages/crypto/test-vectors/tools/**",
     "scripts/**"
   ],
+  "usedClassMembers": [{ "extends": "DurableObject", "members": ["*"] }],
   "boundaries": {
     "zones": [
       { "name": "crypto", "patterns": ["packages/crypto/src/**"] },

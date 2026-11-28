@@ -233,7 +233,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   init(
     expectedProjectId: string,
     entry: ChainEntry,
@@ -272,7 +271,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   append(
     parentHeadHashHex: string,
     entry: ChainEntry,
@@ -284,12 +282,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   snapshotFor(callerUserId: UserId): Promise<SnapshotOutcome> {
     return this.#runData(snapshotProgram(callerUserId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   putHeadAttestation(
     callerUserId: UserId,
     input: HeadAttestationSubmissionInput,
@@ -300,12 +296,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   memberRoleFor(callerUserId: UserId): Promise<DataOutcome<Role>> {
     return this.#runData(memberRoleProgram(callerUserId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   createEnvironment(
     actor: DataActor,
     input: {
@@ -323,7 +317,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   rotateEpoch(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -341,7 +334,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   renameEnvironment(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -354,7 +346,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteEnvironment(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -369,12 +360,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   listEnvironments(actor: DataActor): Promise<DataOutcome<EnvironmentListValue>> {
     return this.#runData(listEnvironmentsProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   createVariable(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -391,7 +380,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   activateVariable(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -408,7 +396,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pushVersion(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -422,7 +409,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   variableHistory(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -433,7 +419,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   variableVersionValues(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -445,7 +430,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   renameVariable(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -466,7 +450,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteVariable(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -487,7 +470,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pullEnvironment(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -495,7 +477,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(pullEnvironmentProgram(actor, environmentId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   pullEnvironmentMetadata(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -503,7 +484,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(pullEnvironmentMetadataProgram(actor, environmentId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   registerDekWraps(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -515,7 +495,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   listMyDekWraps(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -523,7 +502,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(listMyDekWrapsProgram(actor, environmentId, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   deleteDekWraps(
     actor: DataActor,
     environmentId: EnvironmentId,
@@ -535,12 +513,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   schemaPolicyFor(actor: DataActor): Promise<DataOutcome<{ readonly schemaPolicy: SchemaPolicy }>> {
     return this.#runData(getSchemaPolicyProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   setSchemaPolicy(actor: DataActor, schemaPolicy: SchemaPolicy): Promise<DataOutcome<void>> {
     return this.#runWrite(
       actor.userId,
@@ -548,12 +524,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   rotationFlags(actor: DataActor): Promise<DataOutcome<readonly EffectiveRotationFlag[]>> {
     return this.#runData(rotationFlagsProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   dismissRotationFlags(
     actor: DataActor,
     targets: readonly RotationDismissTargetInput[],
@@ -564,7 +538,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   proposeRotation(
     environmentId: EnvironmentId,
     ephemeralPubHex: string,
@@ -591,7 +564,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   preflightRotation(
     environmentId: EnvironmentId,
     ephemeralPubHex: string,
@@ -620,12 +592,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   listRotationProposals(actor: DataActor): Promise<DataOutcome<readonly MemberProposalValue[]>> {
     return this.#runData(listRotationProposalsProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   resolveRotationProposal(
     actor: DataActor,
     proposalId: string,
@@ -637,7 +607,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   exportPage(actor: DataActor, cursor: string | null): Promise<DataOutcome<ExportPageValue>> {
     return this.#runData(
       exportPageProgram(
@@ -650,34 +619,28 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   exportMembers(actor: DataActor): Promise<DataOutcome<ExportMembersValue>> {
     return this.#runData(exportMembersProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   mirrorStatus(actor: DataActor): Promise<DataOutcome<MirrorStatusValue>> {
     return this.#runData(mirrorStatusProgram(actor, this.ctx.storage.sql, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   markMirror(actor: DataActor, sourceOrigin: string): Promise<DataOutcome<MirrorStatusValue>> {
     return this.#runData(
       markMirrorProgram(actor, sourceOrigin, this.ctx.storage, this.#stateCache),
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   unmarkMirror(actor: DataActor): Promise<DataOutcome<MirrorStatusValue>> {
     return this.#runData(unmarkMirrorProgram(actor, this.ctx.storage, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   mirrorPage(actor: DataActor, page: MirrorPageRequest): Promise<DataOutcome<MirrorPageValue>> {
     return this.#runData(mirrorPageProgram(actor, page, this.ctx.storage, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   auditEvents(
     actor: DataActor,
     query: AuditEventsQueryInput,
@@ -685,12 +648,10 @@ export class ProjectChainDO extends DurableObject<Env> {
     return this.#runData(auditEventsProgram(actor, query, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   auditHeadFor(actor: DataActor): Promise<DataOutcome<{ readonly auditHeadHashHex: string }>> {
     return this.#runData(auditHeadProgram(actor, this.#stateCache));
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   issueLease(
     environmentId: EnvironmentId,
     ephemeralPubHex: string,
@@ -719,7 +680,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the worker calls it via the stub)
   leaseChain(chainToken: string): Promise<readonly ChainEntry[]> {
     return this.#runtime.runPromise(
       this.#opLock.withPermit(
@@ -733,7 +693,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the cron sweep calls it via the stub)
   opsBackup(input: OpsBackupInput): Promise<OpsBackupOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
@@ -757,7 +716,6 @@ export class ProjectChainDO extends DurableObject<Env> {
     );
   }
 
-  // fallow-ignore-next-line unused-class-member -- a DO RPC method (the restore worker calls it via the stub)
   opsRestore(objectKey: string, etag?: string): Promise<OpsRestoreOutcome> {
     const bucket = this.env.OPS_BACKUP_BUCKET;
     if (bucket === undefined) {
