@@ -148,8 +148,16 @@ apps/
 ### Layers (enforced by fallow `boundaries` in `.fallowrc.json`)
 
 - Workspace packages sit below the apps. `crypto` imports no other workspace package, `core` may import `crypto`, and `api-schema` may import `core` and `crypto`. Packages never import an app, and apps (`cli`, `server`, `web`, `site`) never import each other.
-- CLI (`apps/cli/src`): the entry files (`bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`) are on top, the command layer (`commands/**` and each `*.package/command.ts`) is next, and every other file is the domain layer. The domain layer never imports the command layer. The command layer and the domain layer import the entry files only for types (`CliServices`, the service set the entry provides, is declared in `cli.ts`).
-- Server (`apps/server/src`): ten zones. A zone imports only the zones listed below it, with the exceptions named here.
+- CLI (`apps/cli/src`): six zones. A zone imports itself and the zones listed below it.
+  1. Entry: `bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`.
+  2. Command layer: `commands/**` and each `*.package/command.ts`.
+  3. Features: every domain file that no lower zone lists, the rest of each `*.package/` directory included.
+  4. Open pipeline: `context.ts`, `device-gaps.ts`, `device-ops.ts`, `device-sync.ts`, `rotation-sweep.ts`. It opens a session, a project or an environment for a feature.
+  5. Trust core: the files that check what the server says (chain sync and append, anchors, attestations, manifests, floors, pins and fingerprints, DEKs and wraps, values and meta statements, scope and session). The list is `cli-trust` in `.fallowrc.json`.
+  6. Kernel: the files that depend on no other CLI zone (errors, display, io, notices, config, keychain, the API client, small helpers). The list is `cli-kernel` in `.fallowrc.json`.
+  - The command layer, the features and the open pipeline may import the entry files for types (`CliServices`, the service set the entry provides, is declared in `cli.ts`). The trust core and the kernel declare the services they use. No other import points upward, a type-only one included.
+  - A new domain file is a feature. Listing it in a lower zone is a change to `.fallowrc.json`; a new zone is a change to this list too.
+- Server (`apps/server/src`): ten zones. A zone imports itself and the zones listed below it, with the exceptions named here.
   1. Entry: `index.ts`. It is the only file that imports `handlers/**`.
   2. Handlers: `handlers/**`. They import the data layer and the base, and `programs/` for types only. They import nothing under `do/` and no scheduled work.
   3. Scheduled work: `ops/ops-alerts.ts`, `ops/ops-backup.ts`. It imports the base, and the object and the replica for types only.
@@ -162,7 +170,7 @@ apps/
   - Two type-only imports point upward, for RPC typing: the base and the data layer may import types from the object.
   - A new file under `do/` lands in the store, and any other new server file in the base. Giving it a higher zone is a change to `.fallowrc.json` and this list together.
 - Web (`apps/web/src`): the shell (`App.tsx`, `Root.tsx`, `pages/**`) may import the views (`dashboard/**`, `components/**`, and every other file under `src`). The views never import the shell.
-- Zones match in order, first match wins. A new entry file or top-level directory that does not fit is a design question: propose the change to `.fallowrc.json` and this section together to a human.
+- Zones match in order, first match wins, so in `.fallowrc.json` an app's listed zones stand before its catch-all zone, whatever the layer order above. A zone pattern that matches no file fails `packages/core/test/zone-lists.test.ts`. A new entry file or top-level directory that does not fit is a design question: propose the change to `.fallowrc.json` and this section together to a human.
 
 ## Quality gate (always pass before committing)
 
