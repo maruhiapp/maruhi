@@ -3893,6 +3893,11 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L37: The one sanctioned mint file is crypto's chain verifier; its brand-assertion count is pinned so a sixth cast fails loudly
 - L50: The repo walk never descends into node_modules, dist, or dot-directories — CI's parallel group builds into them while this test runs, so walking them would race the build
 
+### `packages/core/test/check-dco.test.ts`
+
+- Added 2026-11-28 (after the audit; no base line): the script is run as CI runs it, as a process over a real repository: one built in a temporary directory, with git's global and system configuration switched off (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`), so a developer's signing, hooks or templates cannot change what a commit holds. What counts as a trailer is git's rule, and only git can answer it
+- Added 2026-11-28 (after the audit; no base line): the last block reads dco.yml line by line, indentation included, for the lines the policy rests on (forks only, the base branch as fetched, the full history, the event types); a whole-line match does not accept a commented-out line. No test can open a pull request from a fork, so these lines are pinned where a change to them fails a test and reaches review
+
 ### `packages/core/test/effect-tsgo-rules.test.ts`
 
 - L85: A schema restructure or config refactor must fail this test loudly rather than let the coverage check pass vacuously

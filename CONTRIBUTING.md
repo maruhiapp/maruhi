@@ -54,17 +54,32 @@ By submitting a pull request, you agree that your contribution is offered under 
 
 ## DCO (Developer Certificate of Origin)
 
-Every commit needs a `Signed-off-by` trailer showing agreement with [DCO 1.1](https://developercertificate.org/). The `-s` flag adds it automatically:
+Every commit of a pull request from a fork needs a `Signed-off-by` trailer showing agreement with [DCO 1.1](https://developercertificate.org/). The `-s` flag adds it automatically:
 
 ```sh
 git commit -s
 ```
 
-The trailer must look like the following, using your real name or a consistent identity that identifies you, and a valid email address:
+The trailer must look like the following, using your real name or a consistent identity that identifies you, and the email address of the commit's author:
 
 ```
 Signed-off-by: Your Name <your@example.com>
 ```
+
+CI checks this on every pull request from a fork (the `dco` workflow, `scripts/check-dco.mjs`): each commit, merge commits aside, must carry a sign-off whose email address is the one the commit is authored with. `-s` writes your `user.name` and `user.email`, so a commit authored under another address (one made in the GitHub web editor, for example) fails until both agree.
+
+To sign off commits you have already made:
+
+```sh
+git commit --amend -s                  # the last commit
+git commit --amend --reset-author -s   # the last commit, when its author address is not your user.email
+git rebase --signoff upstream/main     # every commit of the branch
+git rebase --signoff --exec 'git commit --amend --reset-author --no-edit' upstream/main   # the same, when older commits have another author address
+```
+
+`upstream` is your remote for this repository, not for your fork: a rebase onto a `main` that is behind this repository's replays the commits in between and signs them as yours.
+
+A pull request from a branch of this repository is not checked: maintainers push their own work there, and those commits carry no sign-off.
 
 <details>
 <summary>Developer Certificate of Origin 1.1 (full text)</summary>
