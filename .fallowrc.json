@@ -106,7 +106,54 @@
       { "name": "cli-domain", "patterns": ["apps/cli/src/**"] },
       { "name": "server-entry", "patterns": ["apps/server/src/index.ts"] },
       { "name": "server-handlers", "patterns": ["apps/server/src/handlers/**"] },
-      { "name": "server-domain", "patterns": ["apps/server/src/**"] },
+      {
+        "name": "server-ops",
+        "patterns": ["apps/server/src/ops/ops-alerts.ts", "apps/server/src/ops/ops-backup.ts"]
+      },
+      {
+        "name": "server-object",
+        "patterns": ["apps/server/src/do/chain-do.ts", "apps/server/src/restore-worker.ts"]
+      },
+      { "name": "server-programs", "patterns": ["apps/server/src/programs/**"] },
+      {
+        "name": "server-accept",
+        "patterns": [
+          "apps/server/src/do/chain-accept.ts",
+          "apps/server/src/do/chain-commit.ts",
+          "apps/server/src/do/lease-chain-grants.ts",
+          "apps/server/src/attestation-accept.ts",
+          "apps/server/src/checkpoint-accept.ts"
+        ]
+      },
+      {
+        "name": "server-replica",
+        "patterns": [
+          "apps/server/src/do/chain-anchors.ts",
+          "apps/server/src/do/do-mirror*.ts",
+          "apps/server/src/do/do-snapshot-*.ts",
+          "apps/server/src/do/do-ops.ts"
+        ]
+      },
+      {
+        "name": "server-data",
+        "patterns": [
+          "apps/server/src/data.package/**",
+          "apps/server/src/dek-wraps.ts",
+          "apps/server/src/quotas.ts",
+          "apps/server/src/server-key.ts",
+          "apps/server/src/storage-guard.ts"
+        ]
+      },
+      {
+        "name": "server-store",
+        "patterns": [
+          "apps/server/src/do/chain-store.ts",
+          "apps/server/src/do/do-schema.ts",
+          "apps/server/src/do/do-snapshot.ts",
+          "apps/server/src/do/**"
+        ]
+      },
+      { "name": "server-base", "patterns": ["apps/server/src/**"] },
       {
         "name": "web-shell",
         "patterns": ["apps/web/src/App.tsx", "apps/web/src/Root.tsx", "apps/web/src/pages/**"]
@@ -134,13 +181,98 @@
       },
       {
         "from": "server-entry",
-        "allow": ["server-handlers", "server-domain", "crypto", "core", "api-schema"]
+        "allow": [
+          "server-handlers",
+          "server-ops",
+          "server-object",
+          "server-programs",
+          "server-accept",
+          "server-replica",
+          "server-data",
+          "server-store",
+          "server-base",
+          "crypto",
+          "core",
+          "api-schema"
+        ]
       },
       {
         "from": "server-handlers",
-        "allow": ["server-handlers", "server-domain", "crypto", "core", "api-schema"]
+        "allow": ["server-handlers", "server-data", "server-base", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["server-programs"]
       },
-      { "from": "server-domain", "allow": ["server-domain", "crypto", "core", "api-schema"] },
+      {
+        "from": "server-ops",
+        "allow": ["server-ops", "server-base", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["server-object", "server-replica"]
+      },
+      {
+        "from": "server-object",
+        "allow": [
+          "server-object",
+          "server-programs",
+          "server-accept",
+          "server-replica",
+          "server-data",
+          "server-store",
+          "server-base",
+          "crypto",
+          "core",
+          "api-schema"
+        ]
+      },
+      {
+        "from": "server-programs",
+        "allow": [
+          "server-programs",
+          "server-accept",
+          "server-replica",
+          "server-data",
+          "server-store",
+          "server-base",
+          "crypto",
+          "core",
+          "api-schema"
+        ]
+      },
+      {
+        "from": "server-accept",
+        "allow": [
+          "server-accept",
+          "server-data",
+          "server-store",
+          "server-base",
+          "crypto",
+          "core",
+          "api-schema"
+        ]
+      },
+      {
+        "from": "server-replica",
+        "allow": [
+          "server-replica",
+          "server-data",
+          "server-store",
+          "server-base",
+          "crypto",
+          "core",
+          "api-schema"
+        ]
+      },
+      {
+        "from": "server-data",
+        "allow": ["server-data", "server-store", "server-base", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["server-object"]
+      },
+      {
+        "from": "server-store",
+        "allow": ["server-store", "server-base", "crypto", "core", "api-schema"]
+      },
+      {
+        "from": "server-base",
+        "allow": ["server-base", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["server-object"]
+      },
       { "from": "web-shell", "allow": ["web-shell", "web-views", "crypto", "core", "api-schema"] },
       { "from": "web-views", "allow": ["web-views", "crypto", "core", "api-schema"] },
       { "from": "site", "allow": ["site", "crypto", "core", "api-schema"] }

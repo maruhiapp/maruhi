@@ -149,7 +149,18 @@ apps/
 
 - Workspace packages sit below the apps. `crypto` imports no other workspace package, `core` may import `crypto`, and `api-schema` may import `core` and `crypto`. Packages never import an app, and apps (`cli`, `server`, `web`, `site`) never import each other.
 - CLI (`apps/cli/src`): the entry files (`bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`) are on top, the command layer (`commands/**` and each `*.package/command.ts`) is next, and every other file is the domain layer. The domain layer never imports the command layer. The command layer and the domain layer import the entry files only for types (`CliServices`, the service set the entry provides, is declared in `cli.ts`).
-- Server (`apps/server/src`): `index.ts` is the only file that imports `handlers/**`. `programs/`, `do/`, `ops/`, the `*.package/` directories, and the root files form one zone, because the DO programs run inside the chain DO and the two import each other.
+- Server (`apps/server/src`): ten zones. A zone imports only the zones listed below it, with the exceptions named here.
+  1. Entry: `index.ts`. It is the only file that imports `handlers/**`.
+  2. Handlers: `handlers/**`. They import the data layer and the base, and `programs/` for types only. They import nothing under `do/` and no scheduled work.
+  3. Scheduled work: `ops/ops-alerts.ts`, `ops/ops-backup.ts`. It imports the base, and the object and the replica for types only.
+  4. Object: `do/chain-do.ts` (the Durable Object class) and `restore-worker.ts`. They import neither handlers nor the scheduled work.
+  5. Programs: `programs/**`.
+  6. Acceptance (`do/chain-accept.ts`, `do/chain-commit.ts`, `do/lease-chain-grants.ts`, `attestation-accept.ts`, `checkpoint-accept.ts`) and the replica (`do/chain-anchors.ts`, `do/do-mirror*.ts`, `do/do-snapshot-*.ts`, `do/do-ops.ts`). The two never import each other.
+  7. Data layer: `data.package/**`, `dek-wraps.ts`, `quotas.ts`, `server-key.ts`, `storage-guard.ts`.
+  8. Store: `do/chain-store.ts`, `do/do-schema.ts`, `do/do-snapshot.ts`, and any `do/` file that no zone above lists.
+  9. Base: every other file (the remaining root files, `ops/ops-policy.ts`, `ops/ops-signals.ts`, and the `auth`, `db` and `oidc` packages). It imports no other server zone.
+  - Two type-only imports point upward, for RPC typing: the base and the data layer may import types from the object.
+  - A new file under `do/` lands in the store, and any other new server file in the base. Giving it a higher zone is a change to `.fallowrc.json` and this list together.
 - Web (`apps/web/src`): the shell (`App.tsx`, `Root.tsx`, `pages/**`) may import the views (`dashboard/**`, `components/**`, and every other file under `src`). The views never import the shell.
 - Zones match in order, first match wins. A new entry file or top-level directory that does not fit is a design question: propose the change to `.fallowrc.json` and this section together to a human.
 

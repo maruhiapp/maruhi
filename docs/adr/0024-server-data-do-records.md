@@ -30,6 +30,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L387: Prefix match uses substr, never LIKE, so % and _ in the input cannot act as wildcards
 - L409: Column match and aggregate queries run separately and merge: a fused OR would degrade the column match's index-ordered paging
 - L420: Aggregate var.read is bound to the value-existence interval and the viewer's own rows (class 2); null = the variable never held a value
+- L302 (2026-11-28 tree): `resolvePageLimit`, the clamp of a requested page size to the audit API's default and maximum, is declared here, beside the read surface it limits. The handlers' D1 reads and the Durable Object's audit program both call it. In `programs/programs-audit.ts` it was the one value the handlers imported from `programs/`; with it here they import `programs/` for types only (see the server zones under `.fallowrc.json` in ADR-0028)
 
 ### `apps/server/src/audit-store-rotation-read.ts`
 

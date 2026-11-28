@@ -1,8 +1,8 @@
-import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import type { KeyFingerprintHex, OrgId, UserId } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 
 import type { StoredAuditEventRow } from "../audit-store-query.ts";
+import { resolvePageLimit } from "../audit-store-query.ts";
 import { AuditStore } from "../audit-store.ts";
 import type { DataActor } from "../data.package/index.ts";
 import { rejectData, requireMemberState, roleAtLeast } from "../data.package/index.ts";
@@ -77,11 +77,6 @@ function toAuditEventValue(row: StoredAuditEventRow, includeSeq: boolean): Audit
     ...spreadIf("chainSeq", row.chainSeq),
     ...spreadIf("payload", row.payload as Readonly<Record<string, Schema.Json>> | null),
   };
-}
-
-export function resolvePageLimit(limit: number | undefined): number {
-  const requested = limit ?? DEFAULT_AUDIT_EVENTS_PAGE_LIMIT;
-  return Math.max(1, Math.min(requested, MAX_AUDIT_EVENTS_PAGE_LIMIT));
 }
 
 export const auditHeadProgram = Effect.fn("programs-audit.auditHeadProgram")(function* (

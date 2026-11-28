@@ -1,3 +1,4 @@
+import { DEFAULT_AUDIT_EVENTS_PAGE_LIMIT, MAX_AUDIT_EVENTS_PAGE_LIMIT } from "@maruhi/api-schema";
 import type { KeyFingerprintHex, UserId } from "@maruhi/core";
 import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { CHAIN_MIRROR_EVENT_PREFIX, VAR_READ_EVENT } from "@maruhi/core";
@@ -296,4 +297,9 @@ function toStoredRow(row: Record<string, unknown>): StoredAuditEventRow {
     targetUserId: brandOrNull(shared.targetUserId, decodeUserId),
     targetKeyFingerprintHex: brandOrNull(shared.targetKeyFingerprintHex, decodeKeyFingerprintHex),
   };
+}
+
+export function resolvePageLimit(limit: number | undefined): number {
+  const requested = limit ?? DEFAULT_AUDIT_EVENTS_PAGE_LIMIT;
+  return Math.max(1, Math.min(requested, MAX_AUDIT_EVENTS_PAGE_LIMIT));
 }

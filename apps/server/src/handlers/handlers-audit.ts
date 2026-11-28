@@ -3,12 +3,12 @@ import { RequestAuth } from "@maruhi/core";
 import { Effect, type Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { resolvePageLimit } from "../audit-store-query.ts";
 import { ensureSelfAuditAccess, tokenScopeAllowsForProject } from "../authz.ts";
 import { callProjectData, requireProjectChainAdmin } from "../data.package/index.ts";
 import type { D1StoredAuditEventRow } from "../db.package/index.ts";
 import { D1AuditRepo } from "../db.package/index.ts";
 import type { AuditActorValue, AuditEventValue } from "../programs/programs-audit.ts";
-import { resolvePageLimit } from "../programs/programs-audit.ts";
 
 function actorTypeOf(stored: string): AuditActorValue["type"] {
   return stored === "server" || stored === "system" ? stored : "user";
