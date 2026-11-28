@@ -29,7 +29,11 @@ const moduleLoadRestrictions = [
       "A dynamic import() names a relative path literal. The importNames bans of no-restricted-imports (FetchHttpClient, the identity mints) cannot see which names a dynamic import takes, so a package or computed specifier is refused here. Import the package statically, or load a local module that does",
   },
   { selector: "CallExpression[callee.name='require']", message: requireMessage },
-  { selector: "ImportDeclaration[source.value=/^(node:)?module$/]", message: requireMessage },
+  {
+    selector:
+      ":matches(ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^(node:)?module$/]",
+    message: requireMessage,
+  },
   {
     selector: "MemberExpression[object.type='MetaProperty'][property.name='require']",
     message: requireMessage,

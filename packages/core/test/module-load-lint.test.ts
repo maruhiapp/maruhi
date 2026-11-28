@@ -51,6 +51,11 @@ export const fromDefault = nodeModule.createRequire(import.meta.url)("effect/htt
 export const fromNamespace = bareModule.createRequire(import.meta.url)("effect/http");
 `;
 
+const NODE_MODULE_REEXPORTS = `export { createRequire } from "node:module";
+export * from "module";
+export * as nodeModule from "node:module";
+`;
+
 const ASTRO = `---
 const frontmatter = await import("effect/http");
 ---
@@ -96,6 +101,17 @@ const PROBES: readonly Probe[] = [
   },
   { path: "apps/cli/src/node-module.ts", source: NODE_MODULE_SHAPES, bans: [REQUIRE, REQUIRE] },
   { path: "apps/server/src/node-module.ts", source: NODE_MODULE_SHAPES, bans: [REQUIRE, REQUIRE] },
+  {
+    path: "apps/cli/src/node-module-reexport.ts",
+    source: NODE_MODULE_REEXPORTS,
+    bans: [REQUIRE, REQUIRE, REQUIRE],
+  },
+  {
+    path: "packages/core/src/node-module-reexport.ts",
+    source: NODE_MODULE_REEXPORTS,
+    bans: [REQUIRE, REQUIRE, REQUIRE],
+  },
+  { path: "apps/cli/test/node-module-reexport.ts", source: NODE_MODULE_REEXPORTS, bans: [] },
   { path: "apps/server/src/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
   { path: "apps/server/src/do/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
   { path: "packages/core/src/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
