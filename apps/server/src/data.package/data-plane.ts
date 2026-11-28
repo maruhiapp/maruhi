@@ -3,12 +3,11 @@ import type {
   DistributedVariableMetaStatement,
 } from "@maruhi/api-schema";
 import type { AuditActor, EnvironmentId, ProjectId, UserId, VariableId } from "@maruhi/core";
+import { decodeProjectId } from "@maruhi/core";
 import type { KeyFingerprintHex } from "@maruhi/crypto";
 
-import { projectIdOfGenesisHash } from "../ids.ts";
-
 export function projectIdOf(chain: { readonly genesisHashHex: string }): ProjectId {
-  return projectIdOfGenesisHash(chain.genesisHashHex);
+  return decodeProjectId(chain.genesisHashHex);
 }
 
 export type DataActor = AuditActor;

@@ -1,5 +1,5 @@
 import type { ProjectId } from "@maruhi/core";
-import { decodeProviderUserId, decodeUserId, type UserId } from "@maruhi/core";
+import { decodeProjectId, decodeProviderUserId, decodeUserId, type UserId } from "@maruhi/core";
 
 import type {
   ImportClassification,
@@ -10,7 +10,6 @@ import { classifyImportedProject, provisionImportedProject } from "./db.package/
 import type { ProjectChainDO } from "./do/chain-do.ts";
 import { ProjectChainDO as ProjectChainDOClass } from "./do/chain-do.ts";
 import type { OpsRestoreOutcome } from "./do/do-ops.ts";
-import { projectIdOfGenesisHash } from "./ids.ts";
 import {
   chainOwners,
   identitiesOnChain,
@@ -275,7 +274,7 @@ export async function projectIdFromSnapshot(body: ReadableStream): Promise<Proje
         return null;
       }
       const hit = scanner.consider(carry);
-      return hit === null ? null : projectIdOfGenesisHash(hit);
+      return hit === null ? null : decodeProjectId(hit);
     }
     carry += value;
     let index = carry.indexOf("\n");
@@ -283,7 +282,7 @@ export async function projectIdFromSnapshot(body: ReadableStream): Promise<Proje
       const found = scanner.consider(carry.slice(0, index));
       if (found !== null) {
         await reader.cancel();
-        return projectIdOfGenesisHash(found);
+        return decodeProjectId(found);
       }
       carry = carry.slice(index + 1);
       index = carry.indexOf("\n");

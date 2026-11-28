@@ -1,12 +1,4 @@
-import {
-  decodeOrgId,
-  decodeProjectId,
-  decodeUserId,
-  ulid,
-  type OrgId,
-  type ProjectId,
-  type UserId,
-} from "@maruhi/core";
+import { decodeOrgId, decodeUserId, ulid, type OrgId, type UserId } from "@maruhi/core";
 import { decodeHex, encodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 import type { CryptoError } from "effect/crypto";
@@ -19,10 +11,6 @@ export const newUserId = (nowMs: number): Effect.Effect<UserId, never, SecureRan
 
 export const newOrgId = (nowMs: number): Effect.Effect<OrgId, never, SecureRandom.SecureRandom> =>
   Effect.map(ulid(nowMs), (id) => decodeOrgId(id));
-
-export function projectIdOfGenesisHash(genesisHashHex: string): ProjectId {
-  return decodeProjectId(genesisHashHex);
-}
 
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 

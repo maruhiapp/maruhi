@@ -8,7 +8,7 @@ import {
   ProjectLimitError,
 } from "@maruhi/api-schema";
 import type { AuthenticatedPrincipal, OrgId, ProjectId } from "@maruhi/core";
-import { auditActorOf, cryptoPromise, RequestAuth } from "@maruhi/core";
+import { auditActorOf, cryptoPromise, decodeProjectId, RequestAuth } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, Role } from "@maruhi/crypto";
 import { canonicalChainEntryBytes, computeChainEntryHash } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
@@ -26,7 +26,6 @@ import {
 import type { DataOutcome } from "../data.package/index.ts";
 import { callProjectData, noContent, unwrapDataOutcome } from "../data.package/index.ts";
 import { InviteRepo, OrgRepo, ProjectRepo } from "../db.package/index.ts";
-import { projectIdOfGenesisHash } from "../ids.ts";
 import {
   MAX_ACTIVE_PROJECTS_PER_ORG,
   MAX_ENTRY_CANONICAL_BYTES,
@@ -105,7 +104,7 @@ const precheckAndComputeProjectId = Effect.fn("handlers-membership.precheckAndCo
       Effect.mapError(
         () => new ChainEntryInvalidError({ seq: entry.seq, reason: "invalid-payload" }),
       ),
-      Effect.map(projectIdOfGenesisHash),
+      Effect.map(decodeProjectId),
     );
   },
 );
