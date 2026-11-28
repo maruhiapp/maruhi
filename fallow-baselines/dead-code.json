@@ -10,23 +10,33 @@
     "node_modules": "present"
   },
   "identity": "dc1",
-  "unused_files": [],
+  "unused_files": [
+    "unused-file:apps/site/src/components/ui/layer-card/LayerCardContent.astro",
+    "unused-file:apps/site/src/components/ui/tabs/TabsContent.astro",
+    "unused-file:apps/site/src/components/ui/tabs/TabsTrigger.astro"
+  ],
   "unused_exports": [],
   "unused_types": [],
   "private_type_leaks": [],
   "deprecated_exports_in_use": [],
   "unused_dependencies": [],
   "unused_dev_dependencies": [],
-  "circular_dependencies": [],
+  "circular_dependencies": [
+    "circular-dependency:apps/server/src/data.package/index.ts|apps/server/src/data.package/verify-meta.ts|apps/server/src/quotas.ts",
+    "circular-dependency:apps/site/src/components.ts|apps/site/src/components/Render.astro"
+  ],
   "re_export_cycles": [],
   "package_cycles": [],
   "unused_optional_dependencies": [],
   "unused_enum_members": [],
   "unused_class_members": [],
   "unused_store_members": [],
+  "unused_namespace_members": [],
   "unprovided_injects": [],
   "unrendered_components": [],
-  "unused_component_props": [],
+  "unused_component_props": [
+    "unused-component-prop:apps/site/src/components/Header.astro:Header:entryId"
+  ],
   "absent_component_props": [],
   "unused_component_emits": [],
   "unused_component_inputs": [],
@@ -39,10 +49,15 @@
   "unused_load_data_keys": [],
   "unresolved_imports": [],
   "unlisted_dependencies": [],
+  "unlisted_binaries": [],
   "duplicate_exports": [],
+  "duplicate_export_aliases": [],
   "type_only_dependencies": [],
   "test_only_dependencies": [],
-  "dev_dependencies_in_production": [],
+  "dev_dependencies_in_production": [
+    "dev-dependency-in-production:package.json:@alchemy.run/cloudflare",
+    "dev-dependency-in-production:package.json:effect"
+  ],
   "boundary_violations": [],
   "boundary_coverage_violations": [],
   "boundary_call_violations": [],
@@ -58,5 +73,7 @@
   "misplaced_directives": [],
   "route_collisions": [],
   "dynamic_segment_name_conflicts": [],
-  "prop_drilling_chains": []
+  "prop_drilling_chains": [],
+  "thin_wrappers": [],
+  "duplicate_prop_shapes": []
 }
