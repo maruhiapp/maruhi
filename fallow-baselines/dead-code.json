@@ -22,7 +22,6 @@
   "unused_dependencies": [],
   "unused_dev_dependencies": [],
   "circular_dependencies": [
-    "circular-dependency:apps/server/src/data.package/index.ts|apps/server/src/data.package/verify-meta.ts|apps/server/src/quotas.ts",
     "circular-dependency:apps/site/src/components.ts|apps/site/src/components/Render.astro"
   ],
   "re_export_cycles": [],
