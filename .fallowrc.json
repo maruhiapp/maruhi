@@ -103,7 +103,80 @@
         "name": "cli-commands",
         "patterns": ["apps/cli/src/commands/**", "apps/cli/src/*.package/command.ts"]
       },
-      { "name": "cli-domain", "patterns": ["apps/cli/src/**"] },
+      {
+        "name": "cli-kernel",
+        "patterns": [
+          "apps/cli/src/agent-gate.ts",
+          "apps/cli/src/api.ts",
+          "apps/cli/src/byte-replace.ts",
+          "apps/cli/src/cli-teardown.ts",
+          "apps/cli/src/config.ts",
+          "apps/cli/src/crypto-error-kind.ts",
+          "apps/cli/src/deletion-confirm.ts",
+          "apps/cli/src/der.ts",
+          "apps/cli/src/display.ts",
+          "apps/cli/src/entropy.ts",
+          "apps/cli/src/errors.ts",
+          "apps/cli/src/failure.ts",
+          "apps/cli/src/io.ts",
+          "apps/cli/src/json-record.ts",
+          "apps/cli/src/json-record-pure.ts",
+          "apps/cli/src/keychain.ts",
+          "apps/cli/src/notice.ts",
+          "apps/cli/src/retry.ts",
+          "apps/cli/src/sigv4.ts",
+          "apps/cli/src/version.ts"
+        ]
+      },
+      {
+        "name": "cli-trust",
+        "patterns": [
+          "apps/cli/src/anchor.ts",
+          "apps/cli/src/approval-rules.ts",
+          "apps/cli/src/attestation.ts",
+          "apps/cli/src/backfill.ts",
+          "apps/cli/src/chain-append.ts",
+          "apps/cli/src/chain-applied.ts",
+          "apps/cli/src/chain-sync.ts",
+          "apps/cli/src/checkpoint-integrity.ts",
+          "apps/cli/src/dek-wrap.ts",
+          "apps/cli/src/deks.ts",
+          "apps/cli/src/device-key.ts",
+          "apps/cli/src/floor.ts",
+          "apps/cli/src/floor-check.ts",
+          "apps/cli/src/floor-evidence.ts",
+          "apps/cli/src/floor-log.ts",
+          "apps/cli/src/floor-log-decode.ts",
+          "apps/cli/src/floor-log-fold.ts",
+          "apps/cli/src/fp-words.ts",
+          "apps/cli/src/github-signing-keys.ts",
+          "apps/cli/src/invite-link.ts",
+          "apps/cli/src/known-fingerprints.ts",
+          "apps/cli/src/manifest.ts",
+          "apps/cli/src/meta-confirm.ts",
+          "apps/cli/src/meta-statement.ts",
+          "apps/cli/src/origin-book.ts",
+          "apps/cli/src/own-devices.ts",
+          "apps/cli/src/pins.ts",
+          "apps/cli/src/scope.ts",
+          "apps/cli/src/server-disclosure.ts",
+          "apps/cli/src/session.ts",
+          "apps/cli/src/values.ts",
+          "apps/cli/src/values-floor.ts",
+          "apps/cli/src/values-verify.ts"
+        ]
+      },
+      {
+        "name": "cli-open",
+        "patterns": [
+          "apps/cli/src/context.ts",
+          "apps/cli/src/device-gaps.ts",
+          "apps/cli/src/device-ops.ts",
+          "apps/cli/src/device-sync.ts",
+          "apps/cli/src/rotation-sweep.ts"
+        ]
+      },
+      { "name": "cli-features", "patterns": ["apps/cli/src/**"] },
       { "name": "server-entry", "patterns": ["apps/server/src/index.ts"] },
       { "name": "server-handlers", "patterns": ["apps/server/src/handlers/**"] },
       {
@@ -167,17 +240,56 @@
       { "from": "api-schema", "allow": ["core", "crypto"] },
       {
         "from": "cli-entry",
-        "allow": ["cli-commands", "cli-domain", "crypto", "core", "api-schema"]
+        "allow": [
+          "cli-commands",
+          "cli-features",
+          "cli-open",
+          "cli-trust",
+          "cli-kernel",
+          "crypto",
+          "core",
+          "api-schema"
+        ]
       },
       {
         "from": "cli-commands",
-        "allow": ["cli-commands", "cli-domain", "crypto", "core", "api-schema"],
+        "allow": [
+          "cli-commands",
+          "cli-features",
+          "cli-open",
+          "cli-trust",
+          "cli-kernel",
+          "crypto",
+          "core",
+          "api-schema"
+        ],
         "allowTypeOnly": ["cli-entry"]
       },
       {
-        "from": "cli-domain",
-        "allow": ["cli-domain", "crypto", "core", "api-schema"],
+        "from": "cli-features",
+        "allow": [
+          "cli-features",
+          "cli-open",
+          "cli-trust",
+          "cli-kernel",
+          "crypto",
+          "core",
+          "api-schema"
+        ],
         "allowTypeOnly": ["cli-entry"]
+      },
+      {
+        "from": "cli-open",
+        "allow": ["cli-open", "cli-trust", "cli-kernel", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["cli-entry"]
+      },
+      {
+        "from": "cli-trust",
+        "allow": ["cli-trust", "cli-kernel", "crypto", "core", "api-schema"]
+      },
+      {
+        "from": "cli-kernel",
+        "allow": ["cli-kernel", "crypto", "core", "api-schema"]
       },
       {
         "from": "server-entry",
