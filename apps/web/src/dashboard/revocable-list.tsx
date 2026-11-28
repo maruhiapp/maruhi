@@ -150,6 +150,7 @@ export function RevocableList<T, Row extends ListRow>({
       {}
       <RevocationOutcome
         revocation={list.revocation}
+        isRefreshing={list.state.kind === "ok" && list.state.refreshing}
         title={revocationWording.title}
         description={revocationWording.description}
         successMessage={revocationWording.successMessage}

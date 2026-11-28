@@ -266,6 +266,9 @@ export function DevicesScreen(): ReactNode {
         {}
         <RevocationOutcome
           revocation={revocation}
+          isRefreshing={[devices.state, tokens.state].some(
+            (resource) => resource.kind === "ok" && resource.refreshing,
+          )}
           title={`Revoke ${armedTokenName(tokens.state, revocation.armedId)}?`}
           description="Any CLI or CI job still using this token is signed out immediately. This does not revoke the device key on the project chains — do that from the CLI."
           successMessage={tokenRevokedMessage(tokens.state, revocation.armedId)}

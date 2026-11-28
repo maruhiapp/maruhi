@@ -3,8 +3,10 @@
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { VStack } from "@astryxdesign/core/Layout";
 import { type ReactNode, useEffect, useRef } from "react";
 
+import type { ApiFailure } from "./api.ts";
 import { FailureNotice, type FailureSubject } from "./resource-states.tsx";
 import type { RevocationState } from "./use-revocation.ts";
 
@@ -73,8 +75,29 @@ function RevocationSuccess({ message }: { message: string }): ReactNode {
   );
 }
 
+function RevocationFailure({
+  failure,
+  subject,
+  isRefreshing,
+}: {
+  failure: ApiFailure;
+  subject: FailureSubject;
+  isRefreshing: boolean;
+}): ReactNode {
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!isRefreshing && document.activeElement === document.body) ref.current?.focus();
+  }, [failure, isRefreshing]);
+  return (
+    <VStack ref={ref} tabIndex={-1} data-testid="revocation-failure">
+      <FailureNotice failure={failure} subject={subject} />
+    </VStack>
+  );
+}
+
 export function RevocationOutcome({
   revocation,
+  isRefreshing,
   title,
   description,
   successMessage,
@@ -83,6 +106,7 @@ export function RevocationOutcome({
   confirm,
 }: {
   revocation: RevocationState;
+  isRefreshing: boolean;
   title: string;
   description: string;
   successMessage: string;
@@ -103,7 +127,11 @@ export function RevocationOutcome({
         }}
       />
       {revocation.failure !== undefined ? (
-        <FailureNotice failure={revocation.failure} subject={subject} />
+        <RevocationFailure
+          failure={revocation.failure}
+          subject={subject}
+          isRefreshing={isRefreshing}
+        />
       ) : null}
       {revocation.succeeded !== undefined ? (
         <RevocationSuccess message={revocation.succeeded} />
