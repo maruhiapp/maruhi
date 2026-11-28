@@ -29,7 +29,7 @@ import {
 import type { SigningIdentity, TestIdentity } from "./identity.ts";
 import { signingKeyOf } from "./identity.ts";
 
-export type TestRole = "owner" | "admin" | "member" | "reader";
+type TestRole = "owner" | "admin" | "member" | "reader";
 
 export type TestScope = readonly string[] | undefined;
 
@@ -117,7 +117,7 @@ function scopeFieldsOf(scope: TestScope): {
 } {
   return scope === undefined
     ? { scopeKind: "all", scopeEnvironmentIds: [] }
-    : { scopeKind: "listed", scopeEnvironmentIds: scope.map(testEnvironmentId) };
+    : { scopeKind: "listed", scopeEnvironmentIds: scope.map(testEnvironmentId).toSorted() };
 }
 
 type PublicIdentity = Pick<TestIdentity, "userId" | "encPubHex" | "sigPubHex">;

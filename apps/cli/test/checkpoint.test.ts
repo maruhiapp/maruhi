@@ -9,6 +9,32 @@ import {
   signChainEntry,
   SUITE_ID,
 } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  checkpointSnapshotValuesOf,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedValue,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+  valueSignedBytesHashOf,
+  type WireCheckpointSnapshot,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedManifest,
+  type WireDistributedValue,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -19,46 +45,19 @@ import { checkpointProposal, issueCheckpoint } from "../src/checkpoint.package/c
 import { runCli } from "../src/cli.ts";
 import { makeFloorHandle } from "../src/floor-check.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
-import {
-  addMemberOp,
-  addScopedMemberOp,
-  buildChain,
-  checkpointSnapshotValuesOf,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  statementFor,
-  testEnvironmentId,
-  testProjectId,
-  testUserId,
-  type BuiltChain,
-  type TestUser,
-  type WireCheckpointSnapshot,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedManifest,
-  type WireDistributedValue,
-  type WireDistributedVariableStatement,
-  valueHashOf,
-} from "./support/crypto.ts";
-import { testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
 
 const ENV_A = "alpha";
 const ENV_B = "dev";
 
-let owner: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-3333");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-3333");
 });
 
 afterEach(async () => {
@@ -216,18 +215,18 @@ async function makeEnvironment(input: {
   readonly environmentId: string;
   readonly dek: Uint8Array;
   readonly headSeq: number;
-  readonly issuer: TestUser;
+  readonly issuer: GeneratedIdentity;
   readonly variableId: string;
 }): Promise<MockEnvironment> {
   const head = headOf(input.built, input.headSeq);
-  const statement = await environmentStatementFor({
+  const statement = await distributedEnvironmentStatement({
     projectId: input.built.projectId,
     environmentId: input.environmentId,
     name: input.environmentId,
     author: input.issuer,
     head,
   });
-  const variableStatement = await statementFor({
+  const variableStatement = await distributedVariableStatement({
     projectId: input.built.projectId,
     environmentId: input.environmentId,
     variableId: input.variableId,
@@ -235,7 +234,7 @@ async function makeEnvironment(input: {
     author: input.issuer,
     head,
   });
-  const value = await encryptValueFor({
+  const value = await distributedValue({
     dek: input.dek,
     projectId: input.built.projectId,
     environmentId: input.environmentId,
@@ -246,7 +245,7 @@ async function makeEnvironment(input: {
     writer: input.issuer,
     head,
   });
-  const manifest = await manifestFor({
+  const manifest = await distributedManifest({
     projectId: input.built.projectId,
     environmentId: input.environmentId,
     epoch: 1,
@@ -264,7 +263,11 @@ async function makeEnvironment(input: {
   };
 }
 
-async function seededEnv(server: MockServer, projectId: string, user: TestUser): Promise<TestEnv> {
+async function seededEnv(
+  server: MockServer,
+  projectId: string,
+  user: GeneratedIdentity,
+): Promise<TestEnv> {
   const env = await makeTestEnv();
   seedSession(env, server.origin, user);
   await seedConfig(env, { server: server.origin, defaultProject: projectId });
@@ -276,7 +279,7 @@ async function valuesDigestOf(values: readonly WireDistributedValue[]): Promise<
     values.map(async (value) => ({
       variableId: testVariableId(value.aad.variableId),
       version: value.aad.version,
-      valueSigHashHex: await valueHashOf(value, value.writerUserId),
+      valueSigHashHex: await valueSignedBytesHashOf(value, value.writerUserId),
     })),
   );
   const digest = await computeEnvValuesDigest(SUITE_ID, entries);
@@ -301,7 +304,7 @@ async function tupleOf(
     environmentId: testEnvironmentId(environment.environmentId),
     epoch: 1,
     manifestVersion: environment.manifest.manifestVersion,
-    manifestSigHashHex: await manifestHashOf(projectId, environment.manifest),
+    manifestSigHashHex: await distributedManifestHashOf(projectId, environment.manifest),
     valuesDigestHex: await valuesDigestOf(values),
   };
 }
@@ -381,7 +384,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     expect(tupleA.epoch).toBe(1);
     expect(tupleA.manifestVersion).toBe(1);
     expect(tupleA.manifestSigHashHex).toBe(
-      await manifestHashOf(built.projectId, environments[1]!.manifest),
+      await distributedManifestHashOf(built.projectId, environments[1]!.manifest),
     );
     expect(tupleA.valuesDigestHex).toBe(await expectedValuesDigest(environments[1]!));
     expect(entry.payload.auditHeadHashHex).toBe(head);
@@ -427,7 +430,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_A, dekA) },
       { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
-      { actor: owner, operation: addScopedMemberOp(member, "member", [ENV_A]) },
+      { actor: owner, operation: addMemberOp(member, "member", [ENV_A]) },
     ]);
     const environments = [
       await makeEnvironment({
@@ -694,7 +697,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     const nextValues: WireDistributedValue[] = [];
     let previous = busy.variables[0]!.value;
     for (let version = 2; version <= 6; version += 1) {
-      const value = await encryptValueFor({
+      const value = await distributedValue({
         dek: dekB,
         projectId: built.projectId,
         environmentId: ENV_B,
@@ -704,7 +707,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
         plaintext: `secret-v${version}`,
         writer: owner,
         head,
-        prevValueSigHashHex: await valueHashOf(previous, owner.userId),
+        prevValueSigHashHex: await valueSignedBytesHashOf(previous, owner.userId),
       });
       nextValues.push(value);
       previous = value;
@@ -948,7 +951,7 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
       ...(input.member === "listed"
         ? [
             { actor: owner, operation: createEnvironmentOp(ENV_B, dekB) },
-            { actor: owner, operation: addScopedMemberOp(member, "member", [ENV_A]) },
+            { actor: owner, operation: addMemberOp(member, "member", [ENV_A]) },
           ]
         : [{ actor: owner, operation: addMemberOp(member, "member") }]),
     ];
@@ -980,7 +983,7 @@ describe("the changed-only cover (CRYPTO_SPEC §6.3 — Sc-3a)", () => {
   async function runCheckpoint(input: {
     readonly built: BuiltChain;
     readonly environment: MockEnvironment;
-    readonly signer: TestUser;
+    readonly signer: GeneratedIdentity;
     readonly admin?: boolean;
   }) {
     const state = makeCheckpointServer({

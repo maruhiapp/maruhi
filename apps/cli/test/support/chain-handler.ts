@@ -1,6 +1,6 @@
 import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";
+import type { BuiltChain, WireRecipientDek } from "@maruhi/test-kit";
 
-import type { BuiltChain, WireRecipientDek } from "./crypto.ts";
 import { type MockHandler, type MockResponse, onRequest } from "./server.ts";
 
 export function deksHandlerOf(

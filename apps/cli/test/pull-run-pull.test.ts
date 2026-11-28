@@ -1,22 +1,22 @@
 import { signDekWrap } from "@maruhi/crypto";
-import { describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   createEnvironmentOp,
-  encryptValueFor,
+  distributedManifest,
+  distributedValue,
+  distributedWrap,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
   removeMemberOp,
   rotateEpochOp,
   testEnvironmentId,
   testProjectId,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandler,
@@ -122,7 +122,7 @@ describe("maruhi pull", () => {
 
   it("--show neutralizes ANSI/control sequences in the value while keeping newlines", async () => {
     const evil = "sk-\u001b[31mFAKE\u0007\nline2";
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -148,7 +148,7 @@ describe("maruhi pull", () => {
   });
 
   it("--show fails when a value is invalid UTF-8, and prints no value at all", async () => {
-    const binary = await encryptValueFor({
+    const binary = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -211,8 +211,8 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a wrap that forges the signer (a false signerUserId claim)", async () => {
-    const stranger = await makeTestUser("user-stranger-9999");
-    const spoofed = await wrapDekFor({
+    const stranger = await generateIdentity("user-stranger-9999");
+    const spoofed = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -231,8 +231,8 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a wrap whose signer does not exist in chain history", async () => {
-    const stranger = await makeTestUser("user-stranger-9999");
-    const foreign = await wrapDekFor({
+    const stranger = await generateIdentity("user-stranger-9999");
+    const foreign = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -281,8 +281,8 @@ describe("maruhi pull", () => {
   });
 
   it("reports the full refusal message for a wrap §5.1-signed but sealed to another key (not addressed to your key)", async () => {
-    const stranger = await makeTestUser("user-stranger-9999");
-    const base = await wrapDekFor({
+    const stranger = await generateIdentity("user-stranger-9999");
+    const base = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -326,7 +326,7 @@ describe("maruhi pull", () => {
 
   it("reports the full refusal message for a poisoned DEK (a fake-DEK injection — §5.2)", async () => {
     const forgedDek = crypto.getRandomValues(new Uint8Array(32));
-    const poison = await wrapDekFor({
+    const poison = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -344,8 +344,8 @@ describe("maruhi pull", () => {
   });
 
   it("reports the full refusal message for a signer absent from chain history", async () => {
-    const stranger = await makeTestUser("user-stranger-9999");
-    const foreign = await wrapDekFor({
+    const stranger = await generateIdentity("user-stranger-9999");
+    const foreign = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -385,7 +385,7 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a wrap beyond the chain's current epoch (a phantom epoch)", async () => {
-    const phantom = await wrapDekFor({
+    const phantom = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 3,
@@ -402,7 +402,7 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a variable whose declared epoch exceeds the chain's current epoch", async () => {
-    const phantomValue = await encryptValueFor({
+    const phantomValue = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -425,7 +425,7 @@ describe("maruhi pull", () => {
 
   it("refuses a DEK that does not match the on-chain commitment (a poisoned wrap = fake-DEK injection) (§5.2)", async () => {
     const forgedDek = crypto.getRandomValues(new Uint8Array(32));
-    const poison = await wrapDekFor({
+    const poison = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -440,7 +440,7 @@ describe("maruhi pull", () => {
 
   it("refuses a commitment-mismatched DEK even pre-push (via listMine) (the §5.2 confidentiality side)", async () => {
     const forgedDek = crypto.getRandomValues(new Uint8Array(32));
-    const poison = await wrapDekFor({
+    const poison = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       epoch: 2,
@@ -461,7 +461,7 @@ describe("maruhi pull", () => {
             statement: fixture.envStatement,
             variables: [fixture.entryAlpha.statement, fixture.entryBeta.statement],
             deletedVariables: [],
-            manifest: await manifestFor({
+            manifest: await distributedManifest({
               projectId: fixture.built.projectId,
               environmentId: ENV_ID,
               epoch: 2,
@@ -485,7 +485,7 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a distribution for an environment with no create_environment on the chain (a phantom environment)", async () => {
-    const ghostValue = await encryptValueFor({
+    const ghostValue = await distributedValue({
       dek: fixture.dek1,
       projectId: fixture.built.projectId,
       environmentId: "ghost",
@@ -496,7 +496,7 @@ describe("maruhi pull", () => {
       writer: fixture.owner,
       head: headOf(fixture.built, 3),
     });
-    const ghostWrap = await wrapDekFor({
+    const ghostWrap = await distributedWrap({
       projectId: fixture.built.projectId,
       environmentId: "ghost",
       epoch: 1,
@@ -527,7 +527,7 @@ describe("maruhi pull", () => {
             variables: [ghostEntry],
             deletedVariables: [],
             deks: [ghostWrap],
-            manifest: await manifestFor({
+            manifest: await distributedManifest({
               projectId: fixture.built.projectId,
               environmentId: "ghost",
               epoch: 1,
@@ -569,7 +569,7 @@ describe("maruhi pull", () => {
   });
 
   it("ciphertext swapped in that was encrypted under another environment's coordinates is refused before decryption", async () => {
-    const crossEnv = await encryptValueFor({
+    const crossEnv = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: "other-env",
@@ -593,8 +593,8 @@ describe("maruhi pull", () => {
   });
 
   it("a removed→re-added (new key) member's past signature verifies under the key of its time (§5.1)", async () => {
-    const oldKeys = await makeTestUser("user-rotated-5555");
-    const newKeys = await makeTestUser("user-rotated-5555");
+    const oldKeys = await generateIdentity("user-rotated-5555");
+    const newKeys = await generateIdentity("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -604,7 +604,7 @@ describe("maruhi pull", () => {
       { actor: owner, operation: removeMemberOp(oldKeys) },
       { actor: owner, operation: addMemberOp(newKeys, "member") },
     ]);
-    const wrap = await wrapDekFor({
+    const wrap = await distributedWrap({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -612,7 +612,7 @@ describe("maruhi pull", () => {
       recipient: owner,
       signer: oldKeys,
     });
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek,
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -632,7 +632,7 @@ describe("maruhi pull", () => {
       variables: [historicEntry],
       deletedVariables: [],
       deks: [wrap],
-      manifest: await manifestFor({
+      manifest: await distributedManifest({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -682,7 +682,7 @@ describe("maruhi pull", () => {
 
   it("control characters in variable names (ANSI, newlines) are sanitized in terminal output", async () => {
     const evilName = "EVIL\u001b[2J\nNAME";
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -735,7 +735,7 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a false writer claim (the signature stays someone else's) (the §4.1 attribution)", async () => {
-    const stranger = await makeTestUser("user-stranger-9999");
+    const stranger = await generateIdentity("user-stranger-9999");
     const lying = {
       ...fixture.valueAlpha,
       writerUserId: stranger.userId,
@@ -750,7 +750,7 @@ describe("maruhi pull", () => {
   });
 
   it("refuses a value whose removed writer declared a post-removal head (§6.3-3)", async () => {
-    const oldKeys = await makeTestUser("user-rotated-5555");
+    const oldKeys = await generateIdentity("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -758,9 +758,9 @@ describe("maruhi pull", () => {
       { actor: owner, operation: addMemberOp(oldKeys, "member") },
       { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: removeMemberOp(oldKeys) },
-      { actor: owner, operation: addMemberOp(await makeTestUser("user-other-7777"), "member") },
+      { actor: owner, operation: addMemberOp(await generateIdentity("user-other-7777"), "member") },
     ]);
-    const wrap = await wrapDekFor({
+    const wrap = await distributedWrap({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -768,7 +768,7 @@ describe("maruhi pull", () => {
       recipient: owner,
       signer: owner,
     });
-    const forged = await encryptValueFor({
+    const forged = await distributedValue({
       dek,
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -788,7 +788,7 @@ describe("maruhi pull", () => {
       variables: [forgedEntry],
       deletedVariables: [],
       deks: [wrap],
-      manifest: await manifestFor({
+      manifest: await distributedManifest({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -843,7 +843,7 @@ describe("maruhi pull", () => {
 
   it("a value written by a member added in the unsynced gap is accepted via bounded resync", async () => {
     const owner = fixture.owner;
-    const newcomer = await makeTestUser("user-newcomer-2222");
+    const newcomer = await generateIdentity("user-newcomer-2222");
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const shortBuilt = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const fullBuilt = await buildChain([
@@ -852,7 +852,7 @@ describe("maruhi pull", () => {
       { actor: newcomer, operation: createEnvironmentOp(ENV_ID, dek) },
     ]);
     expect(shortBuilt.projectId).toBe(fullBuilt.projectId);
-    const wrap = await wrapDekFor({
+    const wrap = await distributedWrap({
       projectId: fullBuilt.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -860,7 +860,7 @@ describe("maruhi pull", () => {
       recipient: owner,
       signer: newcomer,
     });
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek,
       projectId: fullBuilt.projectId,
       environmentId: ENV_ID,
@@ -880,7 +880,7 @@ describe("maruhi pull", () => {
       variables: [newcomerEntry],
       deletedVariables: [],
       deks: [wrap],
-      manifest: await manifestFor({
+      manifest: await distributedManifest({
         projectId: fullBuilt.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -965,7 +965,7 @@ describe("maruhi pull", () => {
       { actor: owner, operation: rotateEpochOp(ENV_ID, 2, fixture.dek2) },
     ]);
     expect(forked.projectId).toBe(built.projectId);
-    const futureValue = await encryptValueFor({
+    const futureValue = await distributedValue({
       dek: fixture.dek2,
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -1003,7 +1003,7 @@ describe("maruhi pull", () => {
   });
 
   it("a head declaration whose seq is at-or-below our view but whose hash mismatches is refused immediately (§6.3-2a)", async () => {
-    const bogus = await encryptValueFor({
+    const bogus = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,

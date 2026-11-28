@@ -8,31 +8,31 @@ import {
   importEncryptionPublicKey,
   wrapLeaseDek,
 } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  grantServerOp,
+  headOf,
+  hexBytes,
+  testEnvironmentId,
+  testProjectId,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedValue,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { cliError } from "../src/errors.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
-import {
-  buildChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  grantServerOp,
-  headOf,
-  hexBytes,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  testEnvironmentId,
-  testProjectId,
-  type BuiltChain,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedValue,
-  type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer } from "./support/server.ts";
 import { makeFakeCloudflare, makeFakeNetlify } from "./support/vendor-api.ts";
@@ -51,7 +51,7 @@ interface PullEntry {
   value: WireDistributedValue;
 }
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 const deks = new Map<string, Uint8Array>();
 const envStatements = new Map<string, WireDistributedEnvironmentStatement>();
@@ -59,7 +59,7 @@ const entries = new Map<string, PullEntry[]>();
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   deks.set(SOURCE_ENV, crypto.getRandomValues(new Uint8Array(32)));
   deks.set(TOKENS_ENV, crypto.getRandomValues(new Uint8Array(32)));
   built = await buildChain([
@@ -85,7 +85,7 @@ beforeAll(async () => {
   for (const environment of [SOURCE_ENV, TOKENS_ENV]) {
     envStatements.set(
       environment,
-      await environmentStatementFor({
+      await distributedEnvironmentStatement({
         projectId: built.projectId,
         environmentId: environment,
         name: environment,
@@ -102,7 +102,7 @@ beforeAll(async () => {
     version: number,
   ) => ({
     variableId,
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: environment,
       variableId,
@@ -110,7 +110,7 @@ beforeAll(async () => {
       author: owner,
       head: genesisHead,
     }),
-    value: await encryptValueFor({
+    value: await distributedValue({
       dek: deks.get(environment) as Uint8Array,
       projectId: built.projectId,
       environmentId: environment,
@@ -228,7 +228,7 @@ function leaseHandler(environment: string, leased: { keys: string[] }): MockHand
         statement: envStatements.get(environment),
         variables,
         deletedVariables: [],
-        manifest: await manifestFor({
+        manifest: await distributedManifest({
           projectId: built.projectId,
           environmentId: environment,
           epoch: 1,

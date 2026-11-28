@@ -2,19 +2,19 @@ import { readFile } from "node:fs/promises";
 
 import { HandoffApprovalSchema, HandoffLookupSchema } from "@maruhi/api-schema";
 import { fingerprintToWords } from "@maruhi/crypto";
+import {
+  buildChain,
+  createEnvironmentOp,
+  type GeneratedIdentity,
+  genesisOp,
+  grantServerOp,
+  hexBytes,
+} from "@maruhi/test-kit";
 import { Effect, Exit, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { ownDevicesPathOf } from "../src/own-devices.ts";
-import {
-  buildChain,
-  createEnvironmentOp,
-  genesisOp,
-  grantServerOp,
-  hexBytes,
-  type TestUser,
-} from "./support/crypto.ts";
 import {
   ENV_ID,
   FAR_FUTURE_MS,
@@ -36,7 +36,7 @@ import { makeTestEnv } from "./support/env.ts";
 
 function addsOf(
   state: ServerState,
-  device: TestUser,
+  device: GeneratedIdentity,
 ): { readonly projectId: string; readonly roleCap: string }[] {
   return state.appendedTo.flatMap(({ projectId, entry }) =>
     entry.op === "add_device" && entry.payload.encPubHex === device.encPubHex

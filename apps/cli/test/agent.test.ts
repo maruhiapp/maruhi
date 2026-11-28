@@ -4,6 +4,7 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { wrapMasterSecret } from "@maruhi/crypto";
+import { type GeneratedIdentity, generateIdentity, testUserId } from "@maruhi/test-kit";
 import { Cause, Duration, Effect, Exit, Fiber, Layer, Predicate, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -30,8 +31,6 @@ import {
 } from "../src/keychain.ts";
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { buildChildEnvironment } from "../src/run.ts";
-import { makeTestUser, type TestUser } from "./support/crypto.ts";
-import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -710,7 +709,7 @@ describeSocket("maruhi agent status", () => {
   });
 });
 
-function storedMasterRecord(user: TestUser): StoredMasterKey {
+function storedMasterRecord(user: GeneratedIdentity): StoredMasterKey {
   return {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
@@ -721,7 +720,7 @@ function storedMasterRecord(user: TestUser): StoredMasterKey {
 }
 
 async function wrappedBlobHandler(
-  user: TestUser,
+  user: GeneratedIdentity,
   secret: Uint8Array,
 ): Promise<{ handler: MockHandler; code: string }> {
   const record = storedMasterRecord(user);
@@ -747,7 +746,7 @@ async function wrappedBlobHandler(
 
 describeSocket("key recover lands in memory inside an agent session", () => {
   it("the newly issued device key goes only into the agent; nothing remains in the test keychain", async () => {
-    const user = await makeTestUser("user-agent-0001");
+    const user = await generateIdentity("user-agent-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await wrappedBlobHandler(user, secret);
     const maruhi = await MockServer.start([

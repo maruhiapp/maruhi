@@ -1,25 +1,25 @@
 import type { AuditHeadRow, ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   buildChain,
   type BuiltChain,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
-  makeTestUser,
-  type TestUser,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
 
 const BASE_TS = 1_756_000_000_000;
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
 });
 
 afterEach(async () => {

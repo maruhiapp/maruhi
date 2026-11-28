@@ -3,31 +3,31 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  type WireDistributedEnvironmentStatement,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { observeValue, parseEnvFile } from "../src/schema.package/env-file.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  environmentStatementFor,
-  genesisOp,
-  makeTestUser,
-  statementFor,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
 import { MockServer } from "./support/server.ts";
 
 const ENV_ID = "dev";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let dek1: Uint8Array;
 let wrap1: WireRecipientDek;
@@ -35,13 +35,13 @@ let envStatement: WireDistributedEnvironmentStatement;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
   ]);
-  wrap1 = await wrapDekFor({
+  wrap1 = await distributedWrap({
     projectId: built.projectId,
     environmentId: ENV_ID,
     epoch: 1,
@@ -49,7 +49,7 @@ beforeAll(async () => {
     recipient: owner,
     signer: owner,
   });
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -240,7 +240,7 @@ describe("approval → declared registration (values are never sent)", () => {
   });
 
   it("candidates named the same as an existing active / declared are skipped and shown by default", async () => {
-    const existing = await statementFor({
+    const existing = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-existing",

@@ -1,6 +1,3 @@
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   approveOp,
@@ -8,37 +5,40 @@ import {
   type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   innerOf,
-  makeTestUser,
   proposeOp,
   removeMemberOp,
   setApprovalPolicyOp,
-  type TestUser,
   type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type FourEyesServerState, makeFourEyesServer } from "./support/four-eyes-server.ts";
 import { MockServer } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
-let owner: TestUser;
-let owner2: TestUser;
-let owner3: TestUser;
-let target: TestUser;
-let newbie: TestUser;
+let owner: GeneratedIdentity;
+let owner2: GeneratedIdentity;
+let owner3: GeneratedIdentity;
+let target: GeneratedIdentity;
+let newbie: GeneratedIdentity;
 let dek1: Uint8Array;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  owner2 = await makeTestUser("user-owner-2222");
-  owner3 = await makeTestUser("user-owner-3333");
-  target = await makeTestUser("user-target-4444");
-  newbie = await makeTestUser("user-newbie-5555");
+  owner = await generateIdentity("user-owner-1111");
+  owner2 = await generateIdentity("user-owner-2222");
+  owner3 = await generateIdentity("user-owner-3333");
+  target = await generateIdentity("user-target-4444");
+  newbie = await generateIdentity("user-newbie-5555");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
 });
 
@@ -49,7 +49,7 @@ afterEach(async () => {
 async function startEnv(
   state: FourEyesServerState,
   projectId: string,
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const server = await MockServer.start([...state.handlers]);
   servers.push(server);
@@ -59,8 +59,8 @@ async function startEnv(
   return env;
 }
 
-function wrapFor(projectId: string, user: TestUser): Promise<WireRecipientDek> {
-  return wrapDekFor({
+function wrapFor(projectId: string, user: GeneratedIdentity): Promise<WireRecipientDek> {
+  return distributedWrap({
     projectId,
     environmentId: ENV_ID,
     epoch: 1,

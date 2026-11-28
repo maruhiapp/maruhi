@@ -9,26 +9,26 @@ import {
   fingerprintToWords,
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   buildChain,
   createEnvironmentOp,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
-  makeTestUser,
   rotateEpochOp,
-  type TestUser,
-  wrapDekFor,
-} from "./support/crypto.ts";
-import { testEnvironmentId } from "./support/crypto.ts";
+  testEnvironmentId,
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
-let owner: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
@@ -39,8 +39,8 @@ let serverFpWords: readonly string[];
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   const fp = await computeServerKeyFingerprint(Uint8Array.from({ length: 32 }, () => 0x5a));
@@ -69,7 +69,7 @@ interface GrantServerState {
 async function makeGrantServer(input: {
   readonly built: Awaited<ReturnType<typeof buildChain>>;
   readonly deksByEnvironment: Readonly<
-    Record<string, readonly Awaited<ReturnType<typeof wrapDekFor>>[]>
+    Record<string, readonly Awaited<ReturnType<typeof distributedWrap>>[]>
   >;
   readonly authConfig?: Record<string, unknown>;
 }): Promise<GrantServerState> {
@@ -140,7 +140,7 @@ async function makeGrantServer(input: {
 async function startGrantEnv(
   state: GrantServerState,
   projectId: string,
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const server = await MockServer.start([...state.handlers]);
   servers.push(server);
@@ -161,8 +161,8 @@ async function builtWithTwoEpochs() {
 async function ownWraps(projectId: string) {
   const common = { projectId, environmentId: ENV_ID, recipient: owner, signer: owner };
   return [
-    await wrapDekFor({ ...common, epoch: 1, dek: dek1 }),
-    await wrapDekFor({ ...common, epoch: 2, dek: dek2 }),
+    await distributedWrap({ ...common, epoch: 1, dek: dek1 }),
+    await distributedWrap({ ...common, epoch: 2, dek: dek2 }),
   ];
 }
 
@@ -364,8 +364,10 @@ describe("maruhi server grant", () => {
     const state = await makeGrantServer({
       built,
       deksByEnvironment: {
-        [ENV_ID]: [await wrapDekFor({ ...common, environmentId: ENV_ID, epoch: 1, dek: dek1 })],
-        [ENV_B]: [await wrapDekFor({ ...common, environmentId: ENV_B, epoch: 1, dek: dekB })],
+        [ENV_ID]: [
+          await distributedWrap({ ...common, environmentId: ENV_ID, epoch: 1, dek: dek1 }),
+        ],
+        [ENV_B]: [await distributedWrap({ ...common, environmentId: ENV_B, epoch: 1, dek: dekB })],
       },
     });
     const env = await startGrantEnv(state, built.projectId, owner);

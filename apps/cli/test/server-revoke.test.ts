@@ -1,9 +1,5 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
 import {
   addMemberOp,
   buildChain,
@@ -11,34 +7,38 @@ import {
   checkpointSnapshotValuesOf,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   grantServerOp,
   headOf,
   hexBytes,
-  makeTestUser,
-  manifestFor,
   revokeServerOp,
   rotateEpochOp,
-  statementFor,
-  type TestUser,
   type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-  wrapDekFor,
-  type WireRotateBody,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
+import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
-let owner: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
@@ -50,8 +50,8 @@ let serverFpB: string;
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   for (const [pubHex, assign] of [
@@ -107,7 +107,7 @@ async function makeRevokeServer(input: {
     input.listedStatements ??
     (await Promise.all(
       Object.keys(environments).map((environmentId) =>
-        environmentStatementFor({
+        distributedEnvironmentStatement({
           projectId,
           environmentId,
           name: environmentId,
@@ -146,7 +146,7 @@ async function makeRevokeServer(input: {
     }
     let manifest = manifests.get(environmentId);
     if (manifest === undefined) {
-      manifest = await manifestFor({
+      manifest = await distributedManifest({
         projectId,
         environmentId,
         epoch: environment.currentEpoch,
@@ -315,7 +315,7 @@ async function makeRevokeServer(input: {
 async function startRevokeEnv(
   state: RevokeServerState,
   projectId: string,
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const server = await MockServer.start([...state.handlers]);
   servers.push(server);
@@ -331,7 +331,7 @@ async function ownerWrap(
   epoch: number,
   dek: Uint8Array,
 ): Promise<WireRecipientDek> {
-  return wrapDekFor({ projectId, environmentId, epoch, dek, recipient: owner, signer: owner });
+  return distributedWrap({ projectId, environmentId, epoch, dek, recipient: owner, signer: owner });
 }
 
 describe("maruhi server revoke", () => {
@@ -457,7 +457,7 @@ describe("maruhi server revoke", () => {
     ]);
     const staleVariable: PulledVariable = {
       variableId: "var-stale-1",
-      statement: await statementFor({
+      statement: await distributedVariableStatement({
         projectId: built.projectId,
         environmentId: ENV_ID,
         variableId: "var-stale-1",
@@ -465,7 +465,7 @@ describe("maruhi server revoke", () => {
         author: owner,
         head: headOf(built, 2),
       }),
-      value: await encryptValueFor({
+      value: await distributedValue({
         dek: dek1,
         projectId: built.projectId,
         environmentId: ENV_ID,
@@ -542,7 +542,7 @@ describe("maruhi server revoke", () => {
       { actor: owner, operation: deleteEnvironmentOp(GONE_ID) },
     ]);
     const listedStatements = [
-      await environmentStatementFor({
+      await distributedEnvironmentStatement({
         projectId: built.projectId,
         environmentId: ENV_ID,
         name: ENV_ID,

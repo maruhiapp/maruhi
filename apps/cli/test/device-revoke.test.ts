@@ -1,16 +1,16 @@
 import { verifyChainWithHistory } from "@maruhi/crypto";
-import { describe, expect, it } from "vite-plus/test";
-
-import type { VerifiedProject } from "../src/chain-sync.ts";
-import { runCli } from "../src/cli.ts";
-import { rotationMandates } from "../src/rotation-sweep.ts";
 import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
   genesisOp,
   rotateEpochOp,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import type { VerifiedProject } from "../src/chain-sync.ts";
+import { runCli } from "../src/cli.ts";
+import { rotationMandates } from "../src/rotation-sweep.ts";
 import {
   ENV_ID,
   owner,

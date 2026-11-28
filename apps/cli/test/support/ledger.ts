@@ -1,13 +1,13 @@
 import { wrapMasterSecret } from "@maruhi/crypto";
+import type { GeneratedIdentity } from "@maruhi/test-kit";
+import { testUserId } from "@maruhi/test-kit";
 import { Redacted } from "effect";
 
 import { serializeStoredMasterKey, type StoredMasterKey } from "../../src/keychain.ts";
 import { formatRecoveryCode } from "../../src/reserve.package/recovery-code.ts";
-import type { TestUser } from "./crypto.ts";
-import { testUserId } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";
 
-export function storedMasterRecord(user: TestUser): StoredMasterKey {
+export function storedMasterRecord(user: GeneratedIdentity): StoredMasterKey {
   return {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
@@ -17,7 +17,7 @@ export function storedMasterRecord(user: TestUser): StoredMasterKey {
   };
 }
 
-export function storedReserveRecord(user: TestUser): StoredMasterKey {
+export function storedReserveRecord(user: GeneratedIdentity): StoredMasterKey {
   return { ...storedMasterRecord(user), kind: "reserve" };
 }
 

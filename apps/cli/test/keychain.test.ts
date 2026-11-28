@@ -1,3 +1,4 @@
+import { testUserId } from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -8,7 +9,6 @@ import {
   serializeStoredToken,
   tokenEntryName,
 } from "../src/keychain.ts";
-import { testUserId } from "./support/crypto.ts";
 
 describe("keychain record codecs", () => {
   it("round-trips token / device key records and detects corruption", () => {

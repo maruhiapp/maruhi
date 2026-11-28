@@ -3,30 +3,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { decryptVariable } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
   hexBytes,
-  makeTestUser,
-  statementFor,
-  type TestUser,
-  valueHashOf,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { MockServer } from "./support/server.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
@@ -36,7 +37,7 @@ const VARIABLE_ID = "v-api-key";
 const NAME = "API_KEY";
 const PLAINTEXTS = ["alpha-secret-1", "beta-secret-2", "gamma-secret-3"];
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let dek: Uint8Array;
 let wrap: WireRecipientDek;
@@ -45,13 +46,13 @@ let statement: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
   ]);
-  wrap = await wrapDekFor({
+  wrap = await distributedWrap({
     projectId: built.projectId,
     environmentId: ENV_ID,
     recipient: owner,
@@ -60,14 +61,14 @@ beforeAll(async () => {
     dek,
   });
   const head = { seq: 1, hashHex: built.projectId };
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head,
   });
-  statement = await statementFor({
+  statement = await distributedVariableStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     variableId: VARIABLE_ID,
@@ -87,7 +88,7 @@ async function versionChain(plaintexts: readonly string[]): Promise<WireDistribu
   for (const [index, plaintext] of plaintexts.entries()) {
     const previous = values.at(-1);
     values.push(
-      await encryptValueFor({
+      await distributedValue({
         dek,
         projectId: built.projectId,
         environmentId: ENV_ID,
@@ -99,7 +100,7 @@ async function versionChain(plaintexts: readonly string[]): Promise<WireDistribu
         head: headOf(built, 2),
         ...(previous === undefined
           ? {}
-          : { prevValueSigHashHex: await valueHashOf(previous, owner.userId) }),
+          : { prevValueSigHashHex: await valueSignedBytesHashOf(previous, owner.userId) }),
       }),
     );
   }
@@ -121,7 +122,7 @@ async function startEnv(
   }
   const declaredStatement =
     input.declared === true
-      ? await statementFor({
+      ? await distributedVariableStatement({
           projectId: built.projectId,
           environmentId: ENV_ID,
           variableId: VARIABLE_ID,
@@ -292,7 +293,7 @@ describe("maruhi var rollback (AUTH_SPEC §12-5 / §12-7)", () => {
     ).toBe(PLAINTEXTS[0]);
     const v3 = state.history.get(VARIABLE_ID)?.[2]?.value;
     if (v3 === undefined) throw new Error("v3 missing");
-    expect(body.value.prevValueSigHashHex).toBe(await valueHashOf(v3, owner.userId));
+    expect(body.value.prevValueSigHashHex).toBe(await valueSignedBytesHashOf(v3, owner.userId));
     expect(env.logs.join("\n")).toContain(
       `Rolled back ${NAME} to the value of version 1 (new version=4, epoch=1; was version 3)`,
     );
@@ -328,7 +329,7 @@ describe("maruhi var rollback (AUTH_SPEC §12-5 / §12-7)", () => {
   });
 
   it("a substituted old version (validly signed, but not the one the chain links to) is refused as evidence", async () => {
-    const forged = await encryptValueFor({
+    const forged = await distributedValue({
       dek,
       projectId: built.projectId,
       environmentId: ENV_ID,

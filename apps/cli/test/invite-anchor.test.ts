@@ -1,28 +1,28 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   type BuiltChain,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
-  makeTestUser,
-  type TestUser,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let inviter: TestUser;
-let acceptor: TestUser;
+let inviter: GeneratedIdentity;
+let acceptor: GeneratedIdentity;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  inviter = await makeTestUser("user-inviter-11");
-  acceptor = await makeTestUser("user-acceptor-22");
+  inviter = await generateIdentity("user-inviter-11");
+  acceptor = await generateIdentity("user-acceptor-22");
 });
 
 afterEach(async () => {

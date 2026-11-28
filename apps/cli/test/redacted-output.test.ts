@@ -1,3 +1,4 @@
+import { testProjectId, testUserId } from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -7,7 +8,6 @@ import {
   type InviteLinkData,
   parseInviteAcceptInput,
 } from "../src/invite-link.ts";
-import { testProjectId, testUserId } from "./support/crypto.ts";
 const SEED_HEX = "d0".repeat(32);
 
 function sampleLinkData(): InviteLinkData {

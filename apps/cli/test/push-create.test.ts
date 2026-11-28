@@ -1,10 +1,15 @@
+import {
+  decryptValue,
+  distributedVariablesDigestOf,
+  distributedVariableStatement,
+  headOf,
+  testProjectId,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
-import { decryptWire, headOf, statementFor, variablesDigestOf } from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandlerOf,
@@ -81,13 +86,13 @@ describe("maruhi push", () => {
     expect(body.value.chainHeadSeq).toBe(chainV1.entries.length);
     expect(body.value.chainHeadHashHex).toBe(headOf(chainV1, chainV1.entries.length).hashHex);
     expect(body.value.signatureHex).toMatch(/^[0-9a-f]{128}$/);
-    expect(await decryptWire(dek1, body.value)).toBe("secret-value");
+    expect(await decryptValue(dek1, body.value)).toBe("secret-value");
     expect(body.manifest.manifestVersion).toBe(2);
     expect(body.manifest.prevManifestSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(body.manifest.epoch).toBe(1);
     expect(body.manifest.chainHeadSeq).toBe(chainV1.entries.length);
     expect(body.manifest.variablesDigestHex).toBe(
-      await variablesDigestOf(chainV1.projectId, [
+      await distributedVariablesDigestOf(chainV1.projectId, [
         { ...body.statement, authorUserId: owner.userId },
       ]),
     );
@@ -249,7 +254,7 @@ describe("maruhi push", () => {
   });
 
   it("a different manifest distributed under the same version fails as a hash mismatch (1-E′ — §12-10 (3))", async () => {
-    const extraStatement = await statementFor({
+    const extraStatement = await distributedVariableStatement({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
       variableId: "v-injected",

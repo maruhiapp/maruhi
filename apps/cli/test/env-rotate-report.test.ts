@@ -1,15 +1,15 @@
-import { describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   createEnvironmentOp,
+  distributedWrap,
   genesisOp,
   grantServerOp,
-  valueHashOf,
-  wrapDekFor,
-} from "./support/crypto.ts";
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import {
   chainBase,
   chainRotated,
@@ -56,8 +56,8 @@ describe("maruhi env rotate", () => {
       built: chainRotated,
       variables,
       deks: [
-        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
-        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
       onPush: (_call, variableId) => {
@@ -97,8 +97,8 @@ describe("maruhi env rotate", () => {
       built: chainRotated,
       variables,
       deks: [
-        await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
-        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
       ],
       currentEpoch: 2,
       onPush: () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } }),
@@ -147,7 +147,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -199,7 +199,7 @@ describe("maruhi env rotate", () => {
       version: 2,
       plaintext: "key-def",
       headSeq: 4,
-      prevValueSigHashHex: await valueHashOf(stale.value, owner.userId),
+      prevValueSigHashHex: await valueSignedBytesHashOf(stale.value, owner.userId),
     });
     const variables = [undecryptable, stale];
     const common = { projectId: chainBase.projectId, environmentId: ENV_ID };
@@ -207,8 +207,8 @@ describe("maruhi env rotate", () => {
       built: chainRotatedTwice,
       variables,
       deks: [
-        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
-        await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
       ],
       currentEpoch: 3,
       onPush: (call) => {
@@ -255,8 +255,8 @@ describe("maruhi env rotate", () => {
       built: chainRotatedTwice,
       variables,
       deks: [
-        await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
-        await wrapDekFor({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+        await distributedWrap({ ...common, epoch: 3, dek: dek3, recipient: owner, signer: owner }),
       ],
       currentEpoch: 3,
       onPush: () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } }),
@@ -288,7 +288,9 @@ describe("maruhi env rotate", () => {
     const state = makeServer({
       built: chainRotated,
       variables,
-      deks: [await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner })],
+      deks: [
+        await distributedWrap({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+      ],
       currentEpoch: 2,
     });
     const env = await startEnv(state.handlers, owner);
@@ -312,7 +314,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -416,7 +418,7 @@ describe("maruhi env rotate", () => {
       built,
       variables: [],
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -454,7 +456,7 @@ describe("maruhi env rotate", () => {
       built,
       variables: [],
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,

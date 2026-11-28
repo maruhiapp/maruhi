@@ -2,27 +2,27 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  decryptValue,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  genesisOp,
+  headOf,
+  rotateEpochOp,
+  valueSignedBytesHashOf,
+  type WireDistributedEnvironmentStatement,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
-import {
-  decryptWire,
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  manifestFor,
-  rotateEpochOp,
-  statementFor,
-  valueHashOf,
-  type WireDistributedEnvironmentStatement,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
 import {
   chainBase,
   dek1,
@@ -32,8 +32,8 @@ import {
   owner,
   type PulledVariable,
   type ServerOptions,
-  type ServerState,
   servers,
+  type ServerState,
   startEnv,
   variableAt,
 } from "./support/env-rotate.ts";
@@ -68,14 +68,14 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(RECEIPTS_ENV, dekReceipts) },
     ]);
-    receiptsStatement = await environmentStatementFor({
+    receiptsStatement = await distributedEnvironmentStatement({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
       name: RECEIPTS_ENV,
       author: owner,
       head: headOf(chainWithReceipts, 1),
     });
-    wrapReceipts = await wrapDekFor({
+    wrapReceipts = await distributedWrap({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
       epoch: 1,
@@ -121,7 +121,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     const built = input.built ?? chainWithReceipts;
     const environmentId = input.environmentId ?? RECEIPTS_ENV;
     const variableId = `receipt-${input.target}`;
-    const statement = await statementFor({
+    const statement = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId,
       variableId,
@@ -129,7 +129,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       author: owner,
       head: headOf(built, 1),
     });
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek: input.dek ?? dekReceipts,
       projectId: built.projectId,
       environmentId,
@@ -196,7 +196,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
     epoch: number,
     dek: Uint8Array,
   ): Promise<WireRecipientDek> {
-    return wrapDekFor({
+    return distributedWrap({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch,
@@ -214,7 +214,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       (entry) => entry.statement.name === receiptVariableName(target),
     );
     if (stored === undefined) throw new Error(`receipt for ${target} missing`);
-    const text = await decryptWire(dekReceipts, stored.value);
+    const text = await decryptValue(dekReceipts, stored.value);
     return (JSON.parse(text) as { variables: Record<string, number> }).variables;
   }
 
@@ -360,7 +360,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       version: 2,
       plaintext: "key-def",
       headSeq: 4,
-      prevValueSigHashHex: await valueHashOf(staleB.value, owner.userId),
+      prevValueSigHashHex: await valueSignedBytesHashOf(staleB.value, owner.userId),
     });
     const variables = [staleA, staleB];
     const fixture = await startFixture({
@@ -446,7 +446,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
   });
 
   it("rotating the receipt environment itself only re-encrypts the receipt variable — no target is advanced (the following plan still passes)", async () => {
-    const sourceInOps = await statementFor({
+    const sourceInOps = await distributedVariableStatement({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
       variableId: "vsrc",
@@ -454,7 +454,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       author: owner,
       head: headOf(chainWithReceipts, 1),
     });
-    const sourceValue = await encryptValueFor({
+    const sourceValue = await distributedValue({
       dek: dekReceipts,
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
@@ -732,7 +732,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
       ],
     });
 
-    fixture.receipts.manifest = await manifestFor({
+    fixture.receipts.manifest = await distributedManifest({
       projectId: chainWithReceipts.projectId,
       environmentId: RECEIPTS_ENV,
       epoch: 1,

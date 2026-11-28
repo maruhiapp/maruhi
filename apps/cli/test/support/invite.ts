@@ -9,12 +9,11 @@ import {
   SUITE_ID,
   type ScopePayloadFields,
 } from "@maruhi/crypto";
+import type { GeneratedIdentity } from "@maruhi/test-kit";
+import { testProjectId, testUserId } from "@maruhi/test-kit";
 import { Redacted } from "effect";
 
 import { buildInviteLink, type InviteLinkData, type InviteRole } from "../../src/invite-link.ts";
-import type { TestUser } from "./crypto.ts";
-import { testProjectId } from "./crypto.ts";
-import { testUserId } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";
 
 export const INVITE_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -32,7 +31,7 @@ export interface IssuedInviteFixture {
 }
 
 export async function issueInviteFixture(input: {
-  readonly inviter: TestUser;
+  readonly inviter: GeneratedIdentity;
   readonly projectId: string;
   readonly headHashHex: string;
   readonly headSeq: number;
@@ -109,10 +108,10 @@ export interface AcceptanceFixture {
 export async function acceptanceFixture(input: {
   readonly projectId: string;
   readonly issued: IssuedInviteFixture;
-  readonly invitee: TestUser;
+  readonly invitee: GeneratedIdentity;
   readonly inviteeUserId?: string;
   readonly declared?: { readonly encPubHex: string; readonly sigPubHex: string };
-  readonly signer?: TestUser;
+  readonly signer?: GeneratedIdentity;
 }): Promise<AcceptanceFixture> {
   const seed = decodeHex(Redacted.value(input.issued.link.linkSeedHex));
   if (seed === null) throw new Error("bad seed hex");
@@ -150,7 +149,7 @@ export function flipHex(hex: string): string {
   return first.toString(16).padStart(2, "0") + hex.slice(2);
 }
 
-export function sshLineOf(user: TestUser): string {
+export function sshLineOf(user: GeneratedIdentity): string {
   const raw = decodeHex(user.sigPubHex);
   if (raw === null) throw new Error("sig pub hex");
   const encoded = encodeOpenSshEd25519PublicKey(raw);

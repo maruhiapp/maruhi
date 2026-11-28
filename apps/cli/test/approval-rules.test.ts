@@ -1,6 +1,21 @@
 import type { ProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainOperation } from "@maruhi/crypto";
 import { approvalSignersOf, isApprovalTarget, ownerVotersOf, verifyChain } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  approveOp,
+  buildChain,
+  type BuiltChain,
+  changeRoleOp,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  innerOf,
+  proposeOp,
+  removeMemberOp,
+  setApprovalPolicyOp,
+  withdrawOp,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -15,34 +30,19 @@ import {
   voteEligibility,
 } from "../src/approval-rules.ts";
 import { type VerifiedProject, verifyChainSnapshot } from "../src/chain-sync.ts";
-import {
-  addMemberOp,
-  approveOp,
-  buildChain,
-  type BuiltChain,
-  changeRoleOp,
-  genesisOp,
-  innerOf,
-  makeTestUser,
-  proposeOp,
-  removeMemberOp,
-  setApprovalPolicyOp,
-  type TestUser,
-  withdrawOp,
-} from "./support/crypto.ts";
 
-let owner: TestUser;
-let owner2: TestUser;
-let owner3: TestUser;
-let owner4: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let owner2: GeneratedIdentity;
+let owner3: GeneratedIdentity;
+let owner4: GeneratedIdentity;
+let member: GeneratedIdentity;
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  owner2 = await makeTestUser("user-owner-2222");
-  owner3 = await makeTestUser("user-owner-3333");
-  owner4 = await makeTestUser("user-owner-4444");
-  member = await makeTestUser("user-member-5555");
+  owner = await generateIdentity("user-owner-1111");
+  owner2 = await generateIdentity("user-owner-2222");
+  owner3 = await generateIdentity("user-owner-3333");
+  owner4 = await generateIdentity("user-owner-4444");
+  member = await generateIdentity("user-member-5555");
 });
 
 function verifiedOf(built: BuiltChain): Promise<VerifiedProject> {
@@ -85,8 +85,8 @@ describe("isApprovalTarget (crypto public API) — agrees with verifyChain (K6-G
     const verified = await verifiedOf(await buildChain(prefix));
     const policy = verified.state.approvalPolicy;
     const remove: ChainOperation = removeMemberOp(member);
-    const demote: ChainOperation = changeRoleOp(member, "reader", null);
-    const promote: ChainOperation = changeRoleOp(member, "owner", null);
+    const demote: ChainOperation = changeRoleOp(member, "reader");
+    const promote: ChainOperation = changeRoleOp(member, "owner");
     expect(isApprovalTarget(innerOf(remove), policy)).toBe(true);
     expect(isApprovalTarget(innerOf(demote), policy)).toBe(false);
     expect(isApprovalTarget(innerOf(promote), policy)).toBe(true);
@@ -117,7 +117,7 @@ describe("ownerVotersOf / proposalViewOf — vote recount (principle 2) agrees w
       ...prefix,
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
       { actor: owner2, operation: approveOp(hash) },
-      { actor: owner, operation: changeRoleOp(owner2, "admin", null) },
+      { actor: owner, operation: changeRoleOp(owner2, "admin") },
     ];
     const demoted = await verifiedOf(await buildChain(steps));
     const pending = demoted.state.pendingProposals.get(hash);
@@ -256,7 +256,7 @@ describe("resolveProposalRef — prefix resolution (K6-F)", () => {
     const second = await buildChain([
       ...prefix,
       { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
-      { actor: owner, operation: proposeOp(innerOf(changeRoleOp(member, "reader", null))) },
+      { actor: owner, operation: proposeOp(innerOf(changeRoleOp(member, "reader"))) },
     ]);
     const hashB = await hashOfLast(second);
     const verified = await verifiedOf(second);
@@ -275,7 +275,7 @@ describe("resolveProposalRef — prefix resolution (K6-F)", () => {
       await buildChain([
         ...prefix,
         { actor: owner, operation: proposeOp(innerOf(removeMemberOp(member))) },
-        { actor: owner, operation: proposeOp(innerOf(changeRoleOp(member, "reader", null))) },
+        { actor: owner, operation: proposeOp(innerOf(changeRoleOp(member, "reader"))) },
         { actor: owner2, operation: approveOp(hashA) },
         { actor: owner, operation: withdrawOp(hashB) },
       ]),

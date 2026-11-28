@@ -1,3 +1,4 @@
+import { generateIdentity, testUserId } from "@maruhi/test-kit";
 import { Effect, Exit, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -10,7 +11,6 @@ import {
   unsupportedCryptoCause,
   unsupportedCryptoMessage,
 } from "../src/session.ts";
-import { makeTestUser, testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
 
@@ -120,7 +120,7 @@ describe("cryptoBackendUsable", () => {
 
 describe("the MARUHI_TOKEN env-var path", () => {
   it("works without a keychain by resolving userId via /auth/me", async () => {
-    const user = await makeTestUser("user-env-0001");
+    const user = await generateIdentity("user-env-0001");
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", (request) => {
         expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_env");
@@ -137,7 +137,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   });
 
   it("pre-warns on stderr when expiry is within 14 days (ruling CL — the env-var path learns it from /auth/me self-disclosure)", async () => {
-    const user = await makeTestUser("user-env-0001");
+    const user = await generateIdentity("user-env-0001");
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => ({
@@ -158,7 +158,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   });
 
   it("does not warn when expiry is outside the window (env-var path)", async () => {
-    const user = await makeTestUser("user-env-0001");
+    const user = await generateIdentity("user-env-0001");
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", () => ({
@@ -199,7 +199,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   });
 
   it("the env var takes precedence over the keychain", async () => {
-    const user = await makeTestUser("user-env-0001");
+    const user = await generateIdentity("user-env-0001");
     let presented = "";
     const server = await MockServer.start([
       onRequest("GET", "/auth/me", (request) => {

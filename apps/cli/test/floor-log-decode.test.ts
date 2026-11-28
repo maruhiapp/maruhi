@@ -1,3 +1,4 @@
+import { testEnvironmentId, testVariableId } from "@maruhi/test-kit";
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import {
@@ -15,7 +16,6 @@ import type {
   ProjectFloor,
   VariableFloor,
 } from "../src/floor.ts";
-import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);
 const HASH_C = "33".repeat(32);

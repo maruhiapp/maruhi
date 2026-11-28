@@ -3,6 +3,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { decryptVariable } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  hexBytes,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  type WireDistributedEnvironmentStatement,
+  type WireEncryptedPayload,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -16,25 +36,6 @@ import {
   type PathToken,
 } from "../src/sync.package/sync-http.ts";
 import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  hexBytes,
-  makeTestUser,
-  statementFor,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireEncryptedPayload,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockRequest, MockServer } from "./support/server.ts";
 import { makeValueEnvironmentServer, type StoredVariable } from "./support/value-env.ts";
@@ -55,7 +56,7 @@ const VERCEL_TOKEN = "vercel-token-fedcba9876543210";
 const NETLIFY_TOKEN = "nfp_netlify-token-0011223344556677";
 const SECRETS = [ALPHA_VALUE, "beta line 1", "beta line 2", CF_TOKEN, VERCEL_TOKEN, NETLIFY_TOKEN];
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 const deks = new Map<string, Uint8Array>();
 const wraps = new Map<string, WireRecipientDek>();
@@ -63,7 +64,7 @@ const statements = new Map<string, WireDistributedEnvironmentStatement>();
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   for (const environment of [SOURCE_ENV, TOKENS_ENV, RECEIPTS_ENV]) {
     deks.set(environment, crypto.getRandomValues(new Uint8Array(32)));
   }
@@ -85,7 +86,7 @@ beforeAll(async () => {
   for (const environment of [SOURCE_ENV, TOKENS_ENV, RECEIPTS_ENV]) {
     wraps.set(
       environment,
-      await wrapDekFor({
+      await distributedWrap({
         projectId: built.projectId,
         recipient: owner,
         signer: owner,
@@ -96,7 +97,7 @@ beforeAll(async () => {
     );
     statements.set(
       environment,
-      await environmentStatementFor({
+      await distributedEnvironmentStatement({
         projectId: built.projectId,
         environmentId: environment,
         name: environment,
@@ -119,7 +120,7 @@ async function variable(input: {
   readonly version: number;
   readonly plaintext: string | Uint8Array;
 }): Promise<StoredVariable> {
-  const statement = await statementFor({
+  const statement = await distributedVariableStatement({
     projectId: built.projectId,
     environmentId: input.environment,
     variableId: input.variableId,
@@ -127,7 +128,7 @@ async function variable(input: {
     author: owner,
     head: { seq: 1, hashHex: built.projectId },
   });
-  const value = await encryptValueFor({
+  const value = await distributedValue({
     dek: deks.get(input.environment) as Uint8Array,
     projectId: built.projectId,
     environmentId: input.environment,

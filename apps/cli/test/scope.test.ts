@@ -1,4 +1,17 @@
 import type { ProjectId } from "@maruhi/core";
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  changeRoleOp,
+  createEnvironmentOp,
+  deleteEnvironmentOp,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  removeMemberOp,
+  testEnvironmentId,
+} from "@maruhi/test-kit";
 import { Effect, Exit } from "effect";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -14,22 +27,9 @@ import {
   scopeChangeAt,
   scopeContains,
 } from "../src/scope.ts";
-import {
-  addScopedMemberOp,
-  buildChain,
-  changeRoleOp,
-  createEnvironmentOp,
-  deleteEnvironmentOp,
-  genesisOp,
-  makeTestUser,
-  removeMemberOp,
-  testEnvironmentId,
-  type BuiltChain,
-  type TestUser,
-} from "./support/crypto.ts";
 
-let owner: TestUser;
-let dev: TestUser;
+let owner: GeneratedIdentity;
+let dev: GeneratedIdentity;
 let built: BuiltChain;
 let verified: VerifiedProject;
 
@@ -45,14 +45,14 @@ async function verify(chain: BuiltChain): Promise<VerifiedProject> {
 }
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  dev = await makeTestUser("user-dev-2222");
+  owner = await generateIdentity("user-owner-1111");
+  dev = await generateIdentity("user-dev-2222");
   const dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
     { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
-    { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+    { actor: owner, operation: addMemberOp(dev, "member", ["env-dev"]) },
     { actor: owner, operation: removeMemberOp(dev) },
     { actor: owner, operation: createEnvironmentOp("env-later", dek) },
   ]);
@@ -65,7 +65,7 @@ describe("receiving-side scope rules (CRYPTO_SPEC §6.3 — K4-F)", () => {
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", new Uint8Array(32)) },
       { actor: owner, operation: createEnvironmentOp("env-prod", new Uint8Array(32)) },
-      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+      { actor: owner, operation: addMemberOp(dev, "member", ["env-dev"]) },
     ]);
     const view = await verify(chain);
     let listMineCalls = 0;
@@ -170,7 +170,7 @@ describe("re-deriving the widened / narrowed portions from the change_role histo
       { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
       { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
       { actor: owner, operation: createEnvironmentOp("env-stg", dek) },
-      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+      { actor: owner, operation: addMemberOp(dev, "member", ["env-dev"]) },
       { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod", "env-stg"]) },
       { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod"]) },
     ]);
@@ -185,7 +185,7 @@ describe("re-deriving the widened / narrowed portions from the change_role histo
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
       { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
-      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+      { actor: owner, operation: addMemberOp(dev, "member", ["env-dev"]) },
       { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev", "env-prod"]) },
       { actor: owner, operation: changeRoleOp(dev, "admin", ["env-dev", "env-prod"]) },
     ]);
@@ -200,10 +200,10 @@ describe("re-deriving the widened / narrowed portions from the change_role histo
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
       { actor: owner, operation: createEnvironmentOp("env-prod", dek) },
-      { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev", "env-prod"]) },
-      { actor: owner, operation: changeRoleOp(dev, "member", null) },
+      { actor: owner, operation: addMemberOp(dev, "member", ["env-dev", "env-prod"]) },
+      { actor: owner, operation: changeRoleOp(dev, "member") },
       { actor: owner, operation: changeRoleOp(dev, "member", ["env-dev"]) },
-      { actor: owner, operation: changeRoleOp(dev, "member", null) },
+      { actor: owner, operation: changeRoleOp(dev, "member") },
     ]);
     const view = await verify(chain);
     const change = scopeChangesOf(view, targetOf(view));
@@ -220,7 +220,7 @@ describe("the scope gates refuse a chain-deleted environment first (§6.2)", () 
       await buildChain([
         { actor: owner, operation: genesisOp(owner) },
         { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
-        { actor: owner, operation: addScopedMemberOp(dev, "member", ["env-dev"]) },
+        { actor: owner, operation: addMemberOp(dev, "member", ["env-dev"]) },
         { actor: owner, operation: deleteEnvironmentOp("env-dev") },
       ]),
     );

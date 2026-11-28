@@ -3,7 +3,6 @@ export {
   addMemberOp,
   approveOp,
   buildChain,
-  type ChainHead,
   type ChainStep,
   changeRoleOp,
   checkpointOp,
@@ -20,7 +19,6 @@ export {
   rotateEpochOp,
   setApprovalPolicyOp,
   signEntryAt,
-  type TestRole,
   withdrawOp,
 } from "./chain.ts";
 export {
@@ -50,7 +48,7 @@ export {
 export {
   checkpointSnapshotValuesOf,
   decryptValue,
-  distributedValueOf,
+  distributedValue,
   encryptValue,
   signValueAt,
   unwrapAndDecrypt,
@@ -69,11 +67,10 @@ export type {
   WireVariableMetaStatement,
   WireWrappedDek,
 } from "./wire.ts";
-export { distributedWrapOf, signWrap, verifyWrapSignature, wrapDekTo } from "./wraps.ts";
+export { distributedWrap, signWrap, verifyWrapSignature, wrapDekTo } from "./wraps.ts";
 export {
   type BuiltChain,
   hexBytes,
-  type LazyChainOperation,
   testDekCommitmentHex,
   testEnvironmentId,
   testKeyFingerprintHex,

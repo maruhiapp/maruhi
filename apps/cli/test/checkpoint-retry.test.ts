@@ -1,4 +1,5 @@
 import { AuditHeadNotReadyError } from "@maruhi/api-schema";
+import { testProjectId } from "@maruhi/test-kit";
 import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vite-plus/test";
@@ -7,7 +8,6 @@ import type { MaruhiClient } from "../src/api.ts";
 import { fetchAuditHead } from "../src/checkpoint.package/checkpoint.ts";
 import type { CliError } from "../src/errors.ts";
 import { CliIo } from "../src/io.ts";
-import { testProjectId } from "./support/crypto.ts";
 
 type Step = "ready" | "not-ready";
 

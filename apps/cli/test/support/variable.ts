@@ -1,7 +1,7 @@
+import { testVariableId } from "@maruhi/test-kit";
 import { Redacted } from "effect";
 
 import type { DecryptedVariable } from "../../src/pull.ts";
-import { testVariableId } from "./crypto.ts";
 
 export function variable(name: string, value: string | Uint8Array): DecryptedVariable {
   return {

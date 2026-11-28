@@ -1,3 +1,4 @@
+import { type GeneratedIdentity, generateIdentity } from "@maruhi/test-kit";
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -5,19 +6,18 @@ import { runCli } from "../src/cli.ts";
 import { checkSigningKeyBacking } from "../src/github-signing-keys.ts";
 import { masterKeyEntryName, serializeStoredToken, tokenEntryName } from "../src/keychain.ts";
 import { GH_ENV } from "../src/sync.package/sync-exec.ts";
-import { makeTestUser, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { githubSigningKeysHandler, sshLineOf } from "./support/invite.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let alice: TestUser;
-let bob: TestUser;
+let alice: GeneratedIdentity;
+let bob: GeneratedIdentity;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  alice = await makeTestUser("user-alice-11");
-  bob = await makeTestUser("user-bob-22");
+  alice = await generateIdentity("user-alice-11");
+  bob = await generateIdentity("user-bob-22");
 });
 
 afterEach(async () => {
@@ -36,7 +36,7 @@ async function verdictOf(env: TestEnv, login: string, sigPubHex: string) {
   );
 }
 
-function loggedIn(env: TestEnv, origin: string, user: TestUser): void {
+function loggedIn(env: TestEnv, origin: string, user: GeneratedIdentity): void {
   env.keychain.set(
     tokenEntryName(origin),
     serializeStoredToken({

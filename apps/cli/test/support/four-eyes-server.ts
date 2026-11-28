@@ -1,23 +1,23 @@
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
+import {
+  type BuiltChain,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  type GeneratedIdentity,
+  headOf,
+  type WireCheckpointSnapshot,
+  type WireDistributedManifest,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 
 import {
   acceptAppendedEntry,
   injectedAppendResponse,
   servedChainResponse,
 } from "./chain-handler.ts";
-import {
-  type BuiltChain,
-  environmentStatementFor,
-  headOf,
-  manifestFor,
-  type TestUser,
-  type WireCheckpointSnapshot,
-  type WireDistributedManifest,
-  type WireRecipientDek,
-  type WireRotateBody,
-} from "./crypto.ts";
+import type { WireRotateBody } from "./env-rotate.ts";
 import { type MockHandler, type MockResponse, onRequest } from "./server.ts";
 
 export interface FourEyesServerState {
@@ -35,8 +35,8 @@ export async function makeFourEyesServer(input: {
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
-  readonly actor: TestUser;
-  readonly author?: TestUser;
+  readonly actor: GeneratedIdentity;
+  readonly author?: GeneratedIdentity;
   readonly authConfig?: Record<string, unknown>;
   readonly invitations?: readonly Record<string, unknown>[];
   readonly onAppend?: (call: number) => MockResponse | undefined;
@@ -55,7 +55,7 @@ export async function makeFourEyesServer(input: {
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
   const listedStatements = await Promise.all(
     Object.keys(environments).map((environmentId) =>
-      environmentStatementFor({
+      distributedEnvironmentStatement({
         projectId,
         environmentId,
         name: environmentId,
@@ -116,7 +116,7 @@ export async function makeFourEyesServer(input: {
       const statement = listedStatements.find((item) => item.environmentId === environmentId);
       let manifest = manifests.get(environmentId);
       if (manifest === undefined && statement !== undefined) {
-        manifest = await manifestFor({
+        manifest = await distributedManifest({
           projectId,
           environmentId,
           epoch: environment.currentEpoch,

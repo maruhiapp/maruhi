@@ -2,12 +2,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { testEnvironmentId, testProjectId } from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { type IssuedInvitePin, issuedPinOf, makeFilePinStore } from "../src/pins.ts";
-import { testEnvironmentId } from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
 
 const PROJECT = "ab".repeat(32);
 const INVITE_A = "01JINVITEAAAAAAAAAAAAAAAAA";

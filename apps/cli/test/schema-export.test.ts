@@ -2,31 +2,31 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { masterKeyEntryName } from "../src/keychain.ts";
 import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { masterKeyEntryName } from "../src/keychain.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const DESCRIPTION_URL = "Primary endpoint of the shop";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let declaredRequired: WireDistributedVariableStatement;
@@ -36,7 +36,7 @@ let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   const dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -44,8 +44,13 @@ beforeAll(async () => {
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const head = { seq: 1, hashHex: built.projectId };
-  envStatement = await environmentStatementFor({ ...common, name: ENV_ID, author: owner, head });
-  declaredRequired = await statementFor({
+  envStatement = await distributedEnvironmentStatement({
+    ...common,
+    name: ENV_ID,
+    author: owner,
+    head,
+  });
+  declaredRequired = await distributedVariableStatement({
     ...common,
     variableId: "v-shop-url",
     name: "SHOP_URL",
@@ -54,7 +59,7 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "url", required: true, description: DESCRIPTION_URL },
   });
-  declaredOptional = await statementFor({
+  declaredOptional = await distributedVariableStatement({
     ...common,
     variableId: "v-optional",
     name: "OPTIONAL_HINT",
@@ -63,7 +68,7 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "", required: false, description: "" },
   });
-  activeNumber = await statementFor({
+  activeNumber = await distributedVariableStatement({
     ...common,
     variableId: "v-port",
     name: "PORT",
@@ -71,7 +76,7 @@ beforeAll(async () => {
     head,
     schema: { varType: "number", required: true, description: "listen port" },
   });
-  activeV1 = await statementFor({
+  activeV1 = await distributedVariableStatement({
     ...common,
     variableId: "v-legacy",
     name: "LEGACY_KEY",
@@ -110,7 +115,7 @@ function metadataHandler(variables: readonly WireDistributedVariableStatement[])
         statement: envStatement,
         variables,
         deletedVariables: [],
-        manifest: await manifestFor({
+        manifest: await distributedManifest({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -193,7 +198,7 @@ describe("maruhi schema export (§1-6 — derived-snapshot generation)", () => {
   });
 
   it("a variable named `__proto__` still appears as an own key of properties", async () => {
-    const proto = await statementFor({
+    const proto = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-proto",
@@ -266,7 +271,7 @@ describe("maruhi schema verify-snapshot (§1-6 — the CI drift check)", () => {
 
   it("store progress (a new declaration) is detected as the committed snapshot going stale", async () => {
     const file = await exportedSnapshotFile();
-    const added = await statementFor({
+    const added = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-new",

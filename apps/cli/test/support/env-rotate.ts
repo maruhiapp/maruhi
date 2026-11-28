@@ -9,42 +9,58 @@ import {
   unwrapDek,
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
-import { Effect } from "effect";
-import { afterEach, beforeAll, expect } from "vite-plus/test";
-
-import { makeFileFloorStore } from "../../src/floor-log.ts";
-import type { ProjectFloor } from "../../src/floor.ts";
 import {
   buildChain,
   type BuiltChain,
+  checkpointSnapshotValuesOf,
   createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedValue,
+  distributedVariablesDigestOf,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
   hexBytes,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
   rotateEpochOp,
-  checkpointSnapshotValuesOf,
-  statementFor,
-  type TestUser,
-  variablesDigestOf,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
   type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-  type WireRotateBody,
-} from "./crypto.ts";
-import { testEnvironmentId, testProjectId } from "./crypto.ts";
-import { testUserId } from "./crypto.ts";
+} from "@maruhi/test-kit";
+import { Effect } from "effect";
+import { afterEach, beforeAll, expect } from "vite-plus/test";
+
+import { makeFileFloorStore } from "../../src/floor-log.ts";
+import type { ProjectFloor } from "../../src/floor.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./server.ts";
 
 export const ENV_ID = "dev";
+
+export interface WireRotateBody {
+  readonly parentHeadHashHex: string;
+  readonly entry: ChainEntry & {
+    readonly op: "rotate_epoch";
+    readonly payload: {
+      readonly environmentId: string;
+      readonly newEpoch: number;
+      readonly reason: string;
+      readonly dekCommitmentHex: string;
+    };
+  };
+  readonly deks: readonly WrappedDek[];
+  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
+  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
+}
 
 export interface PulledVariable {
   readonly variableId: string;
@@ -52,8 +68,8 @@ export interface PulledVariable {
   value: WireDistributedValue;
 }
 
-export let owner: TestUser;
-export let reader: TestUser;
+export let owner: GeneratedIdentity;
+export let reader: GeneratedIdentity;
 export let dek1: Uint8Array;
 export let dek2: Uint8Array;
 export let dek3: Uint8Array;
@@ -64,8 +80,8 @@ export let envStatement: WireDistributedEnvironmentStatement;
 export let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  reader = await makeTestUser("user-reader-2222");
+  owner = await generateIdentity("user-owner-1111");
+  reader = await generateIdentity("user-reader-2222");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   dek3 = crypto.getRandomValues(new Uint8Array(32));
@@ -84,7 +100,7 @@ beforeAll(async () => {
     { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
     { actor: owner, operation: rotateEpochOp(ENV_ID, 3, dek3) },
   ]);
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     projectId: chainBase.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -111,7 +127,7 @@ export async function variableAt(input: {
 }): Promise<PulledVariable> {
   return {
     variableId: input.variableId,
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: chainBase.projectId,
       environmentId: ENV_ID,
       variableId: input.variableId,
@@ -119,7 +135,7 @@ export async function variableAt(input: {
       author: owner,
       head: headOf(input.built, 1),
     }),
-    value: await encryptValueFor({
+    value: await distributedValue({
       dek: input.dek,
       projectId: chainBase.projectId,
       environmentId: ENV_ID,
@@ -216,7 +232,7 @@ export function makeServer(options: ServerOptions): ServerState {
     }
     const version = (manifestState?.version ?? 0) + 1;
     const previous = manifestState?.manifest;
-    const manifest = await manifestFor({
+    const manifest = await distributedManifest({
       projectId,
       environmentId: ENV_ID,
       epoch: currentEpoch,
@@ -227,7 +243,7 @@ export function makeServer(options: ServerOptions): ServerState {
       manifestVersion: version,
       ...(previous === undefined
         ? {}
-        : { prevManifestSigHashHex: await manifestHashOf(projectId, previous) }),
+        : { prevManifestSigHashHex: await distributedManifestHashOf(projectId, previous) }),
     });
     manifestState = { key, manifest, version };
     return manifest;
@@ -246,7 +262,7 @@ export function makeServer(options: ServerOptions): ServerState {
       await storeCheckpointSnapshot(body.checkpoint);
     }
     currentEpoch = body.entry.payload.newEpoch;
-    const digestNow = await variablesDigestOf(projectId, [
+    const digestNow = await distributedVariablesDigestOf(projectId, [
       ...variables.map((variable) => variable.statement),
       ...deletedVariables,
     ]);
@@ -462,7 +478,10 @@ export async function loadFloor(env: TestEnv): Promise<ProjectFloor | null> {
   return loaded.floor;
 }
 
-export async function startEnv(handlers: readonly MockHandler[], user: TestUser): Promise<TestEnv> {
+export async function startEnv(
+  handlers: readonly MockHandler[],
+  user: GeneratedIdentity,
+): Promise<TestEnv> {
   const server = await MockServer.start(handlers);
   servers.push(server);
   const env = await makeTestEnv();
@@ -473,8 +492,8 @@ export async function startEnv(handlers: readonly MockHandler[], user: TestUser)
 
 export async function verifyAndUnwrap(input: {
   readonly wrap: WrappedDek;
-  readonly recipient: TestUser;
-  readonly signer: TestUser;
+  readonly recipient: GeneratedIdentity;
+  readonly signer: GeneratedIdentity;
 }): Promise<Uint8Array> {
   const { wrap, recipient, signer } = input;
   const signerKey = await importSigningPublicKey(hexBytes(signer.sigPubHex));

@@ -3,22 +3,22 @@ import { join } from "node:path";
 
 import { DEVICE_ADD_REQUEST_TTL_MS } from "@maruhi/api-schema";
 import { computeUserKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedWrap,
+  type GeneratedIdentity,
+  genesisOp,
+  hexBytes,
+  rotateEpochOp,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device.package/device-add.ts";
 import { formatUtcMinutes } from "../src/display.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  genesisOp,
-  hexBytes,
-  rotateEpochOp,
-  type TestUser,
-  wrapDekFor,
-} from "./support/crypto.ts";
 import {
   ENV_ID,
   FAR_FUTURE_MS,
@@ -257,13 +257,13 @@ const reachDeks = new Map<string, readonly Uint8Array[]>();
 
 async function deviceRowsOf(
   projectId: string,
-  device: TestUser,
+  device: GeneratedIdentity,
   epochs: readonly number[],
 ): Promise<Record<string, unknown>[]> {
   const deks = reachDeks.get(projectId) ?? [];
   return Promise.all(
     epochs.map(async (epoch) => ({
-      ...(await wrapDekFor({
+      ...(await distributedWrap({
         projectId,
         environmentId: ENV_ID,
         epoch,

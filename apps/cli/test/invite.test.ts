@@ -9,6 +9,17 @@ import {
   verifyInviteIssueSignature,
   verifyInviteLinkSignature,
 } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  buildChain,
+  createEnvironmentOp,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+} from "@maruhi/test-kit";
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -16,17 +27,6 @@ import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { verifyAcceptanceBlock } from "../src/invite.package/invite.ts";
 import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
-import {
-  addScopedMemberOp,
-  buildChain,
-  createEnvironmentOp,
-  genesisOp,
-  makeTestUser,
-  testEnvironmentId,
-  testProjectId,
-  testUserId,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   acceptanceFixture,
@@ -41,15 +41,15 @@ import {
 } from "./support/invite.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let inviter: TestUser;
-let acceptor: TestUser;
+let inviter: GeneratedIdentity;
+let acceptor: GeneratedIdentity;
 let inviterWords: readonly string[];
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  inviter = await makeTestUser("user-inviter-11");
-  acceptor = await makeTestUser("user-acceptor-22");
+  inviter = await generateIdentity("user-inviter-11");
+  acceptor = await generateIdentity("user-acceptor-22");
   const bytes = decodeHex(inviter.fingerprintHex);
   if (bytes === null) throw new Error("inviter fp");
   const words = await fingerprintToWords(bytes);
@@ -84,7 +84,7 @@ function chainHandler(built: {
   }));
 }
 
-function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
+function seedTokenOnly(env: TestEnv, origin: string, user: GeneratedIdentity): void {
   const token: StoredToken = {
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,
@@ -334,7 +334,7 @@ describe("maruhi invite create", () => {
   });
 
   it("role=admin issuance is owner-only (an admin attempt is refused before any communication)", async () => {
-    const admin2 = await makeTestUser("user-admin2-333");
+    const admin2 = await generateIdentity("user-admin2-333");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       {
@@ -443,12 +443,12 @@ describe("maruhi invite create", () => {
 
   it("a listed admin cannot issue an invite outside their own scope or for all (the scope-not-contained pre-check — ruling K4-G)", async () => {
     const dek = crypto.getRandomValues(new Uint8Array(32));
-    const devAdmin = await makeTestUser("user-devadmin-44");
+    const devAdmin = await generateIdentity("user-devadmin-44");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp("env-dev", dek) },
       { actor: inviter, operation: createEnvironmentOp("env-prod", dek) },
-      { actor: inviter, operation: addScopedMemberOp(devAdmin, "admin", ["env-dev"]) },
+      { actor: inviter, operation: addMemberOp(devAdmin, "admin", ["env-dev"]) },
     ]);
     const issued: IssueBody[] = [];
     const server = await start([
@@ -508,7 +508,7 @@ describe("maruhi invite create", () => {
 
   it("does not issue when the local device key differs from one's own key on the chain (never produces an unverifiable issuance text)", async () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
-    const otherKeys = await makeTestUser(inviter.userId);
+    const otherKeys = await generateIdentity(inviter.userId);
     const issueCalls: IssueBody[] = [];
     const server = await start([
       chainHandler(built),

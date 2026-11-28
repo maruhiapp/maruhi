@@ -1,30 +1,30 @@
-import { afterEach, beforeAll } from "vite-plus/test";
-
 import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  rotatedEnvironmentFor,
-  statementFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireEncryptedPayload,
   type WireRecipientDek,
-} from "./crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll } from "vite-plus/test";
+
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
+import { rotatedEnvironmentFor } from "./rotated-environment.ts";
 import { type MockHandler, MockServer, onRequest } from "./server.ts";
 
 export const ENV_ID = "dev";
 
-export let owner: TestUser;
+export let owner: GeneratedIdentity;
 export let chainV1: BuiltChain;
 export let chainV2: BuiltChain;
 export let dek1: Uint8Array;
@@ -45,7 +45,7 @@ export async function entryOf(
 }> {
   return {
     variableId,
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
       variableId,
@@ -58,7 +58,7 @@ export async function entryOf(
 }
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   chainV1 = await buildChain([
@@ -68,7 +68,7 @@ beforeAll(async () => {
   const rotated = await rotatedEnvironmentFor({ owner, environmentId: ENV_ID, dek1, dek2 });
   chainV2 = rotated.chain;
   [wrap1, wrap2] = rotated.wraps;
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     projectId: chainV1.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -115,7 +115,7 @@ export async function manifestOf(
   manifestVersion = 1,
   prevManifestSigHashHex?: string,
 ): Promise<unknown> {
-  return manifestFor({
+  return distributedManifest({
     projectId: chainV1.projectId,
     environmentId: ENV_ID,
     epoch: currentEpoch,
@@ -162,7 +162,7 @@ export async function manifestHashAt(
   manifestVersion = 1,
   prevManifestSigHashHex?: string,
 ): Promise<string> {
-  return manifestHashOf(
+  return distributedManifestHashOf(
     chainV1.projectId,
     (await manifestOf(
       statements,
@@ -218,7 +218,9 @@ export function pullMetadataHandlerOf(
         variants[position] ?? [],
         currentEpoch,
         position + 1,
-        previous === undefined ? undefined : await manifestHashOf(chainV1.projectId, previous),
+        previous === undefined
+          ? undefined
+          : await distributedManifestHashOf(chainV1.projectId, previous),
       )) as WireDistributedManifest;
     }
     return manifests[index] as WireDistributedManifest;

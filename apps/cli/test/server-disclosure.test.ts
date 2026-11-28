@@ -1,5 +1,20 @@
 import type { ProjectId } from "@maruhi/core";
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  type ChainStep,
+  createEnvironmentOp,
+  deleteEnvironmentOp,
+  distributedEnvironmentStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  grantServerOp,
+  revokeServerOp,
+  rotateEpochOp,
+  type WireDistributedEnvironmentStatement,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -7,21 +22,6 @@ import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { NoticeLedger } from "../src/notice.ts";
 import { noteServerDisclosure } from "../src/server-disclosure.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  type ChainStep,
-  createEnvironmentOp,
-  deleteEnvironmentOp,
-  environmentStatementFor,
-  genesisOp,
-  grantServerOp,
-  makeTestUser,
-  revokeServerOp,
-  rotateEpochOp,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   chainHandler as pullChainHandler,
@@ -42,7 +42,7 @@ const LEASE_POLICY = [
   },
 ];
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let serverFpHex: string;
 let mirrorFpHex: string;
 const dek = () => crypto.getRandomValues(new Uint8Array(32));
@@ -57,7 +57,7 @@ async function fingerprintOf(encPubHex: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   serverFpHex = await fingerprintOf(SERVER_ENC_PUB_HEX);
   mirrorFpHex = await fingerprintOf(MIRROR_ENC_PUB_HEX);
 });
@@ -99,7 +99,7 @@ async function listHandler(built: BuiltChain, environmentIds: readonly string[])
   const statements: WireDistributedEnvironmentStatement[] = [];
   for (const environmentId of environmentIds) {
     statements.push(
-      await environmentStatementFor({
+      await distributedEnvironmentStatement({
         projectId: built.projectId,
         environmentId,
         name: environmentId === "env-prod" ? "Production" : "Development",
@@ -252,7 +252,7 @@ describe("the prologue's server-disclosure Note (§9)", () => {
 
 describe("the Note across projects in one run (§9)", () => {
   it("names each project, so one run's ledger keeps one line per project with the same grant", async () => {
-    const other = await makeTestUser("user-owner-2222");
+    const other = await generateIdentity("user-owner-2222");
     const grant = await grantServerOp(["env-prod"], LEASE_POLICY, SERVER_ENC_PUB_HEX);
     const first = await chainWith([{ actor: owner, operation: grant }]);
     const second = await buildChain([

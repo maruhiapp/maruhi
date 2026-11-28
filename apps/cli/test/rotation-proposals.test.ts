@@ -4,28 +4,28 @@ import {
   importEncryptionPublicKey,
   sealProposedValue,
 } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   buildChain,
+  type BuiltChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
   hexBytes,
-  makeTestUser,
-  statementFor,
   testEnvironmentId,
   testProjectId,
   testVariableId,
-  type BuiltChain,
-  type TestUser,
   type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
@@ -38,7 +38,7 @@ const OLD_ID = "rk_id_old_dummy";
 const NEW_ID = "rk_id_new_dummy";
 const FACT = "./rotate.sh: new credential produced";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let withDeleted: BuiltChain;
 const DELETED_ENV_ID = "old";
@@ -46,7 +46,7 @@ let dek: Uint8Array;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -97,7 +97,10 @@ interface ProposedVariableSpec {
   readonly plaintext: string;
 }
 
-async function sealedWrap(recipient: TestUser, spec: ProposedVariableSpec): Promise<WireWrap> {
+async function sealedWrap(
+  recipient: GeneratedIdentity,
+  spec: ProposedVariableSpec,
+): Promise<WireWrap> {
   const publicKey = await importEncryptionPublicKey(hexBytes(recipient.encPubHex));
   if (!publicKey.ok) {
     throw new Error("recipient key import failed");
@@ -127,7 +130,7 @@ async function sealedWrap(recipient: TestUser, spec: ProposedVariableSpec): Prom
 
 async function proposalFor(input: {
   readonly baseVersion?: number;
-  readonly recipient?: TestUser;
+  readonly recipient?: GeneratedIdentity;
   readonly plaintext?: string;
   readonly variables?: readonly ProposedVariableSpec[];
 }): Promise<WireProposal> {
@@ -173,7 +176,7 @@ async function startEnv(
   } = {},
 ): Promise<Fixture> {
   const chain = options.chain ?? built;
-  const wrap: WireRecipientDek = await wrapDekFor({
+  const wrap: WireRecipientDek = await distributedWrap({
     projectId: built.projectId,
     environmentId: ENV_ID,
     recipient: owner,
@@ -182,14 +185,14 @@ async function startEnv(
     dek,
   });
   const head = { seq: 1, hashHex: built.projectId };
-  const envStatement = await environmentStatementFor({
+  const envStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head,
   });
-  const statement = await statementFor({
+  const statement = await distributedVariableStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     variableId: "vs",
@@ -197,7 +200,7 @@ async function startEnv(
     author: owner,
     head,
   });
-  const value = await encryptValueFor({
+  const value = await distributedValue({
     dek,
     projectId: built.projectId,
     environmentId: ENV_ID,
@@ -208,7 +211,7 @@ async function startEnv(
     writer: owner,
     head: headOf(built, 2),
   });
-  const idStatement = await statementFor({
+  const idStatement = await distributedVariableStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     variableId: "vk",
@@ -216,7 +219,7 @@ async function startEnv(
     author: owner,
     head,
   });
-  const idValue = await encryptValueFor({
+  const idValue = await distributedValue({
     dek,
     projectId: built.projectId,
     environmentId: ENV_ID,
@@ -233,7 +236,7 @@ async function startEnv(
       : [
           {
             variableId: "vn",
-            statement: await statementFor({
+            statement: await distributedVariableStatement({
               projectId: built.projectId,
               environmentId: ENV_ID,
               variableId: "vn",
@@ -241,7 +244,7 @@ async function startEnv(
               author: owner,
               head,
             }),
-            value: await encryptValueFor({
+            value: await distributedValue({
               dek,
               projectId: built.projectId,
               environmentId: ENV_ID,
@@ -436,7 +439,7 @@ describe("maruhi rotation accept (PF7b)", () => {
   });
 
   it("refuses a proposal that carries no wrap for this device", async () => {
-    const other = await makeTestUser("user-other-9999");
+    const other = await generateIdentity("user-other-9999");
     const fixture = await startEnv([await proposalFor({ recipient: other })]);
     expect(await runCli(["rotation", "accept", PROPOSAL_ID, "--yes"], fixture.env.layer)).toBe(1);
     expect(fixture.env.errors.join("\n")).toContain("carries no value sealed to this device");

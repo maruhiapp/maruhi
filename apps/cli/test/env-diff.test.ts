@@ -1,4 +1,19 @@
 import type { EnvironmentId } from "@maruhi/core";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  testProjectId,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -7,28 +22,13 @@ import { reportEnvironmentDiff, reportEnvironmentWarnings } from "../src/env.pac
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const DEV = "dev";
 const PROD = "prod";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let chain: BuiltChain;
 let devStatement: WireDistributedEnvironmentStatement;
 let prodStatement: WireDistributedEnvironmentStatement;
@@ -43,7 +43,7 @@ async function loadFloor(env: TestEnv): Promise<ProjectFloor> {
 }
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   chain = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     {
@@ -71,7 +71,7 @@ afterEach(async () => {
 function environmentStatementOf(
   environmentId: string,
 ): Promise<WireDistributedEnvironmentStatement> {
-  return environmentStatementFor({
+  return distributedEnvironmentStatement({
     projectId: chain.projectId,
     environmentId,
     name: environmentId,
@@ -86,7 +86,7 @@ function variableOf(
   name: string,
   headSeq = 1,
 ): Promise<WireDistributedVariableStatement> {
-  return statementFor({
+  return distributedVariableStatement({
     projectId: chain.projectId,
     environmentId,
     variableId,
@@ -136,7 +136,7 @@ function pullMetadataHandlerOf(
         statement,
         variables,
         deletedVariables: [],
-        manifest: await manifestFor({
+        manifest: await distributedManifest({
           projectId: chain.projectId,
           environmentId,
           epoch: 1,
@@ -468,7 +468,7 @@ describe("maruhi env diff", () => {
       schema: { varType: "" | "string" | "number" | "boolean" | "url"; required: boolean },
       description = "",
     ): Promise<WireDistributedVariableStatement> {
-      return statementFor({
+      return distributedVariableStatement({
         projectId: chain.projectId,
         environmentId,
         variableId,

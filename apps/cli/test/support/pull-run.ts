@@ -1,27 +1,27 @@
-import { afterEach, beforeAll } from "vite-plus/test";
-
 import {
   type BuiltChain,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   headOf,
-  makeTestUser,
-  manifestFor,
-  rotatedEnvironmentFor,
-  statementFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-} from "./crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll } from "vite-plus/test";
+
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
+import { rotatedEnvironmentFor } from "./rotated-environment.ts";
 import { type MockHandler, MockServer, onRequest } from "./server.ts";
 
 export const ENV_ID = "prod";
 
 export interface Fixture {
-  readonly owner: TestUser;
+  readonly owner: GeneratedIdentity;
   readonly built: BuiltChain;
   readonly dek1: Uint8Array;
   readonly dek2: Uint8Array;
@@ -53,7 +53,7 @@ export async function pullEntry(
   variableId: string,
   name: string,
   value: WireDistributedValue,
-  author?: TestUser,
+  author?: GeneratedIdentity,
   environmentId = ENV_ID,
 ): Promise<{
   variableId: string;
@@ -62,7 +62,7 @@ export async function pullEntry(
 }> {
   return {
     variableId,
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId,
       environmentId,
       variableId,
@@ -76,10 +76,10 @@ export async function pullEntry(
 
 export async function pullEnvStatement(
   projectId: string,
-  author?: TestUser,
+  author?: GeneratedIdentity,
   environmentId = ENV_ID,
 ): Promise<WireDistributedEnvironmentStatement> {
-  return environmentStatementFor({
+  return distributedEnvironmentStatement({
     projectId,
     environmentId,
     name: environmentId,
@@ -89,7 +89,7 @@ export async function pullEnvStatement(
 }
 
 beforeAll(async () => {
-  const owner = await makeTestUser("user-owner-1111");
+  const owner = await generateIdentity("user-owner-1111");
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
   const { chain: built, wraps } = await rotatedEnvironmentFor({
@@ -99,7 +99,7 @@ beforeAll(async () => {
     dek2,
   });
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  const valueAlpha = await encryptValueFor({
+  const valueAlpha = await distributedValue({
     dek: dek2,
     ...common,
     epoch: 2,
@@ -109,7 +109,7 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(built, 3),
   });
-  const valueBeta = await encryptValueFor({
+  const valueBeta = await distributedValue({
     dek: dek1,
     ...common,
     epoch: 1,
@@ -119,7 +119,7 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(built, 2),
   });
-  const envStatement = await environmentStatementFor({
+  const envStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -128,7 +128,7 @@ beforeAll(async () => {
   });
   const entryAlpha = {
     variableId: "va",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "va",
@@ -140,7 +140,7 @@ beforeAll(async () => {
   };
   const entryBeta = {
     variableId: "vb",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "vb",
@@ -223,7 +223,7 @@ export function pullHandler(overrides?: {
     schemaPolicy: "enabled" as const,
   };
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    const manifest = await manifestFor({
+    const manifest = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 2,

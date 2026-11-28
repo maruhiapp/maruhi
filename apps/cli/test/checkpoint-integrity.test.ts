@@ -1,5 +1,31 @@
 import type { ChainOperation } from "@maruhi/crypto";
 import { computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  type ChainStep,
+  checkpointSnapshotValuesOf,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  rotateEpochOp,
+  testEnvironmentId,
+  testVariableId,
+  type WireCheckpointSnapshot,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedManifest,
+  type WireDistributedValue,
+  type WireDistributedVariableStatement,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -7,39 +33,13 @@ import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { checkCheckpointIntegrity } from "../src/checkpoint-integrity.ts";
 import { runCli } from "../src/cli.ts";
 import { verifyLeaseDistribution } from "../src/values.ts";
-import {
-  buildChain,
-  checkpointSnapshotValuesOf,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  rotateEpochOp,
-  statementFor,
-  testEnvironmentId,
-  type BuiltChain,
-  type ChainStep,
-  type TestUser,
-  type WireCheckpointSnapshot,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedManifest,
-  type WireDistributedValue,
-  type WireDistributedVariableStatement,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
-import { testVariableId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "prod";
 const CHECKPOINT_SEQ = 4;
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 let baseChain: BuiltChain;
@@ -57,7 +57,7 @@ let wraps: WireRecipientDek[];
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   const baseSteps: ChainStep[] = [
@@ -68,14 +68,14 @@ beforeAll(async () => {
   baseChain = await buildChain(baseSteps);
   projectId = baseChain.projectId;
   const genesisHead = { seq: 1, hashHex: projectId };
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head: genesisHead,
   });
-  stmtA = await statementFor({
+  stmtA = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "va",
@@ -83,7 +83,7 @@ beforeAll(async () => {
     author: owner,
     head: genesisHead,
   });
-  stmtB = await statementFor({
+  stmtB = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "vb",
@@ -92,7 +92,7 @@ beforeAll(async () => {
     head: genesisHead,
   });
   const common = { projectId, environmentId: ENV_ID };
-  valueA = await encryptValueFor({
+  valueA = await distributedValue({
     dek: dek2,
     ...common,
     epoch: 2,
@@ -102,7 +102,7 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(baseChain, 3),
   });
-  valueB = await encryptValueFor({
+  valueB = await distributedValue({
     dek: dek1,
     ...common,
     epoch: 1,
@@ -112,7 +112,7 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(baseChain, 2),
   });
-  manifestMain = await manifestFor({
+  manifestMain = await distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch: 2,
@@ -136,7 +136,7 @@ beforeAll(async () => {
           environmentId: testEnvironmentId(ENV_ID),
           epoch: 2,
           manifestVersion: 1,
-          manifestSigHashHex: await manifestHashOf(projectId, manifestMain),
+          manifestSigHashHex: await distributedManifestHashOf(projectId, manifestMain),
           valuesDigestHex: digest.value,
         },
       ],
@@ -151,8 +151,8 @@ beforeAll(async () => {
     values: snapshotValues,
   };
   wraps = [
-    await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
-    await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
+    await distributedWrap({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner }),
+    await distributedWrap({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner }),
   ];
 });
 
@@ -234,7 +234,7 @@ async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promi
 async function manifestNext(
   statements: readonly WireDistributedVariableStatement[],
 ): Promise<WireDistributedManifest> {
-  return manifestFor({
+  return distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch: 2,
@@ -243,7 +243,7 @@ async function manifestNext(
     envStatement,
     statements,
     manifestVersion: 2,
-    prevManifestSigHashHex: await manifestHashOf(projectId, manifestMain),
+    prevManifestSigHashHex: await distributedManifestHashOf(projectId, manifestMain),
   });
 }
 
@@ -254,7 +254,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
   });
 
   it("accepts a post-checkpoint advanced version (at or above the baseline epoch)", async () => {
-    const advanced = await encryptValueFor({
+    const advanced = await distributedValue({
       dek: dek2,
       projectId,
       environmentId: ENV_ID,
@@ -278,7 +278,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
   });
 
   it("accepts a snapshot variable's disappearance when a verified tombstone explains it", async () => {
-    const tombstoneB = await statementFor({
+    const tombstoneB = await distributedVariableStatement({
       projectId,
       environmentId: ENV_ID,
       variableId: "vb",
@@ -300,7 +300,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
   });
 
   it("accepts a new variable absent from the snapshot as a post-checkpoint creation when its epoch is at or above baseline", async () => {
-    const stmtC = await statementFor({
+    const stmtC = await distributedVariableStatement({
       projectId,
       environmentId: ENV_ID,
       variableId: "vc",
@@ -308,7 +308,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
       author: owner,
       head: { seq: 1, hashHex: projectId },
     });
-    const valueC = await encryptValueFor({
+    const valueC = await distributedValue({
       dek: dek2,
       projectId,
       environmentId: ENV_ID,
@@ -400,7 +400,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
   });
 
   it("rejects a version regression below the snapshot", async () => {
-    const rolledBack = await encryptValueFor({
+    const rolledBack = await distributedValue({
       dek: dek2,
       projectId,
       environmentId: ENV_ID,
@@ -423,7 +423,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
   });
 
   it("rejects a distribution with different signed bytes at the same version (equivocation vs the checkpoint)", async () => {
-    const substituted = await encryptValueFor({
+    const substituted = await distributedValue({
       dek: dek2,
       projectId,
       environmentId: ENV_ID,
@@ -446,7 +446,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
   });
 
   it("rejects an advanced version on an old epoch (below baseline) — the checkpoint version of floor rule (c)", async () => {
-    const injected = await encryptValueFor({
+    const injected = await distributedValue({
       dek: dek2,
       projectId,
       environmentId: ENV_ID,
@@ -479,7 +479,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
   });
 
   it("rejects an old-epoch creation of a variable outside the snapshot (a backdated creation)", async () => {
-    const stmtC = await statementFor({
+    const stmtC = await distributedVariableStatement({
       projectId,
       environmentId: ENV_ID,
       variableId: "vc",
@@ -487,7 +487,7 @@ describe("rule 2's rejection paths (session-27 §13-5 — every one a contradict
       author: owner,
       head: { seq: 1, hashHex: projectId },
     });
-    const backdated = await encryptValueFor({
+    const backdated = await distributedValue({
       dek: dek1,
       projectId,
       environmentId: ENV_ID,
@@ -582,7 +582,7 @@ describe("an unchanged environment left out of a later checkpoint keeps its guar
       ]);
       expect(await runCli(["pull"], accepted.layer)).toBe(0);
 
-      const rolledBack = await encryptValueFor({
+      const rolledBack = await distributedValue({
         dek: dek2,
         projectId,
         environmentId: ENV_ID,
@@ -685,7 +685,7 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
 
 describe("cross-layer: rule 2 does not substitute for floor rule (a) (ruling W)", () => {
   it("the floor rejects a value distribution at/above the checkpoint baseline but below the floor", async () => {
-    const v3 = await encryptValueFor({
+    const v3 = await distributedValue({
       dek: dek2,
       projectId,
       environmentId: ENV_ID,

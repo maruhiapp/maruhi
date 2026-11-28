@@ -1,9 +1,9 @@
 import { SchemaPolicyRejectedError } from "@maruhi/api-schema";
+import { generateIdentity } from "@maruhi/test-kit";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { isServerRejection, toCliError } from "../src/failure.ts";
-import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -31,7 +31,7 @@ function policyHandlers(initial: "enabled" | "locked"): MockHandler[] {
 async function startEnv(handlers: MockHandler[]): Promise<{ env: TestEnv; server: MockServer }> {
   const server = await MockServer.start(handlers);
   servers.push(server);
-  const owner = await makeTestUser("user-owner-1111");
+  const owner = await generateIdentity("user-owner-1111");
   const env = await makeTestEnv();
   seedSession(env, server.origin, owner);
   await seedConfig(env, { server: server.origin, defaultProject: PROJECT });

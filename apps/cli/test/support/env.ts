@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { cryptoServicesLayer } from "@maruhi/core";
+import type { GeneratedIdentity } from "@maruhi/test-kit";
 import { Effect, Layer, Redacted, Sink, Stdio, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
@@ -43,7 +44,6 @@ import {
   type ExecOutcome,
   ProcessRunner,
 } from "../../src/run.ts";
-import type { TestUser } from "./crypto.ts";
 
 export interface RunnerCall {
   readonly command: readonly string[];
@@ -441,7 +441,7 @@ export async function makeTestEnv(): Promise<TestEnv> {
   };
 }
 
-export function seedSession(env: TestEnv, origin: string, user: TestUser): void {
+export function seedSession(env: TestEnv, origin: string, user: GeneratedIdentity): void {
   const token: StoredToken = {
     token: Redacted.make("maruhi_pat_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St9x123"),
     userId: user.userId,

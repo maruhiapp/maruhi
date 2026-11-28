@@ -1,17 +1,17 @@
 import { encodeHex, wrapMasterSecret } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  type GeneratedIdentity,
+  genesisOp,
+} from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { serializeStoredMasterKey } from "../src/keychain.ts";
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  genesisOp,
-  type TestUser,
-} from "./support/crypto.ts";
 import {
   ENV_ID,
   owner,
@@ -223,7 +223,7 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
   const CODE_PROMPT = "Enter your recovery code: ";
 
   async function recoverFixture(input: {
-    readonly ledgerKey: TestUser;
+    readonly ledgerKey: GeneratedIdentity;
     readonly built: BuiltChain;
     readonly extraProjects?: readonly BuiltChain[];
     readonly brokenProjects?: readonly {
@@ -252,8 +252,8 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
   }
 
   async function recoveryFixture(input: {
-    readonly device: TestUser;
-    readonly ledgerKey: TestUser;
+    readonly device: GeneratedIdentity;
+    readonly ledgerKey: GeneratedIdentity;
     readonly built: BuiltChain;
     readonly extraProjects?: readonly BuiltChain[];
     readonly brokenProjects?: readonly {
@@ -310,7 +310,7 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
     return { env, state, origin: server.origin, ledgerPuts };
   }
 
-  function ledgerRecordOf(ledgerKey: TestUser) {
+  function ledgerRecordOf(ledgerKey: GeneratedIdentity) {
     return ledgerKey === reserve ? storedReserveRecord(reserve) : storedMasterRecord(ledgerKey);
   }
 

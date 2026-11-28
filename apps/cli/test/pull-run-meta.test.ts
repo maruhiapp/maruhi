@@ -1,20 +1,20 @@
-import { describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
   removeMemberOp,
-  statementFor,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandler,
@@ -70,7 +70,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("refuses a false author claim (the signature stays someone else's) (the §4.2 attribution)", async () => {
-    const stranger = await makeTestUser("user-stranger-9999");
+    const stranger = await generateIdentity("user-stranger-9999");
     const lying = {
       ...fixture.entryAlpha.statement,
       authorUserId: stranger.userId,
@@ -97,7 +97,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("a deleted variable's tombstone is verified; co-listing it with active (the carriage form of unauthorized resurrection) is refused", async () => {
-    const tombstone = await statementFor({
+    const tombstone = await distributedVariableStatement({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       variableId: "v-deleted",
@@ -132,7 +132,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   it("distributing a non-NFC name is warned (SHOULD — §12-1; processing continues)", async () => {
     const nfdName = "CAFE\u0301_URL";
     expect(nfdName.normalize("NFC")).not.toBe(nfdName);
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek: fixture.dek2,
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
@@ -154,7 +154,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("a removed author's statement verifies under a during-membership head (the §6.3-1 counterpart)", async () => {
-    const oldKeys = await makeTestUser("user-rotated-5555");
+    const oldKeys = await generateIdentity("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -163,7 +163,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: removeMemberOp(oldKeys) },
     ]);
-    const wrap = await wrapDekFor({
+    const wrap = await distributedWrap({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -171,7 +171,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       recipient: owner,
       signer: owner,
     });
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek,
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -182,14 +182,14 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       writer: oldKeys,
       head: headOf(built, 3),
     });
-    const historicEnvStatement = await environmentStatementFor({
+    const historicEnvStatement = await distributedEnvironmentStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       name: ENV_ID,
       author: oldKeys,
       head: headOf(built, 3),
     });
-    const historicStatement = await statementFor({
+    const historicStatement = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "vh",
@@ -204,7 +204,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       variables: [{ variableId: "vh", statement: historicStatement, value }],
       deletedVariables: [],
       deks: [wrap],
-      manifest: await manifestFor({
+      manifest: await distributedManifest({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -244,7 +244,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
   });
 
   it("refuses a statement whose removed author declared a post-removal head", async () => {
-    const oldKeys = await makeTestUser("user-rotated-5555");
+    const oldKeys = await generateIdentity("user-rotated-5555");
     const owner = fixture.owner;
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
@@ -253,7 +253,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       { actor: oldKeys, operation: createEnvironmentOp(ENV_ID, dek) },
       { actor: owner, operation: removeMemberOp(oldKeys) },
     ]);
-    const wrap = await wrapDekFor({
+    const wrap = await distributedWrap({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -261,7 +261,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       recipient: owner,
       signer: owner,
     });
-    const value = await encryptValueFor({
+    const value = await distributedValue({
       dek,
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -272,7 +272,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       writer: owner,
       head: headOf(built, 3),
     });
-    const forgedStatement = await statementFor({
+    const forgedStatement = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "vf",
@@ -281,7 +281,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       head: headOf(built, 4),
       metaVersion: 2,
     });
-    const envStatement = await environmentStatementFor({
+    const envStatement = await distributedEnvironmentStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       name: ENV_ID,
@@ -295,7 +295,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       variables: [{ variableId: "vf", statement: forgedStatement, value }],
       deletedVariables: [],
       deks: [wrap],
-      manifest: await manifestFor({
+      manifest: await distributedManifest({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -336,7 +336,7 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
 
   it("a statement's future head is accepted via bounded resync too (reusing the same mechanism as values — §6.3-2b)", async () => {
     const { built } = fixture;
-    const futureStatement = await statementFor({
+    const futureStatement = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "va",

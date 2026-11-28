@@ -1,3 +1,4 @@
+import { testEnvironmentId } from "@maruhi/test-kit";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -31,7 +32,6 @@ import {
   ScriptStoppedError,
 } from "../src/run.ts";
 import { signV4 } from "../src/sigv4.ts";
-import { testEnvironmentId } from "./support/crypto.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

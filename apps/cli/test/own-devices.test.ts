@@ -2,11 +2,11 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { testUserId } from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { makeFileOwnDeviceStore, type OwnDeviceEntry } from "../src/own-devices.ts";
-import { testUserId } from "./support/crypto.ts";
 
 const ORIGIN = "https://maruhi.example";
 const USER_A = "user-alice-1111";

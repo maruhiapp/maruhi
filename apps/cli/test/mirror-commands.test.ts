@@ -1,19 +1,19 @@
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  generateIdentity,
+  genesisOp,
+  grantServerOp,
+  testProjectId,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { FloorStore } from "../src/floor.ts";
 import { chainHandlerOf, servedChainResponse } from "./support/chain-handler.ts";
-import {
-  addMemberOp,
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  genesisOp,
-  grantServerOp,
-  makeTestUser,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   built,
@@ -33,7 +33,7 @@ import { type MockHandler, type MockRequest, MockServer, onRequest } from "./sup
 let forked: BuiltChain;
 
 beforeAll(async () => {
-  const other = await makeTestUser("user-other-4444");
+  const other = await generateIdentity("user-other-4444");
   forked = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: addMemberOp(other, "reader") },

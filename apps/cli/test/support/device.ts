@@ -4,6 +4,20 @@ import {
   computeUserKeyFingerprint,
   encodeHex,
 } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  hexBytes,
+  testEnvironmentId,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { afterEach, beforeAll } from "vite-plus/test";
 
@@ -19,20 +33,6 @@ import {
   appendableProjectHandlers,
   injectedAppendResponse,
 } from "./chain-handler.ts";
-import {
-  buildChain,
-  createEnvironmentOp,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  hexBytes,
-  makeTestUser,
-  testEnvironmentId,
-  type BuiltChain,
-  type TestUser,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import {
   type MockHandler,
@@ -45,19 +45,19 @@ import {
 export const ENV_ID = "env-app";
 export const FAR_FUTURE_MS = Date.now() + 10 * 60 * 1000;
 
-export let owner: TestUser;
-export let dev2: TestUser;
-export let reserve: TestUser;
-export let member: TestUser;
+export let owner: GeneratedIdentity;
+export let dev2: GeneratedIdentity;
+export let reserve: GeneratedIdentity;
+export let member: GeneratedIdentity;
 export let dek: Uint8Array;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-0001");
-  dev2 = await makeTestUser("user-owner-0001");
-  reserve = await makeTestUser("user-owner-0001");
-  member = await makeTestUser("user-member-0002");
+  owner = await generateIdentity("user-owner-0001");
+  dev2 = await generateIdentity("user-owner-0001");
+  reserve = await generateIdentity("user-owner-0001");
+  member = await generateIdentity("user-member-0002");
   dek = crypto.getRandomValues(new Uint8Array(32));
 });
 
@@ -66,7 +66,7 @@ afterEach(async () => {
 });
 
 export function addDeviceOp(
-  device: TestUser,
+  device: GeneratedIdentity,
   cap: { roleCap: "owner" | "admin" | "member" | "reader"; environmentIds?: readonly string[] } = {
     roleCap: "owner",
   },
@@ -84,7 +84,10 @@ export function addDeviceOp(
   };
 }
 
-export function revokeDeviceOp(target: TestUser, devices: readonly TestUser[]): ChainOperation {
+export function revokeDeviceOp(
+  target: GeneratedIdentity,
+  devices: readonly GeneratedIdentity[],
+): ChainOperation {
   return {
     op: "revoke_device",
     payload: {
@@ -159,7 +162,7 @@ export async function makeServer(input: {
   const registryPutStatuses = [...(input.registryPutStatuses ?? [])];
   let appendCalls = 0;
   const ownWrap: WireRecipientDek | null = input.withEnvironment
-    ? await wrapDekFor({
+    ? await distributedWrap({
         projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -169,7 +172,7 @@ export async function makeServer(input: {
       })
     : null;
   const envStatement = input.withEnvironment
-    ? await environmentStatementFor({
+    ? await distributedEnvironmentStatement({
         projectId,
         environmentId: ENV_ID,
         name: ENV_ID,
@@ -396,7 +399,7 @@ function listMineResponse(
 export async function startEnv(
   origin: string,
   projectId: string,
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const env = await makeTestEnv();
   seedSession(env, origin, user);
@@ -404,7 +407,7 @@ export async function startEnv(
   return env;
 }
 
-export function requestRowOf(device: TestUser, label = "laptop"): Record<string, unknown> {
+export function requestRowOf(device: GeneratedIdentity, label = "laptop"): Record<string, unknown> {
   return {
     keyFingerprintHex: device.fingerprintHex,
     encPubHex: device.encPubHex,
@@ -426,7 +429,7 @@ export async function readOwnDevices(
 export async function recordOwnDevice(
   env: TestEnv,
   origin: string,
-  device: TestUser,
+  device: GeneratedIdentity,
   source: OwnDeviceSource,
   revokedAtMs: number | null = null,
   observedProjectId: string | null = null,
@@ -456,7 +459,7 @@ export async function chainWithEnvironment(): Promise<BuiltChain> {
   ]);
 }
 
-export function registryRowOf(device: TestUser): ServerState["registry"][number] {
+export function registryRowOf(device: GeneratedIdentity): ServerState["registry"][number] {
   return {
     keyFingerprintHex: device.fingerprintHex,
     encPubHex: device.encPubHex,
