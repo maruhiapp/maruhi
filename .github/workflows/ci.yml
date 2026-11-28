@@ -300,3 +300,7 @@ jobs:
               bun run --filter @maruhi/crypto test:workerd
               bun run --filter @maruhi/crypto test:browser
               bun run --filter @maruhi/crypto test:bun
+
+      - name: 9c. CLI e2e (cf dev + the CLI)
+        timeout-minutes: 5
+        run: bun run --filter @maruhi/cli e2e

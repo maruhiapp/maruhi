@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build:binaries": "bun scripts/build-binaries.ts",
-    "build:npm": "bun scripts/build-npm.ts"
+    "build:npm": "bun scripts/build-npm.ts",
+    "e2e": "vp test run --config vitest.e2e.config.ts"
   },
   "dependencies": {
     "@effect/platform-bun": "4.1.6",
