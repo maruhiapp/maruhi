@@ -1,5 +1,8 @@
 import { createServer, type Server } from "node:http";
 
+import type { ApiEndpointName, ApiParams, ApiPayload, ApiReply } from "@maruhi/test-kit/api";
+import { apiRoute } from "@maruhi/test-kit/api";
+
 interface ResponseWriter {
   writeHead(status: number, headers: Record<string, string>): unknown;
   end(payload: string): unknown;
@@ -132,4 +135,78 @@ export function onRequest(
 ): MockHandler {
   return (request) =>
     request.method === method && request.path === path ? respond(request) : null;
+}
+
+export type EndpointRequest<Name extends ApiEndpointName> = Omit<MockRequest, "body"> & {
+  readonly params: ApiParams<Name>;
+  readonly body: [ApiPayload<Name>] extends [never] ? unknown : ApiPayload<Name>;
+};
+
+type EndpointReply<Name extends ApiEndpointName> = ApiReply<Name> & {
+  readonly headers?: Readonly<Record<string, string>>;
+};
+
+export interface OffSpecReply {
+  readonly offSpec: MockResponse;
+}
+
+export function offSpec(response: MockResponse): OffSpecReply {
+  return { offSpec: response };
+}
+
+export type EndpointAnswer<Name extends ApiEndpointName> = EndpointReply<Name> | OffSpecReply;
+
+export type EndpointResponder<Name extends ApiEndpointName> = (
+  request: EndpointRequest<Name>,
+) => EndpointAnswer<Name> | null | Promise<EndpointAnswer<Name> | null>;
+
+export function onEndpoint<const Name extends ApiEndpointName>(
+  name: Name,
+  respond: EndpointResponder<Name>,
+): MockHandler;
+export function onEndpoint<const Name extends ApiEndpointName>(
+  name: Name,
+  where: Partial<ApiParams<Name>>,
+  respond: EndpointResponder<Name>,
+): MockHandler;
+export function onEndpoint<const Name extends ApiEndpointName>(
+  name: Name,
+  whereOrRespond: Partial<ApiParams<Name>> | EndpointResponder<Name>,
+  maybeRespond?: EndpointResponder<Name>,
+): MockHandler {
+  const route = apiRoute(name);
+  const where: Readonly<Record<string, unknown>> =
+    typeof whereOrRespond === "function" ? {} : whereOrRespond;
+  const respond = typeof whereOrRespond === "function" ? whereOrRespond : maybeRespond;
+  if (respond === undefined) {
+    throw new Error(`onEndpoint(${name}): no responder`);
+  }
+  return async (request) => {
+    const params = route.match(request.method, request.path);
+    if (params === null) {
+      return null;
+    }
+    const given: Readonly<Record<string, unknown>> = params;
+    if (Object.entries(where).some(([key, value]) => given[key] !== value)) {
+      return null;
+    }
+    const reply = await respond({ ...request, params, body: request.body as never });
+    if (reply === null) {
+      return null;
+    }
+    if ("offSpec" in reply) {
+      return reply.offSpec;
+    }
+    const sent: MockResponse = reply;
+    if (sent.bodyText !== undefined || sent.contentType !== undefined) {
+      throw new Error(`${name}: a reply with its own body text or content type is offSpec`);
+    }
+    const verdict = route.verdictOf(reply.status, reply.json);
+    if (!verdict.accepted) {
+      throw new Error(verdict.refusal);
+    }
+    return verdict.contentType === undefined
+      ? reply
+      : { ...reply, contentType: verdict.contentType };
+  };
 }

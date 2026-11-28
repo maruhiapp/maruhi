@@ -7,11 +7,18 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
+  type WireEnvironmentManifest,
   type WireRecipientDek,
+  type WireVariableMetaStatement,
 } from "@maruhi/test-kit";
 
-import { acceptAppendedEntry, deksHandlerOf, servedChainResponse } from "./chain-handler.ts";
-import type { MockHandler, MockRequest } from "./server.ts";
+import {
+  acceptAppendedEntry,
+  deksHandlerOf,
+  lastHashOf,
+  servedChainResponse,
+} from "./chain-handler.ts";
+import { type MockHandler, type MockRequest, onEndpoint } from "./server.ts";
 
 export interface MetaEnvironmentState {
   envStatement: WireDistributedEnvironmentStatement;
@@ -41,16 +48,29 @@ export interface MetaEnvironmentServerInput {
 }
 
 interface MutationBody {
-  readonly statement: WireDistributedVariableStatement;
-  readonly value?: unknown;
-  readonly manifest: WireDistributedManifest;
+  readonly statement: WireVariableMetaStatement;
+  readonly manifest: WireEnvironmentManifest;
 }
 
-function distributed<T>(record: T, owner: GeneratedIdentity, kind: "author" | "issuer"): T {
+function authored<T>(
+  statement: T,
+  owner: GeneratedIdentity,
+): T & { readonly authorUserId: string; readonly authorKeyFingerprintHex: string } {
   return {
-    ...record,
-    [`${kind}UserId`]: owner.userId,
-    [`${kind}KeyFingerprintHex`]: owner.fingerprintHex,
+    ...statement,
+    authorUserId: owner.userId,
+    authorKeyFingerprintHex: owner.fingerprintHex,
+  };
+}
+
+function issued<T>(
+  manifest: T,
+  owner: GeneratedIdentity,
+): T & { readonly issuerUserId: string; readonly issuerKeyFingerprintHex: string } {
+  return {
+    ...manifest,
+    issuerUserId: owner.userId,
+    issuerKeyFingerprintHex: owner.fingerprintHex,
   };
 }
 
@@ -68,45 +88,37 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
     manifest: null,
     mutations: [],
   };
-  const list = `/projects/${input.chain.projectId}/environments`;
-  const base = `${list}/${input.environmentId}`;
+  const projectId = input.chain.projectId;
+  const environmentId = input.environmentId;
   const notFound = {
     status: 404,
-    json: { _tag: "EnvironmentNotFound", environmentId: input.environmentId },
-  };
-  const activatePattern = new RegExp(`^${base}/variables/([^/]+)/activate$`);
-  const removePattern = new RegExp(`^${base}/variables/([^/]+)$`);
+    json: { _tag: "EnvironmentNotFound", environmentId },
+  } as const;
   const hidden = (): boolean => state.environmentDeleted && input.resurrectDeleted !== true;
 
   const acceptStatement = (body: MutationBody): void => {
-    const accepted = distributed(body.statement, input.owner, "author");
+    const accepted = authored(body.statement, input.owner);
     state.variables = [
       ...state.variables.filter((entry) => entry.variableId !== accepted.variableId),
       accepted,
     ];
-    state.manifest = distributed(body.manifest, input.owner, "issuer");
+    state.manifest = issued(body.manifest, input.owner);
   };
 
   const handlers: MockHandler[] = [
-    (request) =>
-      request.method === "GET" && request.path === `/projects/${input.chain.projectId}/chain`
-        ? servedChainResponse(input.chain.projectId, state.chainEntries, state.chainHashes)
-        : null,
-    ...(input.wrap === undefined
-      ? []
-      : [deksHandlerOf(input.chain.projectId, input.environmentId, [input.wrap])]),
-    async (request) => {
-      if (request.method !== "GET" || request.path !== `${base}/pull/metadata`) {
-        return null;
-      }
+    onEndpoint("membership.get", { projectId }, () =>
+      servedChainResponse(projectId, state.chainEntries, state.chainHashes),
+    ),
+    ...(input.wrap === undefined ? [] : [deksHandlerOf(projectId, environmentId, [input.wrap])]),
+    onEndpoint("variables.pullMetadata", { projectId, environmentId }, async () => {
       if (hidden()) {
         return notFound;
       }
       const manifest =
         state.manifest ??
         (await distributedManifest({
-          projectId: input.chain.projectId,
-          environmentId: input.environmentId,
+          projectId,
+          environmentId,
           epoch: 1,
           issuer: input.owner,
           head: headOf(input.chain, input.chain.entries.length),
@@ -116,7 +128,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       return {
         status: 200,
         json: {
-          environmentId: input.environmentId,
+          environmentId,
           currentEpoch: 1,
           statement: state.envStatement,
           variables: state.variables,
@@ -125,42 +137,33 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
           schemaPolicy: "enabled" as const,
         },
       };
-    },
-    (request) => {
-      if (request.method !== "POST" || request.path !== `${base}/variables`) {
-        return null;
-      }
+    }),
+    onEndpoint("variables.create", { projectId, environmentId }, (request) => {
       state.mutations.push({ kind: "create", request });
-      const body = request.body as MutationBody;
+      const body = request.body;
       acceptStatement(body);
       return {
         status: 200,
         json: {
           variableId: body.statement.variableId,
-          version: body.value === undefined ? 0 : 1,
+          version: "value" in body ? 1 : 0,
           epoch: 1,
         },
       };
-    },
-    (request) => {
-      const match = request.path.match(activatePattern);
-      if (request.method !== "POST" || match === null) {
-        return null;
-      }
+    }),
+    onEndpoint("variables.activate", { projectId, environmentId }, (request) => {
       state.mutations.push({ kind: "activate", request });
-      const body = request.body as MutationBody;
-      acceptStatement(body);
-      return { status: 200, json: { variableId: match[1], version: 1, epoch: 1 } };
-    },
-    (request) => {
-      const match = request.path.match(removePattern);
-      if (request.method !== "DELETE" || match === null) {
-        return null;
-      }
+      acceptStatement(request.body);
+      return {
+        status: 200,
+        json: { variableId: request.params.variableId, version: 1, epoch: 1 },
+      };
+    }),
+    onEndpoint("variables.remove", { projectId, environmentId }, (request) => {
       state.mutations.push({ kind: "remove", request });
       if (input.ignoreRemovals !== true) {
-        const body = request.body as MutationBody;
-        const accepted = distributed(body.statement, input.owner, "author");
+        const body = request.body;
+        const accepted = authored(body.statement, input.owner);
         state.variables = state.variables.filter(
           (entry) => entry.variableId !== accepted.variableId,
         );
@@ -168,57 +171,35 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
           ...state.tombstones.filter((entry) => entry.variableId !== accepted.variableId),
           accepted,
         ];
-        state.manifest = distributed(body.manifest, input.owner, "issuer");
+        state.manifest = issued(body.manifest, input.owner);
       }
-      return { status: 204, bodyText: "" };
-    },
-    (request) =>
-      request.method === "GET" && request.path === `${base}/pull` && hidden() ? notFound : null,
-    (request) =>
-      request.method === "GET" && request.path === list
-        ? {
-            status: 200,
-            json: {
-              environments: hidden()
-                ? []
-                : [
-                    {
-                      environmentId: input.environmentId,
-                      currentEpoch: 1,
-                      statement: state.envStatement,
-                    },
-                  ],
-              schemaPolicy: "enabled" as const,
-            },
-          }
-        : null,
-    (request) => {
-      if (request.method !== "PATCH" || request.path !== base) {
-        return null;
-      }
+      return { status: 204 };
+    }),
+    onEndpoint("variables.pull", { projectId, environmentId }, () => (hidden() ? notFound : null)),
+    onEndpoint("environments.list", { projectId }, () => ({
+      status: 200,
+      json: {
+        environments: hidden()
+          ? []
+          : [{ environmentId, currentEpoch: 1, statement: state.envStatement }],
+        schemaPolicy: "enabled" as const,
+      },
+    })),
+    onEndpoint("environments.rename", { projectId, environmentId }, (request) => {
       if (state.environmentDeleted) {
         return notFound;
       }
       state.mutations.push({ kind: "rename-environment", request });
       if (input.ignoreEnvironmentMutations !== true) {
-        const body = request.body as {
-          readonly statement: WireDistributedEnvironmentStatement;
-          readonly manifest: WireDistributedManifest;
-        };
-        state.envStatement = distributed(body.statement, input.owner, "author");
-        state.manifest = distributed(body.manifest, input.owner, "issuer");
+        const body = request.body;
+        state.envStatement = authored(body.statement, input.owner);
+        state.manifest = issued(body.manifest, input.owner);
       }
-      return { status: 204, bodyText: "" };
-    },
-    async (request) => {
-      if (request.method !== "DELETE" || request.path !== base) {
-        return null;
-      }
-      const body = request.body as {
-        readonly parentHeadHashHex: string;
-        readonly entry: ChainEntry;
-      };
-      const headHashHex = state.chainHashes[state.chainHashes.length - 1];
+      return { status: 204 };
+    }),
+    onEndpoint("environments.remove", { projectId, environmentId }, async (request) => {
+      const body = request.body;
+      const headHashHex = lastHashOf(state.chainHashes);
       if (body.parentHeadHashHex !== headHashHex) {
         return {
           status: 409,
@@ -232,18 +213,18 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       state.mutations.push({ kind: "remove-environment", request });
       if (input.ignoreEnvironmentMutations !== true) {
         await acceptAppendedEntry(
-          input.chain.projectId,
+          projectId,
           state.chainEntries,
           state.chainHashes,
-          body.entry,
+          body.entry as ChainEntry,
         );
         state.environmentDeleted = true;
         state.variables = [];
         state.tombstones = [];
         state.manifest = null;
       }
-      return { status: 204, bodyText: "" };
-    },
+      return { status: 204 };
+    }),
   ];
   return { state, handlers };
 }

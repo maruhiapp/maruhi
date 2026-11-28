@@ -20,6 +20,7 @@ import {
   addDeviceOp,
   revokeDeviceOp,
   type ServerState,
+  type TokenRow,
   makeServer,
   startEnv,
   readOwnDevices,
@@ -310,7 +311,7 @@ describe("maruhi device revoke", () => {
   });
 });
 
-function tokenRow(id: string, name: string): Record<string, unknown> {
+function tokenRow(id: string, name: string): TokenRow {
   return {
     id,
     name,
@@ -325,7 +326,7 @@ function tokenRow(id: string, name: string): Record<string, unknown> {
 describe("maruhi device revoke — the token-revocation proposal (K4-13)", () => {
   async function setup(input: {
     readonly registryTokenId?: string;
-    readonly tokens: readonly Record<string, unknown>[];
+    readonly tokens: readonly TokenRow[];
     readonly tokenRevokeStatus?: number;
   }): Promise<{ state: ServerState; env: TestEnv }> {
     const built = await buildChain([

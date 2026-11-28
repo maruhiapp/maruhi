@@ -147,6 +147,7 @@
       "dependencies": {
         "@maruhi/api-schema": "workspace:*",
         "@maruhi/crypto": "workspace:*",
+        "effect": "4.1.6",
       },
     },
   },

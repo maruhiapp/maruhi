@@ -131,7 +131,7 @@ packages/
   crypto/        # E2EE core. WebCrypto + HPKE. Runs in every environment (browser/Bun/workerd). Human review required
   core/          # Domain types, Effect Schema, shared logic
   api-schema/    # HttpApi definitions (shared source for server impl and client derivation)
-  test-kit/      # Test data builders shared by the CLI and server tests (`lib/`, not `src/`: never shipped, imported by tests only)
+  test-kit/      # Test data builders shared by the CLI and server tests, and mock routes typed from the API definition (`lib/`, not `src/`: never shipped, imported by tests only)
 apps/
   server/        # Workers + DO + D1. Effect HttpApi
   cli/           # `effect/cli` + Effect. `maruhi` / `mh` binaries

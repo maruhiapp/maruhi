@@ -2325,6 +2325,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 ### `apps/cli/test/support/chain-handler.ts`
 
 - L1: Records the sharing map of the append helpers: which test servers use injectedAppendResponse / acceptAppendedEntry together and which use acceptAppendedEntry alone (DK K14)
+- Added 2026-11-28 (after the audit; no base line): `lastHashOf` throws for a chain without entries, where the handlers used to send a body without `headHashHex`. No test serves an empty chain, and a mock that wants a body the server never sends says so with `offSpec`
 
 ### `apps/cli/test/support/env-rotate.ts`
 
@@ -2392,6 +2393,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 
 - L1: Why a wire-level mock server was chosen (session-11.md comparison): a wrangler dev spawn can't use the server's fake-github and needs D1 applied beforehand, while the CLI's client-side verification needs 'a server that returns malformed responses', which a real server can't produce
 - L13: ResponseWriter is narrowed to the 2 methods actually used because @types/node's ServerResponse breaks structural compatibility when multiple @types/node versions coexist (a method present in only one of them)
+- Added 2026-11-28 (after the audit; no base line): `onEndpoint` takes the method, the path, the path parameters and the body shapes from the `@maruhi/api-schema` definition by endpoint name. The types refuse a wrong name, a missing or mistyped field and another endpoint's body, but they cannot pair a status with its body and they let an extra field through (an arrow function's returned literal is not checked for excess properties). So the handler also decodes every typed reply at run time against the schemas the endpoint declares for that status, with excess properties as errors, sends it with the content type that schema declares (a problem goes out as `application/problem+json`, which the client's decoder selects on), and refuses a reply that brings its own body text or content type: a mock that drifts from the API fails the typecheck or the test that uses it. `offSpec` is the one way to answer outside the definition (a proxy's plain-text 502, a body the server never sends), and a search for it lists the deliberate cases. The `{ _tag: "Internal" }` bodies of the older 5xx mocks are such a case: the server's 500 is an RFC 9457 problem (`HttpApiMiddleware.ProblemDetails`), so they are marked `offSpec` and kept as they were, because the tests pin what the CLI prints for them. `onRequest` stays for the servers that are not maruhi (GitHub, the vendor APIs)
 
 ### `apps/cli/test/support/test-clock.ts`
 
@@ -4568,6 +4570,10 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 ### `packages/crypto/vitest.workerd.config.ts`
 
 - L1: Workerd config rationale (§11): tests run under the real Cloudflare Workers environment; not picked up by the root vitest glob, run from a dedicated CI step (the spike-c setup)
+
+### `packages/test-kit/lib/api-route.ts`
+
+- Added 2026-11-28 (after the audit; no base line): the wire shape of an endpoint is read from its type as `["~Success"]["schema"]["Encoded"]` (the same for `~Error`, `~Payload` and `~Params`): `HttpApiEndpoint` wraps each schema in `Schema.toCodecJson`, whose own `Encoded` is `Json`, and keeps the schema it wraps under `schema`. The middleware errors come from `HttpApiMiddleware.ErrorSchema`, so an endpoint without the auth middleware has no 401. The `Encoded` side is the wire shape as long as the API's schemas are JSON-native, which they are. The method, the path and the schemas of each declared status come from `HttpApi.reflect` at run time; `reflect` types them as `Schema.Top`, whose decoding services are unknown, so the decoder is built behind one cast (the API's schemas need no service). It is its own package entry (`@maruhi/test-kit/api`) because it imports `@maruhi/api-schema` and `effect` as values, which the builders of the index do not: a test file that only builds test data does not load the API definition
 
 ### `packages/test-kit/lib/chain.ts`
 

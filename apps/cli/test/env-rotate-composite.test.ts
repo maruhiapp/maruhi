@@ -26,6 +26,7 @@ import {
   variableAt,
   verifyAndUnwrap,
 } from "./support/env-rotate.ts";
+import { offSpec } from "./support/server.ts";
 
 describe("maruhi env rotate", () => {
   it("composite request: sends a rotate_epoch entry (with commitment) + the complete wrap set, and re-encrypts current values under the new DEK", async () => {
@@ -268,7 +269,9 @@ describe("maruhi env rotate", () => {
       ],
       currentEpoch: 1,
       onPush: (call, variableId) =>
-        variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
+        variableId === "vbb" && call < 4
+          ? offSpec({ status: 503, bodyText: "unavailable" })
+          : undefined,
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -333,7 +336,9 @@ describe("maruhi env rotate", () => {
       ],
       currentEpoch: 1,
       onPush: (call, variableId) =>
-        variableId === "vbb" && call < 4 ? { status: 503, bodyText: "unavailable" } : undefined,
+        variableId === "vbb" && call < 4
+          ? offSpec({ status: 503, bodyText: "unavailable" })
+          : undefined,
       standaloneCheckpoint: { auditHeadHashHex: auditHead },
     });
     const env = await startEnv(state.handlers, owner);
@@ -402,7 +407,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onPush: () => ({ status: 503, bodyText: "unavailable" }),
+      onPush: () => offSpec({ status: 503, bodyText: "unavailable" }),
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -446,7 +451,7 @@ describe("maruhi env rotate", () => {
       currentEpoch: 1,
       onPush: (call, variableId) =>
         call === 0
-          ? { status: 503, bodyText: "unavailable" }
+          ? offSpec({ status: 503, bodyText: "unavailable" })
           : { status: 404, json: { _tag: "VariableNotFound", variableId } },
     });
     const env = await startEnv(state.handlers, owner);
@@ -500,7 +505,7 @@ describe("maruhi env rotate", () => {
       currentEpoch: 1,
       onPush: (call, variableId) => {
         if (variableId === "vaa") {
-          return call === 0 ? { status: 502, bodyText: "bad gateway" } : undefined;
+          return call === 0 ? offSpec({ status: 502, bodyText: "bad gateway" }) : undefined;
         }
         return { status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } };
       },
@@ -541,8 +546,9 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onPush: () => ({ status: 503, bodyText: "unavailable" }),
-      onPull: (call) => (call === 0 ? undefined : { status: 503, bodyText: "unavailable" }),
+      onPush: () => offSpec({ status: 503, bodyText: "unavailable" }),
+      onPull: (call) =>
+        call === 0 ? undefined : offSpec({ status: 503, bodyText: "unavailable" }),
     });
     const env = await startEnv(state.handlers, owner);
 

@@ -10,14 +10,14 @@ import { describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
-  chainHandlerOf,
+  chainSequenceHandlerOf,
   chainV1,
   chainV2,
   type CreateBody,
   type CreateEcho,
   dek1,
   dek2,
-  deksHandlerOf,
+  dekSequenceHandlerOf,
   entryOf,
   ENV_ID,
   manifestHashAt,
@@ -61,7 +61,7 @@ describe("maruhi push", () => {
     const pushBodies: WireEncryptedPayload[] = [];
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
+      chainSequenceHandlerOf([chainV1]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -147,8 +147,8 @@ describe("maruhi push", () => {
     const entryExisting = await entryOf("v-existing", "API_KEY", v4);
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -207,8 +207,8 @@ describe("maruhi push", () => {
     const entryExisting = await entryOf("v-existing", "API_KEY", v4);
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -270,8 +270,8 @@ describe("maruhi push", () => {
     const entryExisting = await entryOf("v-existing", "API_KEY", knownV4);
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV2]),
-      deksHandlerOf([[wrap1, wrap2]]),
+      chainSequenceHandlerOf([chainV2]),
+      dekSequenceHandlerOf([[wrap1, wrap2]]),
       pullMetadataHandlerOf([[entryExisting.statement]], 2),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -318,8 +318,8 @@ describe("maruhi push", () => {
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1]),
-        deksHandlerOf([[wrap1]]),
+        chainSequenceHandlerOf([chainV1]),
+        dekSequenceHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
         pullHandlerOf([entryExisting], [wrap1]),
         onRequest(
@@ -351,8 +351,8 @@ describe("maruhi push", () => {
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -397,8 +397,8 @@ describe("maruhi push", () => {
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let pullCalls = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -434,8 +434,8 @@ describe("maruhi push", () => {
     const createBodies: CreateBody[] = [];
     const echo: CreateEcho = { body: null, baseVariant: [] };
     const server = await MockServer.start([
-      chainHandlerOf([chainV1, chainV2]),
-      deksHandlerOf([[wrap1], [wrap1, wrap2]]),
+      chainSequenceHandlerOf([chainV1, chainV2]),
+      dekSequenceHandlerOf([[wrap1], [wrap1, wrap2]]),
       pullMetadataHandlerOf([[]], 1, echo),
       onRequest(
         "POST",
@@ -482,8 +482,8 @@ describe("maruhi push", () => {
   it("an EpochConflict claim contradicting the chain (current epoch unchanged after resync) is reported as a contradiction regardless of attempt count", async () => {
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1]),
-        deksHandlerOf([[wrap1]]),
+        chainSequenceHandlerOf([chainV1]),
+        dekSequenceHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[]]),
         onRequest(
           "POST",
@@ -502,8 +502,8 @@ describe("maruhi push", () => {
   it("an explicit error when no new-epoch DEK addressed to self exists after an EpochConflict", async () => {
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1, chainV2]),
-        deksHandlerOf([[wrap1], [wrap1]]),
+        chainSequenceHandlerOf([chainV1, chainV2]),
+        dekSequenceHandlerOf([[wrap1], [wrap1]]),
         pullMetadataHandlerOf([[]]),
         onRequest(
           "POST",
@@ -533,8 +533,8 @@ describe("maruhi push", () => {
     let pullCalls = 0;
     let pushed: WireEncryptedPayload | null = null;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[], [entryRacer.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -577,8 +577,8 @@ describe("maruhi push", () => {
   it("a raw out-of-schema 413 is reported as 'the value is too large'", async () => {
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1]),
-        deksHandlerOf([[wrap1]]),
+        chainSequenceHandlerOf([chainV1]),
+        dekSequenceHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[]]),
         onRequest(
           "POST",
@@ -609,8 +609,8 @@ describe("maruhi push", () => {
     let pullCalls = 0;
     let pushedVersion = 0;
     const server = await MockServer.start([
-      chainHandlerOf([chainV1]),
-      deksHandlerOf([[wrap1]]),
+      chainSequenceHandlerOf([chainV1]),
+      dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[], [entryLate.statement]]),
       onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
         pullCalls += 1;
@@ -674,8 +674,8 @@ describe("maruhi push", () => {
     const entryB = await entryOf("v-b", "API_KEY", other);
     const env = await startEnv(
       [
-        chainHandlerOf([chainV1]),
-        deksHandlerOf([[wrap1]]),
+        chainSequenceHandlerOf([chainV1]),
+        dekSequenceHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[entryA.statement, entryB.statement]]),
       ],
       "value",

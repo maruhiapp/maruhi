@@ -24,7 +24,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
-import { MockServer } from "./support/server.ts";
+import { MockServer, offSpec } from "./support/server.ts";
 
 describe("maruhi env rotate", () => {
   it("--new-epoch advances the epoch even with an undecryptable value (revocation wins — §7)", async () => {
@@ -102,7 +102,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotateAfterAccept: () => ({ status: 502, bodyText: "bad gateway" }),
+      onRotateAfterAccept: () => offSpec({ status: 502, bodyText: "bad gateway" }),
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -156,7 +156,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
+      onRotate: () => offSpec({ status: 502, bodyText: "bad gateway" }),
       chainAfterRotateAttempt: chainRotated,
     });
     const env = await startEnv(state.handlers, owner);
@@ -186,7 +186,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotateAfterAccept: () => ({ status: 502, bodyText: "bad gateway" }),
+      onRotateAfterAccept: () => offSpec({ status: 502, bodyText: "bad gateway" }),
       appendRotateAfterAccept: { epoch: 3, dek: dek3 },
     });
     const env = await startEnv(state.handlers, owner);
@@ -331,8 +331,9 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
-      onChain: (call) => (call === 0 ? undefined : { status: 503, bodyText: "unavailable" }),
+      onRotate: () => offSpec({ status: 502, bodyText: "bad gateway" }),
+      onChain: (call) =>
+        call === 0 ? undefined : offSpec({ status: 503, bodyText: "unavailable" }),
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -365,7 +366,7 @@ describe("maruhi env rotate", () => {
         }),
       ],
       currentEpoch: 1,
-      onRotate: () => ({ status: 502, bodyText: "bad gateway" }),
+      onRotate: () => offSpec({ status: 502, bodyText: "bad gateway" }),
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -573,7 +574,7 @@ describe("maruhi env rotate", () => {
           return undefined;
         }
         variables[0] = forked;
-        return { status: 502, bodyText: "bad gateway" };
+        return offSpec({ status: 502, bodyText: "bad gateway" });
       },
     });
     const env = await startEnv(state.handlers, owner);

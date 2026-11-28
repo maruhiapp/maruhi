@@ -1,4 +1,3 @@
-import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -35,32 +34,24 @@ import {
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
+  type WireWrappedDek,
 } from "@maruhi/test-kit";
+import type { ApiPayload } from "@maruhi/test-kit/api";
 import { Effect } from "effect";
 import { afterEach, beforeAll, expect } from "vite-plus/test";
 
 import { makeFileFloorStore } from "../../src/floor-log.ts";
 import type { ProjectFloor } from "../../src/floor.ts";
+import { lastHashOf, servedChainResponse } from "./chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
-import { type MockHandler, type MockResponse, MockServer, onRequest } from "./server.ts";
+import { type EndpointAnswer, type MockHandler, MockServer, onEndpoint } from "./server.ts";
 
 export const ENV_ID = "dev";
 
-export interface WireRotateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & {
-    readonly op: "rotate_epoch";
-    readonly payload: {
-      readonly environmentId: string;
-      readonly newEpoch: number;
-      readonly reason: string;
-      readonly dekCommitmentHex: string;
-    };
-  };
-  readonly deks: readonly WrappedDek[];
-  readonly manifest: Omit<WireDistributedManifest, "issuerUserId" | "issuerKeyFingerprintHex">;
-  readonly checkpoint: ChainEntry & { readonly op: "checkpoint" };
-}
+export type WireRotateBody = Omit<ApiPayload<"environments.rotate">, "entry" | "checkpoint"> & {
+  readonly entry: Extract<ChainEntry, { readonly op: "rotate_epoch" }>;
+  readonly checkpoint: Extract<ChainEntry, { readonly op: "checkpoint" }>;
+};
 
 export interface PulledVariable {
   readonly variableId: string;
@@ -158,15 +149,20 @@ export interface ServerOptions {
   readonly deletedVariables?: WireDistributedVariableStatement[];
   readonly deks: WireRecipientDek[];
   readonly currentEpoch: number;
-  readonly onRotate?: (call: number) => MockResponse | undefined;
+  readonly onRotate?: (call: number) => EndpointAnswer<"environments.rotate"> | undefined;
   readonly onRotateAccepted?: (chain: {
     readonly entries: readonly ChainEntry[];
     readonly hashes: readonly string[];
   }) => Promise<void> | void;
-  readonly onRotateAfterAccept?: (call: number) => MockResponse | undefined;
-  readonly onPush?: (call: number, variableId: string) => MockResponse | undefined;
-  readonly onPull?: (call: number) => MockResponse | undefined;
-  readonly onChain?: (call: number) => MockResponse | undefined;
+  readonly onRotateAfterAccept?: (
+    call: number,
+  ) => EndpointAnswer<"environments.rotate"> | undefined;
+  readonly onPush?: (
+    call: number,
+    variableId: string,
+  ) => EndpointAnswer<"variables.push"> | undefined;
+  readonly onPull?: (call: number) => EndpointAnswer<"variables.pull"> | undefined;
+  readonly onChain?: (call: number) => EndpointAnswer<"membership.get"> | undefined;
   readonly chainAfterRotateAttempt?: BuiltChain | undefined;
   readonly appendRotateAfterAccept?: { readonly epoch: number; readonly dek: Uint8Array };
   readonly dropCheckpointFromChain?: boolean;
@@ -322,7 +318,7 @@ export function makeServer(options: ServerOptions): ServerState {
     options.standaloneCheckpoint === undefined
       ? []
       : [
-          onRequest("GET", "/auth/me", () => ({
+          onEndpoint("auth.me", () => ({
             status: 200,
             json: {
               userId: owner.userId,
@@ -330,50 +326,29 @@ export function makeServer(options: ServerOptions): ServerState {
               tokenScopes: [{ project: projectId, permission: "admin" }],
             },
           })),
-          onRequest("GET", `/projects/${projectId}/audit-head`, () => ({
+          onEndpoint("audit.auditHead", { projectId }, () => ({
             status: 200,
             json: { auditHeadHashHex: options.standaloneCheckpoint?.auditHeadHashHex ?? "" },
           })),
-          async (request) => {
-            if (
-              request.method !== "POST" ||
-              request.path !== `/projects/${projectId}/chain/entries`
-            ) {
-              return null;
-            }
-            const body = request.body as { readonly entry: ChainEntry };
-            entries.push(body.entry);
-            hashes.push(await computeChainEntryHash(body.entry));
-            await storeCheckpointSnapshot(body.entry);
+          onEndpoint("membership.append", { projectId }, async (request) => {
+            const entry = request.body.entry as ChainEntry;
+            entries.push(entry);
+            hashes.push(await computeChainEntryHash(entry));
+            await storeCheckpointSnapshot(entry);
             return {
               status: 200,
-              json: {
-                projectId,
-                headSeq: entries.length,
-                headHashHex: hashes[hashes.length - 1],
-              },
+              json: { projectId, headSeq: entries.length, headHashHex: lastHashOf(hashes) },
             };
-          },
+          }),
         ];
   const handlers: MockHandler[] = [
     ...standaloneHandlers,
-    onRequest("GET", `/projects/${projectId}/chain`, () => {
+    onEndpoint("membership.get", { projectId }, () => {
       const injected = options.onChain?.(chainCalls);
       chainCalls += 1;
-      return (
-        injected ?? {
-          status: 200,
-          json: {
-            projectId,
-            entries,
-            headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
-            attestations: [],
-          },
-        }
-      );
+      return injected ?? servedChainResponse(projectId, entries, hashes);
     }),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, async () => {
+    onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, async () => {
       const injected = options.onPull?.(pullCalls);
       pullCalls += 1;
       return (
@@ -393,13 +368,7 @@ export function makeServer(options: ServerOptions): ServerState {
         }
       );
     }),
-    async (request) => {
-      if (
-        request.method !== "POST" ||
-        request.path !== `/projects/${projectId}/environments/${ENV_ID}/rotate`
-      ) {
-        return null;
-      }
+    onEndpoint("environments.rotate", { projectId, environmentId: ENV_ID }, async (request) => {
       const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       if (options.chainAfterRotateAttempt !== undefined) {
@@ -423,25 +392,14 @@ export function makeServer(options: ServerOptions): ServerState {
             environmentId: ENV_ID,
             currentEpoch,
             headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
+            headHashHex: lastHashOf(hashes),
           },
         }
       );
-    },
-    (request) => {
-      const prefix = `/projects/${projectId}/environments/${ENV_ID}/variables/`;
-      if (
-        request.method !== "POST" ||
-        !request.path.startsWith(prefix) ||
-        !request.path.endsWith("/versions")
-      ) {
-        return null;
-      }
-      const variableId = request.path.slice(prefix.length, -"/versions".length);
-      const body = request.body as {
-        readonly value: WireDistributedValue;
-        readonly sameValueAs?: number;
-      };
+    }),
+    onEndpoint("variables.push", { projectId, environmentId: ENV_ID }, (request) => {
+      const { variableId } = request.params;
+      const body = request.body;
       const injected = options.onPush?.(pushCalls, variableId);
       pushCalls += 1;
       if (injected !== undefined) {
@@ -466,7 +424,7 @@ export function makeServer(options: ServerOptions): ServerState {
           epoch: body.value.aad.epoch,
         },
       };
-    },
+    }),
   ];
   return { handlers, rotateBodies, pushes, chainEntries: entries };
 }
@@ -491,7 +449,7 @@ export async function startEnv(
 }
 
 export async function verifyAndUnwrap(input: {
-  readonly wrap: WrappedDek;
+  readonly wrap: WireWrappedDek;
   readonly recipient: GeneratedIdentity;
   readonly signer: GeneratedIdentity;
 }): Promise<Uint8Array> {

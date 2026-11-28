@@ -12,6 +12,7 @@ import {
   genesisOp,
   hexBytes,
   rotateEpochOp,
+  type WireRecipientDek,
 } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -29,6 +30,7 @@ import {
   dek,
   addDeviceOp,
   revokeDeviceOp,
+  type ListMineInjection,
   type ServerState,
   makeServer,
   startEnv,
@@ -229,9 +231,7 @@ describe("maruhi device add", () => {
 async function deviceAddReachFixture(input: {
   readonly cap?: Parameters<typeof addDeviceOp>[1];
   readonly pending?: boolean;
-  readonly listMine: (
-    projectId: string,
-  ) => Promise<{ readonly rows: readonly Record<string, unknown>[] } | { readonly status: number }>;
+  readonly listMine: (projectId: string) => Promise<ListMineInjection>;
 }): Promise<{ readonly env: TestEnv; readonly state: ServerState; readonly built: BuiltChain }> {
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
   const built = await buildChain([
@@ -259,7 +259,7 @@ async function deviceRowsOf(
   projectId: string,
   device: GeneratedIdentity,
   epochs: readonly number[],
-): Promise<Record<string, unknown>[]> {
+): Promise<WireRecipientDek[]> {
   const deks = reachDeks.get(projectId) ?? [];
   return Promise.all(
     epochs.map(async (epoch) => ({

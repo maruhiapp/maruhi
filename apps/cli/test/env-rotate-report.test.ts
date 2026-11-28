@@ -26,7 +26,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
-import { MockServer } from "./support/server.ts";
+import { MockServer, offSpec } from "./support/server.ts";
 
 describe("maruhi env rotate", () => {
   it("a response pushing back an already-accepted write of ours is detected as a rollback without relying on the floor", async () => {
@@ -158,7 +158,7 @@ describe("maruhi env rotate", () => {
       ],
       currentEpoch: 1,
       onPush: (_call, variableId) =>
-        variableId === "vaa" ? { status: 502, bodyText: "bad gateway" } : undefined,
+        variableId === "vaa" ? offSpec({ status: 502, bodyText: "bad gateway" }) : undefined,
     });
     const env = await startEnv(state.handlers, owner);
 
@@ -326,7 +326,7 @@ describe("maruhi env rotate", () => {
       currentEpoch: 1,
       onPush: (_call, variableId) =>
         variableId === "vaa"
-          ? { status: 502, bodyText: "bad gateway" }
+          ? offSpec({ status: 502, bodyText: "bad gateway" })
           : { status: 413, json: { _tag: "ValueTooLarge", limitBytes: 8 } },
     });
     const env = await startEnv(state.handlers, owner);

@@ -13,6 +13,7 @@ import {
   removeMemberOp,
   setApprovalPolicyOp,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -63,7 +64,10 @@ async function startEnv(
 
 type PolicyOp = Parameters<typeof setApprovalPolicyOp>[0][number];
 
-async function invitationFor(projectId: string, invitee: GeneratedIdentity) {
+async function invitationFor(
+  projectId: string,
+  invitee: GeneratedIdentity,
+): Promise<ApiSuccess<"invites.list">["invitations"][number]> {
   const issued = await issueInviteFixture({
     inviter: owner,
     projectId,
