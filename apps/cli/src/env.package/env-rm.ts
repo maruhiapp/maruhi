@@ -11,7 +11,7 @@ import { rejectIntentOnServerRejection } from "../floor-check.ts";
 import { CliIo } from "../io.ts";
 import { logNote } from "../notice.ts";
 import { retryOnConflict } from "../retry.ts";
-import { flaggedVariablesOf } from "../rotation.ts";
+import { flaggedVariablesOf } from "../rotation.package/index.ts";
 import { deletedEnvironmentMessage } from "../scope.ts";
 import {
   type EnvironmentMetaInput,

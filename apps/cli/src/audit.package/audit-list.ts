@@ -20,7 +20,7 @@ import type { CliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";
 import { CliIo } from "../io.ts";
 import { logNote, logWarning } from "../notice.ts";
-import { type NameIndex, resolveNames } from "../rotation.ts";
+import { type NameIndex, resolveNames } from "../rotation.package/index.ts";
 import { mirrorWarnings, projectMirrorTrustOf, type WireAuditEvent } from "./audit-mirror.ts";
 import {
   aggregatedReadOf,

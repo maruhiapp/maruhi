@@ -1376,8 +1376,9 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L112: The locally recorded reserve keys (not revoked), newest first.
 - L126: When the ledger's key is found to be revoked and this device has it recorded as reserve, attach the revocation mark (DK K14-4 4-g). No row
 
-### `apps/cli/src/rotation-proposals.ts`
+### `apps/cli/src/rotation.package/rotation-proposals.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/rotation-proposals.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L1: `maruhi rotation proposals | accept | reject`: the member side of sealed value proposals (CRYPTO_SPEC §5.3 / AUTH_SPEC §14-5 — PF7b). A
 - L41: A proposal's variables for display: the verified name when known, else the identifier.
 - L55: `maruhi rotation proposals [--env]`: the pending proposals with their next step (no value is opened).

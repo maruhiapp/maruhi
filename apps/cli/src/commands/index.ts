@@ -93,6 +93,14 @@ import {
 import { proxyAcceptConfig, proxyRunConfig, makeProxyCommands } from "../proxy.package/command.ts";
 import { pushConfig, makePushCommand } from "../push.package/command.ts";
 import {
+  rotationAcceptConfig,
+  rotationDismissConfig,
+  rotationListConfig,
+  rotationProposalsConfig,
+  rotationRejectConfig,
+  makeRotationCommands,
+} from "../rotation.package/command.ts";
+import {
   schemaExportConfig,
   schemaImportConfig,
   schemaLintConfig,
@@ -125,14 +133,6 @@ import { specOf } from "./flags.ts";
 import { loginConfig, logoutConfig, makeLoginLogoutCommands } from "./login-logout.ts";
 import { mcpConfig, makeMcpCommand } from "./mcp.ts";
 import { pullConfig, runConfig, makePullRunCommands } from "./pull-run.ts";
-import {
-  rotationAcceptConfig,
-  rotationDismissConfig,
-  rotationListConfig,
-  rotationProposalsConfig,
-  rotationRejectConfig,
-  makeRotationCommands,
-} from "./rotation.ts";
 import { tokenListConfig, tokenRevokeConfig, makeTokenCommands } from "./token.ts";
 
 const GROUP_CONFIGS: Readonly<

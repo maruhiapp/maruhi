@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { parseRotateConfig, ruleFor } from "../src/connector.package/rotate-config.ts";
-import { rotationAction } from "../src/rotation.ts";
+import { rotationAction } from "../src/rotation.package/rotation.ts";
 import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 const PROJECT = "a".repeat(64);
 

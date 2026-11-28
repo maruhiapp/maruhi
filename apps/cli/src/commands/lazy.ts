@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import type { CliServices } from "../cli.ts";
 import type * as Context from "../context.ts";
 import type { CliError } from "../errors.ts";
-import type * as Rotation from "../rotation.ts";
+import type * as Rotation from "../rotation.package/index.ts";
 import type * as Session from "../session.ts";
 import type * as SweepRotate from "../sweep-rotate.ts";
 
@@ -173,7 +173,7 @@ const lazyReportRotationChecklist = (
 ): ReturnType<typeof Rotation.reportRotationChecklist> =>
   Effect.flatMap(
     Effect.promise(() =>
-      import("../rotation.ts").then((m) => ({
+      import("../rotation.package/index.ts").then((m) => ({
         reportRotationChecklist: m.reportRotationChecklist,
       })),
     ),

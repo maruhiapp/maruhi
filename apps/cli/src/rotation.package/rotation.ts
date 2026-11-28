@@ -2,22 +2,22 @@ import type { RotationProposal } from "@maruhi/api-schema";
 import { type EnvironmentId, type ProjectId, type UserId, type VariableId } from "@maruhi/core";
 import { Clock, Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { CliServices } from "./cli.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { CliServices } from "../cli.ts";
 import {
   configNamesProject,
   DEFAULT_ROTATE_CONFIG_PATH,
   loadRotateConfigIfPresent,
   type RotateConfig,
   ruleFor,
-} from "./connector.package/index.ts";
-import type { ProjectContextBase } from "./context.ts";
-import { floorHandleFor } from "./context.ts";
-import { chainDeletedEnvironments, chainEnvironmentIds } from "./deks.ts";
-import { countNoun, displayText, formatUtcDate } from "./display.ts";
-import { cliError, type CliError, evidenceError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
+} from "../connector.package/index.ts";
+import type { ProjectContextBase } from "../context.ts";
+import { floorHandleFor } from "../context.ts";
+import { chainDeletedEnvironments, chainEnvironmentIds } from "../deks.ts";
+import { countNoun, displayText, formatUtcDate } from "../display.ts";
+import { cliError, type CliError, evidenceError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
 import {
   DAY_MS,
   describeDue,
@@ -26,9 +26,9 @@ import {
   type DueRows,
   dueRowsFor,
   type MaxAgeCandidate,
-} from "./max-age.ts";
-import { logNote } from "./notice.ts";
-import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "./values.ts";
+} from "../max-age.ts";
+import { logNote } from "../notice.ts";
+import { pullVerifiedEnvironmentMetadata, type VerifiedEnvironmentMetadata } from "../values.ts";
 
 interface RotationFlagView {
   readonly environmentId: EnvironmentId;

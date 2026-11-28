@@ -2,9 +2,6 @@ import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import type { CliServices } from "../cli.ts";
-import { logWarnings } from "../display.ts";
-import { CliError, usageError } from "../errors.ts";
-import { CliIo } from "../io.ts";
 import {
   environmentIdFlag,
   invalidFlagCombination,
@@ -12,10 +9,14 @@ import {
   projectFlags,
   singleFlag,
   variableIdArgument,
-} from "./flags.ts";
-import { openEnvironment, openMetadataProject } from "./lazy.ts";
-import { proposeCheckpointRefresh } from "./shared.ts";
+} from "../commands/flags.ts";
+import { openEnvironment, openMetadataProject } from "../commands/lazy.ts";
+import { proposeCheckpointRefresh } from "../commands/shared.ts";
+import { logWarnings } from "../display.ts";
+import { CliError, usageError } from "../errors.ts";
+import { CliIo } from "../io.ts";
 
+/** @public */
 export const rotationListConfig = {
   ...projectFlags(),
   "fail-on-due": singleFlag(
@@ -39,6 +40,7 @@ export const rotationListConfig = {
   ),
 };
 
+/** @public */
 export const rotationDismissConfig = {
   ...projectFlags(),
   env: environmentIdFlag(
@@ -52,11 +54,13 @@ export const rotationDismissConfig = {
   ),
 };
 
+/** @public */
 export const rotationProposalsConfig = {
   ...projectFlags(),
   env: environmentIdFlag("env", "Only the proposals of this environment"),
 };
 
+/** @public */
 export const rotationAcceptConfig = {
   ...projectFlags(),
   yes: singleFlag(
@@ -71,6 +75,7 @@ export const rotationAcceptConfig = {
   ),
 };
 
+/** @public */
 export const rotationRejectConfig = {
   ...projectFlags(),
   id: Argument.String("id").pipe(
@@ -81,13 +86,14 @@ export const rotationRejectConfig = {
   ),
 };
 
+/** @public */
 export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationList = Command.make(
     "list",
     rotationListConfig,
-    Effect.fn("commands-rotation.rotationList")(function* (values) {
+    Effect.fn("rotation-command.rotationList")(function* (values) {
       const { rotationListOp } = yield* Effect.promise(() =>
-        import("../rotation.ts").then((m) => ({ rotationListOp: m.rotationListOp })),
+        import("./rotation.ts").then((m) => ({ rotationListOp: m.rotationListOp })),
       );
 
       const dueWithin = values["due-within"];
@@ -118,10 +124,10 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationDismiss = Command.make(
     "dismiss",
     rotationDismissConfig,
-    Effect.fn("commands-rotation.rotationDismiss")(function* (values) {
+    Effect.fn("rotation-command.rotationDismiss")(function* (values) {
       const { parseDismissRequest, resolveDismissTargets, rotationDismissOp } =
         yield* Effect.promise(() =>
-          import("../rotation.ts").then((m) => ({
+          import("./rotation.ts").then((m) => ({
             parseDismissRequest: m.parseDismissRequest,
             resolveDismissTargets: m.resolveDismissTargets,
             rotationDismissOp: m.rotationDismissOp,
@@ -175,13 +181,13 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationProposals = Command.make(
     "proposals",
     rotationProposalsConfig,
-    Effect.fn("commands-rotation.rotationProposals")(function* (values): Effect.fn.Return<
+    Effect.fn("rotation-command.rotationProposals")(function* (values): Effect.fn.Return<
       void,
       CliError,
       CliServices
     > {
       const { rotationProposalsOp } = yield* Effect.promise(() =>
-        import("../rotation-proposals.ts").then((m) => ({
+        import("./rotation-proposals.ts").then((m) => ({
           rotationProposalsOp: m.rotationProposalsOp,
         })),
       );
@@ -198,20 +204,20 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationAccept = Command.make(
     "accept",
     rotationAcceptConfig,
-    Effect.fn("commands-rotation.rotationAccept")(function* (values): Effect.fn.Return<
+    Effect.fn("rotation-command.rotationAccept")(function* (values): Effect.fn.Return<
       void,
       CliError,
       CliServices
     > {
       const { describeAcceptance, findProposal, rotationAcceptOp } = yield* Effect.promise(() =>
-        import("../rotation-proposals.ts").then((m) => ({
+        import("./rotation-proposals.ts").then((m) => ({
           describeAcceptance: m.describeAcceptance,
           findProposal: m.findProposal,
           rotationAcceptOp: m.rotationAcceptOp,
         })),
       );
       const { fetchRotationProposals } = yield* Effect.promise(() =>
-        import("../rotation.ts").then((m) => ({
+        import("./rotation.ts").then((m) => ({
           fetchRotationProposals: m.fetchRotationProposals,
         })),
       );
@@ -236,19 +242,19 @@ export function makeRotationCommands(onExitCode: (code: number) => void) {
   const rotationReject = Command.make(
     "reject",
     rotationRejectConfig,
-    Effect.fn("commands-rotation.rotationReject")(function* (values): Effect.fn.Return<
+    Effect.fn("rotation-command.rotationReject")(function* (values): Effect.fn.Return<
       void,
       CliError,
       CliServices
     > {
       const { findProposal, rotationRejectOp } = yield* Effect.promise(() =>
-        import("../rotation-proposals.ts").then((m) => ({
+        import("./rotation-proposals.ts").then((m) => ({
           findProposal: m.findProposal,
           rotationRejectOp: m.rotationRejectOp,
         })),
       );
       const { fetchRotationProposals } = yield* Effect.promise(() =>
-        import("../rotation.ts").then((m) => ({
+        import("./rotation.ts").then((m) => ({
           fetchRotationProposals: m.fetchRotationProposals,
         })),
       );
