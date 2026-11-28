@@ -92,6 +92,13 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L592: Crypto's workerd/browser runs are their own step because they need out-of-build dependencies the root vitest projects do not pick up
 - Added 2026-11-28 (after the audit; no base line): step 9c, the CLI e2e, runs after the e2e group and not inside it: it starts its own `cf dev` in apps/server, and two cf processes there must not overlap (the rule that keeps step 9 apart from 8b/8c). It needs the web build of step 8, which the server config serves
 
+### `.github/workflows/dco.yml`
+
+- Added 2026-11-28 (after the audit; no base line): the DCO check of ADR-0003 revision 1. The job runs only when the head branch is in another repository (`head.repo.full_name != github.repository`): a pull request from a branch of this repository comes from an account with write access, whose commits carry no sign-off. A deleted fork leaves `head.repo` empty, which compares unequal, so the check still runs
+- Added 2026-11-28 (after the audit; no base line): its own workflow, with english-pr.yml's event types: one file per rule, and neither check waits for the full gate. `edited` is among the types because retargeting the pull request to another base branch is an edit, and it changes the range; an edited title re-runs a job of a few seconds, on fork pull requests only
+- Added 2026-11-28 (after the audit; no base line): the range starts at the base branch as the checkout fetched it (`origin/<base.ref>`, hence fetch-depth 0), not at the event's `base.sha`: the unsigned commits of main that a contributor merges into their branch must fall outside the range whenever they are on main, and the branch tip is never behind the sha the event recorded
+- Added 2026-11-28 (after the audit; no base line): `pull_request`, not `pull_request_target`: a fork's pull request can edit this workflow or the script and pass, as it can edit any other gate, and that edit is in the diff a maintainer reads before merging. The job holds no secret and no write permission (`apps/cli/test/workflows-supply-chain.test.ts` lists it as unprivileged). Event fields pass through env, as in english-pr.yml
+
 ### `.github/workflows/english-pr.yml`
 
 - L1: ADR-0019 decision 5 is kept out of ci.yml so editing a PR description re-runs only this lightweight check, not the full gate
@@ -184,6 +191,14 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 ### `packages/crypto/vitest.browser.config.ts`
 
 - L1: This package deliberately declares its own vitest devDependency — the only one in the repo: browser mode dedupes every vitest resolution to the project copy so client and test modules share one module instance; the pin must move with whatever vitest version a new vite-plus bundles, and @vitest/browser-playwright stays direct because it is vite-plus's optional peer the consumer must supply
+
+### `scripts/check-dco.mjs`
+
+- Added 2026-11-28 (after the audit; no base line): a commit passes when one of its `Signed-off-by` trailers ends in the commit author's email address, compared without letter case. The author is the one who certifies; a relayed commit keeps its author's sign-off and adds the relayer's (DCO 1.1 (c)), so a sign-off by the committer alone does not pass. The name is not compared: CONTRIBUTING.md accepts a consistent identity
+- Added 2026-11-28 (after the audit; no base line): trailers are read by git (`%(trailers:key=Signed-off-by)`), so a sign-off line in the body of a message, outside the last paragraph, does not count. A value counts when it is one name and one address in angle brackets at its end; a value with a second bracketed address is not a sign-off. Merge commits are skipped: a contributor merges the base to resolve a conflict, and the merged commits are not theirs to certify
+- Added 2026-11-28 (after the audit; no base line): the fields of a commit are separated by NUL, the one byte git never prints from a message. A subject is the contributor's text: with a printable or control separator, a subject that holds the separator and an address read as a sign-off (found in review, with U+001F). The subject is printed JSON-quoted, so its control bytes do not reach the log
+- Added 2026-11-28 (after the audit; no base line): a missing range, a range git cannot read and a range with no commit to check all fail: a gate that reads no commit must not print "clean". A pull request holds at least one commit, so an empty range is a wrong range or one made of merge commits alone
+- Added 2026-11-28 (after the audit; no base line): no dependency and no GitHub App: the check is about sixty lines over `git log`, runs with the read-only token of a fork's pull request, and adds no third party to the supply chain
 
 ### `scripts/check-dupes-baseline.mjs`
 

@@ -164,4 +164,4 @@ it is source-available / Fair Source.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a DCO `Signed-off-by`.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Every commit of a pull request from a fork needs a DCO `Signed-off-by`.

@@ -127,14 +127,14 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
 |---|---|---|---|
 | T-1 | Medium | **Fixed (PR #203 `83b6055` / `b06e044`)** | `maruhi token list / revoke` had no tests, and `device revoke --revoke-token` only exercised the 403 path |
 | T-2 | Low | **Fixed (PR #382 `eda5b1e`)** | The server tests use `isolate: false` with shared state and do not enforce order independence (the file count is 63, not the report's 56). `sequence.shuffle` (per file) could enforce it, but first confirm a shuffled run passes → the root `vitest.config.ts` sets `sequence.shuffle.files` (Vitest 4.1.x takes file order from the root sequencer only), so root and server runs use a random file order. The seed is printed; `bun run test -- --sequence.seed=N` replays the order (add `--maxWorkers=1` if a failure still does not reproduce — the seed fixes the queue order, not which files share a worker). Cost: the CI test step took 389 s (PR) / ~440 s (first `main` run) against a noisy 195–334 s baseline |
-| T-3 | Low | Owner decision | No test drives the real CLI against a real server (harness design needed) |
+| T-3 | Low | **Fixed (PR #511 `81a9af0`)** | No test drives the real CLI against a real server (harness design needed) → `apps/cli/test/e2e.test.ts` runs the CLI in-process against `apps/server` under `cf dev` (CI step 9c) |
 | T-4 | Low | Owner decision | No coverage measurement (requires adding a `@vitest/coverage-*` dependency; the workerd pool needs istanbul) |
 
 ## Automation / CI
 
 | ID | Severity | Status | Summary |
 |---|---|---|---|
-| C-1 | Medium | Owner decision | The DCO Signed-off-by is not enforced automatically (DCO App or a custom workflow) |
+| C-1 | Medium | **Fixed (2026-11-28, owner decision)** | The DCO Signed-off-by is not enforced automatically (DCO App or a custom workflow) → a custom workflow, `.github/workflows/dco.yml`, checks every commit of a pull request from a fork; commits that maintainers push to this repository's own branches carry no sign-off (ADR-0003 revision 1) |
 | C-2 | Medium | Owner decision | No deploy automation for hosted. The `deploy` script applies D1 migrations before deploying (a destructive migration can break a running worker), there is no staging, and there is no rollback procedure for worker code |
 | C-3 | Medium | Owner decision | Release binaries have no build-provenance attestation (npm has provenance. install.sh already notes checksums are unsigned — SECURITY_REVIEW_2026-08-14 I-1) |
 | C-4 | Low | **Fixed (PR #203 `a7b6dfc`)** | ci.yml had no concurrency → on PRs, stale runs are now cancelled; main pushes and release.yml's workflow_call are in separate per-run groups (the report's proposal had a flaw where a release dry-run and a main push would cancel each other — applied with that corrected) |
@@ -176,9 +176,10 @@ one table (the report's Sc1 = P-1, Sc2 = P-2, Sc4 = P-4, Sc5 ⊃ P-3).
    closed without changing crypto's source (2026-10-11 owner decision — see
    their rows); the check that `value-sign.ts` signs at the 16-byte
    ciphertext minimum (the M-6 probe's survivor) is added (PR #395)
-3. **Operational policy** (C-1–C-3 / C-5 remainder / C-6–C-8 / T-3 / T-4 /
+3. **Operational policy** (C-2 / C-3 / C-5 remainder / C-6–C-8 / T-4 /
    D-6 / D-7): small individual PRs after owner decisions (S-2 is fixed —
-   2026-10-11 owner decision, see its row)
+   2026-10-11 owner decision, see its row; C-1 and T-3 are fixed —
+   2026-11-28, see their rows)
 4. **Standalone items** (no spec change): M-3's web remainder — fold
    `audit-read.ts`'s `isJsonRecord` into `chain-view-state.ts`'s `isRecord` →
    done, through a new shared `apps/web/src/dashboard/json-record.ts` instead

@@ -71,7 +71,7 @@ const loadWorkflow = (file: string) => {
 };
 
 const PRIVILEGED = ["ops-backup.yml", "pullfrog.yml", "release.yml"];
-const UNPRIVILEGED = ["ci.yml", "english-pr.yml", "installer.yml"];
+const UNPRIVILEGED = ["ci.yml", "dco.yml", "english-pr.yml", "installer.yml"];
 
 const INSTALL_BUN = "./.github/actions/install-bun";
 const LOCAL_ACTIONS = [INSTALL_BUN, "./actions/setup-maruhi"];
