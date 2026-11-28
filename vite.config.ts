@@ -40,6 +40,22 @@ const moduleLoadRestrictions = [
   },
 ];
 
+const inlineTypeImportMessage =
+  "Write a type-only import or re-export of a local module as `import type { X }` / `export type { X }`. With `type` on every specifier instead, a bundler may keep the statement and load the module, while fallow reads it as type-only, so it would pass a zone rule that allows types only (the Layers section of CLAUDE.md)";
+
+const inlineTypeImportRestrictions = [
+  {
+    selector:
+      "ImportDeclaration[importKind!='type'][specifiers.length>0][source.value=/^(\\.\\.?(\\/|$)|@maruhi\\/(cli|server)(\\/|$))/]:not(:has(> :matches(ImportDefaultSpecifier, ImportNamespaceSpecifier, ImportSpecifier[importKind!='type'])))",
+    message: inlineTypeImportMessage,
+  },
+  {
+    selector:
+      "ExportNamedDeclaration[exportKind!='type'][source.value=/^(\\.\\.?(\\/|$)|@maruhi\\/(cli|server)(\\/|$))/]:not(:has(> ExportSpecifier[exportKind!='type']))",
+    message: inlineTypeImportMessage,
+  },
+];
+
 export default defineConfig({
   fmt: {
     sortImports: true,
@@ -249,11 +265,22 @@ export default defineConfig({
         rules: { "eslint-js/no-restricted-syntax": "off" },
       },
       {
-        files: ["apps/cli/src/**/*.ts"],
+        files: ["apps/server/src/**"],
         rules: {
           "eslint-js/no-restricted-syntax": [
             "error",
             ...moduleLoadRestrictions,
+            ...inlineTypeImportRestrictions,
+          ],
+        },
+      },
+      {
+        files: ["apps/cli/src/**"],
+        rules: {
+          "eslint-js/no-restricted-syntax": [
+            "error",
+            ...moduleLoadRestrictions,
+            ...inlineTypeImportRestrictions,
             {
               selector: "Literal[value=/master[ -]key|master private key/i]",
               message:

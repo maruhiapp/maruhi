@@ -9,7 +9,7 @@ import type { MetaVarType } from "@maruhi/crypto";
 import { Effect, Stdio } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
-import { type VerifiedProject } from "../chain-sync.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
 import { displayText, escapeText, logWarnings } from "../display.ts";
 import { findHighEntropySubstring } from "../entropy.ts";
 import { cliError, type CliError } from "../errors.ts";

@@ -23,7 +23,15 @@ const DYNAMIC_IMPORT = "A dynamic import() names a relative path literal.";
 const REQUIRE = "Shipped source loads modules with import only.";
 const MASTER_KEY = 'User-facing text must not say "master key".';
 const INLINE_SUCCESS_STRUCT = "Do not write an inline Schema.Struct into success.";
-const EVERY_BAN = [DYNAMIC_IMPORT, REQUIRE, MASTER_KEY, INLINE_SUCCESS_STRUCT] as const;
+const INLINE_TYPE_IMPORT = "Write a type-only import or re-export of a local module as";
+const INLINE_TYPE_BANS = Array.from({ length: 11 }, () => INLINE_TYPE_IMPORT);
+const EVERY_BAN = [
+  DYNAMIC_IMPORT,
+  REQUIRE,
+  MASTER_KEY,
+  INLINE_SUCCESS_STRUCT,
+  INLINE_TYPE_IMPORT,
+] as const;
 
 const PACKAGE_SPECIFIER = `export const load = async () => (await import("effect/http")).FetchHttpClient;
 `;
@@ -54,6 +62,36 @@ export const fromNamespace = bareModule.createRequire(import.meta.url)("effect/h
 const NODE_MODULE_REEXPORTS = `export { createRequire } from "node:module";
 export * from "module";
 export * as nodeModule from "node:module";
+`;
+
+const INLINE_TYPE_SHAPES = `import { type One } from "./sibling.ts";
+import { type Two, type Three } from "../sibling.ts";
+import type { Four } from "./sibling.ts";
+import { type Five, six } from "./sibling.ts";
+import seven, { type Eight } from "./sibling.ts";
+import * as nine from "./sibling.ts";
+import { type Ten } from "@maruhi/core";
+import "./sibling.ts";
+
+import { type Fifteen as Sixteen } from "./sibling.ts";
+import {
+  type Seventeen,
+  type Eighteen,
+} from "./sibling.ts";
+import { type Nineteen } from ".";
+import { type Twenty } from "..";
+import { type TwentyOne } from "@maruhi/cli";
+import { type TwentyTwo } from "./sibling.js";
+
+export {} from "./sibling.ts";
+export { type TwentyThree as TwentyFour } from "..";
+export { type Eleven } from "./sibling.ts";
+export type { Twelve } from "./sibling.ts";
+export { type Thirteen, fourteen } from "./sibling.ts";
+export { type UserId } from "@maruhi/core";
+export type Used = [One, Two, Three, Four, Five, Eight, Ten, Sixteen, Seventeen, Eighteen];
+export type AlsoUsed = [Nineteen, Twenty, TwentyOne, TwentyTwo];
+export const used = [six, seven, nine];
 `;
 
 const ASTRO = `---
@@ -112,6 +150,31 @@ const PROBES: readonly Probe[] = [
     bans: [REQUIRE, REQUIRE, REQUIRE],
   },
   { path: "apps/cli/test/node-module-reexport.ts", source: NODE_MODULE_REEXPORTS, bans: [] },
+  {
+    path: "apps/cli/src/inline-type.ts",
+    source: INLINE_TYPE_SHAPES,
+    bans: INLINE_TYPE_BANS,
+  },
+  {
+    path: "apps/cli/src/probe.package/inline-type.ts",
+    source: INLINE_TYPE_SHAPES,
+    bans: INLINE_TYPE_BANS,
+  },
+  {
+    path: "apps/server/src/inline-type.ts",
+    source: INLINE_TYPE_SHAPES,
+    bans: INLINE_TYPE_BANS,
+  },
+  {
+    path: "apps/server/src/do/inline-type.ts",
+    source: INLINE_TYPE_SHAPES,
+    bans: INLINE_TYPE_BANS,
+  },
+  { path: "apps/cli/src/inline-type.mts", source: INLINE_TYPE_SHAPES, bans: INLINE_TYPE_BANS },
+  { path: "apps/server/src/inline-type.mts", source: INLINE_TYPE_SHAPES, bans: INLINE_TYPE_BANS },
+  { path: "packages/core/src/inline-type.ts", source: INLINE_TYPE_SHAPES, bans: [] },
+  { path: "apps/cli/test/inline-type.ts", source: INLINE_TYPE_SHAPES, bans: [] },
+  { path: "apps/server/test/inline-type.ts", source: INLINE_TYPE_SHAPES, bans: [] },
   { path: "apps/server/src/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
   { path: "apps/server/src/do/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
   { path: "packages/core/src/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
