@@ -1,18 +1,14 @@
-import {
-  type EnvironmentId,
-  EnvironmentIdSchema,
-  type ProjectId,
-  ProjectIdSchema,
-} from "@maruhi/core";
+import { type EnvironmentId, type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import {
+  environmentIdFlag,
   NonBlank,
+  projectIdFlag,
   runCommandArgument,
   singleFlag,
   singleValued,
-  singleValuedAs,
 } from "../commands/flags.ts";
 import { normalizeHttpOrigin } from "../commands/lazy.ts";
 import { commandAfterTerminator } from "../commands/shared.ts";
@@ -44,12 +40,8 @@ import {
  */
 export const ciRunConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
-  project: singleValuedAs(
-    "project",
-    "Project ID, which is the pinned genesis hash (required)",
-    ProjectIdSchema,
-  ),
-  env: singleValuedAs("env", "Environment ID to lease (required)", EnvironmentIdSchema),
+  project: projectIdFlag("project", "Project ID, which is the pinned genesis hash (required)"),
+  env: environmentIdFlag("env", "Environment ID to lease (required)"),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   mirror: singleValued(
     "mirror",
@@ -71,11 +63,7 @@ export const ciRunConfig = {
  */
 export const ciSyncConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
-  project: singleValuedAs(
-    "project",
-    "Project ID, which is the pinned genesis hash (required)",
-    ProjectIdSchema,
-  ),
+  project: projectIdFlag("project", "Project ID, which is the pinned genesis hash (required)"),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   mirror: singleValued(
     "mirror",
@@ -104,16 +92,8 @@ export const ciSyncConfig = {
  */
 export const ciRotateConfig = {
   server: singleValued("server", "Server URL (required; CI mode reads no config file)"),
-  project: singleValuedAs(
-    "project",
-    "Project ID, which is the pinned genesis hash (required)",
-    ProjectIdSchema,
-  ),
-  env: singleValuedAs(
-    "env",
-    "Environment ID of the variable to rotate (required)",
-    EnvironmentIdSchema,
-  ),
+  project: projectIdFlag("project", "Project ID, which is the pinned genesis hash (required)"),
+  env: environmentIdFlag("env", "Environment ID of the variable to rotate (required)"),
   audience: singleValued("audience", "OIDC audience to request (default: the server origin)"),
   anchor: singleValued(
     "anchor",

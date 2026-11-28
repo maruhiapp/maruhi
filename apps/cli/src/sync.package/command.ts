@@ -1,13 +1,14 @@
-import { EnvironmentIdSchema, type ProjectId, ProjectIdSchema } from "@maruhi/core";
+import { type ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import {
+  environmentIdFlag,
   NonBlank,
   projectFlags,
+  projectIdFlag,
   singleFlag,
   singleValued,
-  singleValuedAs,
 } from "../commands/flags.ts";
 import { floorHandleFor, openProject } from "../commands/lazy.ts";
 import { CliError, usageError } from "../errors.ts";
@@ -59,13 +60,12 @@ export const syncInitConfig = {
     "driver",
     "How to reach the target: exec (the installed vendor CLI; default when the preset has one; the only driver for github-actions) or http (the vendor API with a token stored in maruhi; the only driver for netlify)",
   ),
-  env: singleValuedAs("env", "maruhi environment ID to copy from (required)", EnvironmentIdSchema),
-  receipts: singleValuedAs(
+  env: environmentIdFlag("env", "maruhi environment ID to copy from (required)"),
+  receipts: environmentIdFlag(
     "receipts",
     "maruhi environment ID that stores the receipts (required; create it with `maruhi env create`)",
-    EnvironmentIdSchema,
   ),
-  project: singleValuedAs("project", "Project ID to pin the config to (optional)", ProjectIdSchema),
+  project: projectIdFlag("project", "Project ID to pin the config to (optional)"),
   variables: singleValued("variables", 'Comma-separated variable names to copy (default: "all")'),
   exclude: singleValued(
     "exclude",
@@ -83,10 +83,9 @@ export const syncInitConfig = {
     "command",
     "exec driver: path of the installed vendor CLI (default: on PATH)",
   ),
-  "token-env": singleValuedAs(
+  "token-env": environmentIdFlag(
     "token-env",
     "http driver: maruhi environment ID that holds the vendor's token",
-    EnvironmentIdSchema,
   ),
   "token-name": singleValued(
     "token-name",
