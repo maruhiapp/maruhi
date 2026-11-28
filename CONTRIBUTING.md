@@ -32,9 +32,10 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 ### Tests
 
 - `bun run test` runs the unit and integration suites of every package (server tests run in workerd through `@cloudflare/vitest-plugin`)
-- It does **not** run the end-to-end suites of `apps/web` and `apps/site`. They need a build first and start their own `cf dev`; CI runs them as separate steps:
+- It does **not** run the end-to-end suites of `apps/web`, `apps/site` and `apps/cli`. They need a build first and start their own `cf dev`; CI runs them as separate steps:
   - `bun run --filter @maruhi/web build && bun run --filter @maruhi/web e2e`
   - `bun run --filter @maruhi/site build && bun run --filter @maruhi/site e2e`
+  - `bun run --filter @maruhi/web build && bun run --filter @maruhi/cli e2e` (the CLI against the server under `cf dev`, which serves the web build; run it apart from the web e2e, as both start `cf dev` in `apps/server`)
 - To run one package or one file: `cd apps/cli && vp test run test/push-create.test.ts`
 
 For development rules, see [CLAUDE.md](CLAUDE.md) and [docs/adr/](docs/adr/). In particular:

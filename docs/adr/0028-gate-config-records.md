@@ -90,6 +90,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L572: e2e is a separate group after the dry-runs: 8b/8c's cf deploy builds and step 9's cf dev both work in apps/server and must never overlap
 - L585: Site e2e contract: every request same-origin, zero CSP violations, self-hosted fonts, /docs reachable, trailing-slash/404 behavior
 - L592: Crypto's workerd/browser runs are their own step because they need out-of-build dependencies the root vitest projects do not pick up
+- Added 2026-11-28 (after the audit; no base line): step 9c, the CLI e2e, runs after the e2e group and not inside it: it starts its own `cf dev` in apps/server, and two cf processes there must not overlap (the rule that keeps step 9 apart from 8b/8c). It needs the web build of step 8, which the server config serves
 
 ### `.github/workflows/english-pr.yml`
 
@@ -118,6 +119,14 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 
 - L4: tsconfig: the DOM lib is needed for the WebCrypto types to import @maruhi/crypto sources as types; Bun-specific APIs come from @types/bun (ADR-0004: the CLI may use Bun).
 - L8: resolveJsonModule is on because package.json is the single source of truth for the version, imported by cli.ts.
+
+### `apps/cli/vitest.config.ts`
+
+- Added 2026-11-28 (after the audit; no base line): the CLI suite excludes `test/e2e.test.ts`. That file needs the web build and starts its own `cf dev`, so it has its own config and CI step, and the suite on the root vitest projects stays runnable without a build.
+
+### `apps/cli/vitest.e2e.config.ts`
+
+- Added 2026-11-28 (after the audit; no base line): the CLI e2e config is not on the root vitest projects, like the web and site e2e configs: the server it boots serves the web build (`apps/web/dist/public`). It is a second config beside `vitest.config.ts` because that name is the CLI suite's on the root projects.
 
 ### `apps/site/astro.config.ts`
 
