@@ -1,4 +1,4 @@
-import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema } from "@maruhi/core";
+import { EnvironmentIdSchema, ProjectIdSchema, UserIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Effect, Schema } from "effect";
 import { Argument, CliError as EffectCliError, Flag, Param } from "effect/cli";
 
@@ -8,7 +8,7 @@ import { RUN_COMMAND_REQUIRED } from "../run.ts";
 const nonBlank = Schema.isPattern(/\S/, { message: NON_BLANK_MESSAGE });
 export const NonBlank = Schema.String.check(nonBlank);
 
-export const NonBlankUserId = UserIdSchema.check(nonBlank);
+const NonBlankUserId = UserIdSchema.check(nonBlank);
 
 export function singleValued(name: string, description: string) {
   return Flag.String(name).pipe(
@@ -19,7 +19,7 @@ export function singleValued(name: string, description: string) {
   );
 }
 
-export function singleValuedAs<A>(
+function singleValuedAs<A>(
   name: string,
   description: string,
   schema: Schema.ConstraintCodec<A, string>,
@@ -31,6 +31,36 @@ export function singleValuedAs<A>(
     Flag.map((values) => values[0]),
   );
 }
+
+export const projectIdFlag = (name: string, description: string) =>
+  singleValuedAs(name, description, ProjectIdSchema);
+
+export const environmentIdFlag = (name: string, description: string) =>
+  singleValuedAs(name, description, EnvironmentIdSchema);
+
+export const variableIdFlag = (name: string, description: string) =>
+  singleValuedAs(name, description, VariableIdSchema);
+
+export const userIdFlag = (name: string, description: string) =>
+  singleValuedAs(name, description, NonBlankUserId);
+
+export const environmentIdArgument = (name: string, description: string) =>
+  Argument.String(name).pipe(
+    Argument.withDescription(description),
+    Argument.withSchema(EnvironmentIdSchema),
+  );
+
+export const variableIdArgument = (name: string, description: string) =>
+  Argument.String(name).pipe(
+    Argument.withDescription(description),
+    Argument.withSchema(VariableIdSchema),
+  );
+
+export const userIdArgument = (name: string, description: string) =>
+  Argument.String(name).pipe(
+    Argument.withDescription(description),
+    Argument.withSchema(NonBlankUserId),
+  );
 
 export function singleFlag(name: string, description: string) {
   return Flag.Boolean(name).pipe(
@@ -51,20 +81,12 @@ export function specOf(config: Readonly<Record<string, Param.Any>>): CommandSpec
 
 export const commonFlags = () => ({
   ...projectFlags(),
-  env: singleValuedAs(
-    "env",
-    "Environment ID (default: the `defaultEnvironment` setting)",
-    EnvironmentIdSchema,
-  ),
+  env: environmentIdFlag("env", "Environment ID (default: the `defaultEnvironment` setting)"),
 });
 
 export const projectFlags = () => ({
   server: singleValued("server", "Server URL (defaults to config server)"),
-  project: singleValuedAs(
-    "project",
-    "Project ID (default: the `defaultProject` setting)",
-    ProjectIdSchema,
-  ),
+  project: projectIdFlag("project", "Project ID (default: the `defaultProject` setting)"),
 });
 
 export const serverOnlyFlags = () => ({

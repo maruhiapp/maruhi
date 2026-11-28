@@ -1,13 +1,13 @@
-import { decodeProjectId, isProjectId, ProjectIdSchema } from "@maruhi/core";
+import { decodeProjectId, isProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import {
   commonFlags,
+  projectIdFlag,
   runCommandArgument,
   singleFlag,
   singleValued,
-  singleValuedAs,
 } from "../commands/flags.ts";
 import { brokeredRun } from "../commands/pull-run.ts";
 import { commandAfterTerminator } from "../commands/shared.ts";
@@ -49,10 +49,9 @@ export const proxyAcceptConfig = {
     "config",
     `Path to the proxy config to accept (default: ${DEFAULT_PROXY_CONFIG_PATH})`,
   ),
-  project: singleValuedAs(
+  project: projectIdFlag(
     "project",
     "The project the config is for (default: the config's `project`, else the default project)",
-    ProjectIdSchema,
   ),
 };
 /** @public */

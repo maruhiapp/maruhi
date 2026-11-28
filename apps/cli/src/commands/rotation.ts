@@ -1,4 +1,3 @@
-import { EnvironmentIdSchema, VariableIdSchema } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -7,11 +6,12 @@ import { logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import {
-  NonBlank,
+  environmentIdFlag,
   invalidFlagCombination,
+  NonBlank,
   projectFlags,
   singleFlag,
-  singleValuedAs,
+  variableIdArgument,
 } from "./flags.ts";
 import { openEnvironment, openMetadataProject } from "./lazy.ts";
 import { proposeCheckpointRefresh } from "./shared.ts";
@@ -41,15 +41,12 @@ export const rotationListConfig = {
 
 export const rotationDismissConfig = {
   ...projectFlags(),
-  env: singleValuedAs(
+  env: environmentIdFlag(
     "env",
     "Environment ID of the flag to dismiss (with --all, narrows the dismissal to that environment)",
-    EnvironmentIdSchema,
   ),
   all: singleFlag("all", "Dismiss every currently-active flag (an explicit acceptance of risk)"),
-  variable: Argument.String("variable").pipe(
-    Argument.withDescription("Variable ID to dismiss (omit with --all)"),
-    Argument.withSchema(VariableIdSchema),
+  variable: variableIdArgument("variable", "Variable ID to dismiss (omit with --all)").pipe(
     Argument.atMost(1),
     Argument.map((values) => values[0]),
   ),
@@ -57,7 +54,7 @@ export const rotationDismissConfig = {
 
 export const rotationProposalsConfig = {
   ...projectFlags(),
-  env: singleValuedAs("env", "Only the proposals of this environment", EnvironmentIdSchema),
+  env: environmentIdFlag("env", "Only the proposals of this environment"),
 };
 
 export const rotationAcceptConfig = {

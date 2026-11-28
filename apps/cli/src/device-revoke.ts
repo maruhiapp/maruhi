@@ -1,5 +1,4 @@
 import {
-  decodeUserId,
   type EnvironmentId,
   type KeyFingerprintHex,
   type ProjectId,
@@ -138,13 +137,13 @@ export const deviceRevokeOp = Effect.fn("device-revoke.deviceRevokeOp")(function
   readonly session: CliSession;
   readonly client: MaruhiClient;
   readonly refs: readonly string[];
-  readonly user: string | undefined;
+  readonly user: UserId | undefined;
   readonly project: ProjectId | undefined;
   readonly yes: boolean;
   readonly revokeToken: boolean;
 }): Effect.fn.Return<DeviceRevokeSummary, CliError, CliServices> {
   const io = yield* CliIo;
-  const targetUserId = input.user === undefined ? input.session.userId : decodeUserId(input.user);
+  const targetUserId = input.user ?? input.session.userId;
   const self = targetUserId === input.session.userId;
   const masterKeys = yield* loadMasterKeys(input.session);
   const { registry, refs, reserveFps } = yield* prepareRevokeRefs({

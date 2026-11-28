@@ -5,7 +5,7 @@ import { Argument, Command } from "effect/cli";
 
 import {
   NonBlank,
-  NonBlankUserId,
+  userIdArgument,
   projectFlags,
   proposalFlags,
   rejectCombinedScopeFlags,
@@ -69,10 +69,7 @@ export const memberAddConfig = {
 };
 
 const memberTargetArgument = () =>
-  Argument.String("user-id").pipe(
-    Argument.withDescription("Target user ID (see `maruhi member list`)"),
-    Argument.withSchema(NonBlankUserId),
-  );
+  userIdArgument("user-id", "Target user ID (see `maruhi member list`)");
 
 /** @public */
 export const memberRemoveConfig = {

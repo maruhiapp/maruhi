@@ -1,8 +1,9 @@
-import { type EnvironmentId, EnvironmentIdSchema } from "@maruhi/core";
+import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
 import {
+  environmentIdArgument,
   invalidFlagCombination,
   NonBlank,
   projectFlags,
@@ -29,12 +30,6 @@ import {
   advanceReceiptsAfterRotation,
   checkRotateConfigProject,
 } from "../sync.package/index.ts";
-
-const environmentIdArgument = (name: string, description: string) =>
-  Argument.String(name).pipe(
-    Argument.withDescription(description),
-    Argument.withSchema(EnvironmentIdSchema),
-  );
 
 /** @public */
 export const envCreateConfig = {
