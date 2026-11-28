@@ -1,3 +1,4 @@
+import { testEnvironmentId, testUserId } from "@maruhi/test-kit";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -13,7 +14,6 @@ import {
   PROJECT_DO_TABLES,
   readProjectDoSchemaVersion,
 } from "../src/do/do-schema.ts";
-import { testEnvironmentId, testUserId } from "./support/data-crypto.ts";
 
 async function withStorage<T>(body: (storage: DurableObjectStorage) => T): Promise<T> {
   const stub = env.PROJECT_CHAIN.get(env.PROJECT_CHAIN.idFromName("do-schema-migrations-test"));

@@ -1,8 +1,8 @@
+import { encryptValue, testEnvironmentId, testProjectId, testVariableId } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
-import { encryptValue, vectorKeyOf } from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -437,18 +437,17 @@ describe("max age (CRYPTO_SPEC §4.2 layout v3, PF6 R9)", () => {
       status: "active",
       schema,
     });
-    const value = await encryptValue(
+    const value = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 1,
-      },
-      "postgres://alpha",
-      { writerUserId: MEMBER, head: fixture.head },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 1,
+      plaintext: "postgres://alpha",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+    });
     const { manifest, record } = await manifestForStatement(statement, MEMBER);
     const created = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement,

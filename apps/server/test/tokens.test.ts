@@ -1,3 +1,4 @@
+import { testProjectId } from "@maruhi/test-kit";
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -11,7 +12,6 @@ import {
   resetAuthDb,
   sessionHeaders,
 } from "./support/auth.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = "__Host-maruhi_session";

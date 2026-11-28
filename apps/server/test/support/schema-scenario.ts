@@ -1,5 +1,6 @@
-import { encryptValue } from "./data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./data-crypto.ts";
+import { encryptValue, testEnvironmentId, testProjectId, testVariableId } from "@maruhi/test-kit";
+
+import { identityOf } from "./data-crypto.ts";
 import { MEMBER, projectId, requestJson } from "./data-fixture.ts";
 import {
   ENV,
@@ -26,18 +27,17 @@ export async function createVariableV3Request(input: {
     status: "active",
     ...(input.schema === undefined ? {} : { schema: input.schema }),
   });
-  const value = await encryptValue(
-    input.dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: 1,
-      variableId: testVariableId(input.variableId),
-      version: 1,
-    },
-    input.plaintext,
-    { writerUserId: actorUserId, head: fixture.head },
-  );
+  const value = await encryptValue({
+    dek: input.dek,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: 1,
+    variableId: testVariableId(input.variableId),
+    version: 1,
+    plaintext: input.plaintext,
+    writer: identityOf(actorUserId),
+    head: fixture.head,
+  });
   const { manifest, record } = await manifestForStatement(statement, actorUserId);
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(actorUserId), {
     statement,

@@ -1,3 +1,4 @@
+import { testProjectId } from "@maruhi/test-kit";
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -5,7 +6,6 @@ import { ensureProjectDoTables } from "../src/do/do-schema.ts";
 import { PROJECT_LIST_PAGE_SIZE } from "../src/policy.ts";
 import { BASE, bearer, cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
 import { vectorKeyOf } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   MEMBER,

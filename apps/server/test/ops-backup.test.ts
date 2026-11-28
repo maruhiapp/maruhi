@@ -1,3 +1,4 @@
+import { testProjectId } from "@maruhi/test-kit";
 import {
   createExecutionContext,
   createScheduledController,
@@ -17,7 +18,6 @@ import { runBackupSweep } from "../src/ops/ops-backup.ts";
 import { OPS_BACKUP_MAX_BYTES, OPS_HOURLY_CRON } from "../src/ops/ops-policy.ts";
 import { ServerLoggerLive } from "../src/server-logger.ts";
 import { seedProjectActivity } from "./support/audit-read-scenario.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 import { OWNER, projectId, READER, requestJson } from "./support/data-fixture.ts";
 import { ENV, registerDataScenario, token } from "./support/data-scenario.ts";
 import { evictProjectDo, queryProjectDo, resetProjectDo } from "./support/project-do.ts";

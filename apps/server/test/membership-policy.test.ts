@@ -1,5 +1,6 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import { signEntryAt } from "@maruhi/test-kit";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -12,7 +13,7 @@ import {
 } from "../src/policy.ts";
 import { BASE, JSON_HEADERS } from "./support/auth.ts";
 import { vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
-import { signEntryAt } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   appendEntry,
   initChain,
@@ -119,7 +120,7 @@ describe("admission policy (§6.4 size limits)", () => {
     const { entry } = await signEntryAt({
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
-      actorUserId: "user-owner-0001",
+      actor: identityOf("user-owner-0001"),
       operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
     const response = await appendEntry(vectorProjectId, entry2.entry_hash_hex, entry);

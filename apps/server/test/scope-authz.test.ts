@@ -1,31 +1,32 @@
 import type { ChainOperation } from "@maruhi/crypto";
+import { generateDek } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
+import {
+  addMemberOp,
+  changeRoleOp,
+  checkpointOp,
+  createVariableStatement,
+  encryptValue,
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
+  signEntryAt,
+  signManifest,
+  signMetaStatement,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valuesDigestOf,
+  valueSignedBytesHashOf,
+  type WireVariableMetaStatement,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
-import {
-  addMemberOperation,
-  changeRoleOperation,
-  checkpointOperation,
-  commitmentOf,
-  createVariableStatement,
-  encryptValue,
-  makeDek,
-  manifestSignedBytesHashOf,
-  metaSignedBytesHashOf,
-  signEntryAt,
-  signEnvManifestAs,
-  signMetaStatementAs,
-  valueSignedBytesHashOf,
-  valuesDigestOf,
-  vectorKeyOf,
-  wrapDekForAll,
-  wrapDekTo,
-  type WireEncryptedPayload,
-  type WireVariableMetaStatement,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -74,7 +75,7 @@ async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array
   const envDek = await createEnvironmentOk(fixture, ENV, "App");
   const otherDek = await createEnvironmentOk(fixture, OTHER, "Other");
   await seedMemberToken(fixture, DEV, 9010);
-  await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [ENV]));
+  await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", [ENV]));
   return { envDek, otherDek };
 }
 
@@ -85,20 +86,19 @@ async function createVariableAs(input: {
   readonly variableId: string;
   readonly name: string;
 }): Promise<{ value: WireEncryptedPayload; statement: WireVariableMetaStatement }> {
-  const value = await encryptValue(
-    input.dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(input.environmentId),
-      epoch: 1,
-      variableId: testVariableId(input.variableId),
-      version: 1,
-    },
-    `${input.name}-plaintext`,
-    { writerUserId: input.writer, head: fixture.head },
-  );
+  const value = await encryptValue({
+    dek: input.dek,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(input.environmentId),
+    epoch: 1,
+    variableId: testVariableId(input.variableId),
+    version: 1,
+    plaintext: `${input.name}-plaintext`,
+    writer: identityOf(input.writer),
+    head: fixture.head,
+  });
   const statement = await createVariableStatement({
-    authorUserId: input.writer,
+    author: identityOf(input.writer),
     projectId,
     environmentId: input.environmentId,
     variableId: input.variableId,
@@ -130,7 +130,7 @@ async function appendRaw(actorUserId: string, operation: ChainOperation): Promis
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId,
+    actor: identityOf(actorUserId),
     operation,
   });
   return SELF.fetch(`${BASE}/projects/${projectId}/chain/entries`, {
@@ -145,7 +145,7 @@ async function checkpointFor(environmentId: string, epoch: number): Promise<Chai
   if (last === undefined) {
     throw new Error(`no recorded manifest for ${environmentId}`);
   }
-  return checkpointOperation({
+  return checkpointOp({
     environmentId,
     epoch,
     manifestVersion: last.manifest.manifestVersion,
@@ -259,9 +259,9 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
             projectId,
             environmentId: OTHER,
             epoch: 1,
-            dek: makeDek(),
-            recipientUserId: DEV,
-            signerUserId: DEV,
+            dek: generateDek(),
+            recipient: identityOf(DEV),
+            signer: identityOf(DEV),
           }),
         ],
       }),
@@ -278,7 +278,7 @@ describe("scope authorization — writes (§12-3 rows 3-5)", () => {
   it("environment deletion and DEK-wrap deletion require admin × environment ∈ scope (403 outside for a listed admin)", async () => {
     await setupListed();
     await seedMemberToken(fixture, DEVADMIN, 9011);
-    await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [ENV]));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEVADMIN), "admin", [ENV]));
     await expectScopeForbidden(await deleteEnvironmentRequest(fixture, OTHER, DEVADMIN));
     await expectScopeForbidden(
       await requestJson("DELETE", `/environments/${OTHER}/deks`, token(DEVADMIN), {
@@ -323,7 +323,7 @@ describe("scope authorization — paths involving a chain op (§9-2 / §12-3 row
         projectId,
         environmentId: "env-new-0003",
         epoch: 1,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: ALL_MEMBERS,
         signerUserId: DEV,
       }),
@@ -339,7 +339,7 @@ describe("scope authorization — paths involving a chain op (§9-2 / §12-3 row
       actorUserId: DEV,
     });
     await expectScopeForbidden(otherRotate);
-    const dek = makeDek();
+    const dek = generateDek();
     const rotated = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -351,7 +351,7 @@ describe("scope authorization — paths involving a chain op (§9-2 / §12-3 row
         recipientUserIds: [...ALL_MEMBERS, DEV],
         signerUserId: DEV,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek),
       actorUserId: DEV,
     });
     expect(rotated.status).toBe(200);
@@ -375,24 +375,20 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       name: "OTHER_SECRET",
     });
     const oldHead = { ...fixture.head };
-    await appendOperation(fixture, OWNER, changeRoleOperation(DEV, "member", [ENV, OTHER]));
+    await appendOperation(fixture, OWNER, changeRoleOp({ userId: DEV }, "member", [ENV, OTHER]));
 
-    const stale = await encryptValue(
-      otherDek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(OTHER),
-        epoch: 1,
-        variableId: testVariableId("var-o"),
-        version: 2,
-      },
-      "stale-head",
-      {
-        writerUserId: DEV,
-        head: oldHead,
-        prevValueSigHashHex: await valueSignedBytesHashOf(created.value, OWNER),
-      },
-    );
+    const stale = await encryptValue({
+      dek: otherDek,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(OTHER),
+      epoch: 1,
+      variableId: testVariableId("var-o"),
+      version: 2,
+      plaintext: "stale-head",
+      writer: identityOf(DEV),
+      head: oldHead,
+      prevValueSigHashHex: await valueSignedBytesHashOf(created.value, OWNER),
+    });
     const staleValue = await requestJson(
       "POST",
       `/environments/${OTHER}/variables/var-o/versions`,
@@ -404,7 +400,7 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       "chain-head-state-mismatch",
     );
 
-    const staleStatement = await signMetaStatementAs(DEV, projectId, {
+    const staleStatement = await signMetaStatement(identityOf(DEV), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: OTHER,
       variableId: "var-o",
@@ -436,7 +432,7 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       "chain-head-state-mismatch",
     );
 
-    const freshStatement = await signMetaStatementAs(DEV, projectId, {
+    const freshStatement = await signMetaStatement(identityOf(DEV), projectId, {
       ...staleStatement,
       chainHeadHashHex: fixture.head.hashHex,
       chainHeadSeq: fixture.head.seq,
@@ -452,7 +448,7 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       },
     });
     const { signatureHex: _signatureHex, ...unsignedManifestBody } = baseManifest;
-    const staleManifest = await signEnvManifestAs(DEV, projectId, {
+    const staleManifest = await signManifest(identityOf(DEV), projectId, {
       ...unsignedManifestBody,
       chainHeadHashHex: oldHead.hashHex,
       chainHeadSeq: oldHead.seq,
@@ -468,22 +464,18 @@ describe("the scope axis of the dual judgment at authorization time (§12-3 / CR
       "chain-head-state-mismatch",
     );
 
-    const fresh = await encryptValue(
-      otherDek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(OTHER),
-        epoch: 1,
-        variableId: testVariableId("var-o"),
-        version: 2,
-      },
-      "fresh-head",
-      {
-        writerUserId: DEV,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(created.value, OWNER),
-      },
-    );
+    const fresh = await encryptValue({
+      dek: otherDek,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(OTHER),
+      epoch: 1,
+      variableId: testVariableId("var-o"),
+      version: 2,
+      plaintext: "fresh-head",
+      writer: identityOf(DEV),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(created.value, OWNER),
+    });
     const freshValue = await requestJson(
       "POST",
       `/environments/${OTHER}/variables/var-o/versions`,

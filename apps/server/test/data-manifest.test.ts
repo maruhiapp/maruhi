@@ -1,20 +1,20 @@
 import type { ChainEntry } from "@maruhi/crypto";
+import { generateDek } from "@maruhi/crypto";
+import {
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
+  signManifest,
+  signMetaStatement,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testVariableId,
+  variablesDigestOf,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { DekWrapInput } from "../src/data.package/index.ts";
 import { toManifestInput, toMetaStatementInput } from "../src/data.package/index.ts";
-import {
-  commitmentOf,
-  digestOf,
-  makeDek,
-  manifestSignedBytesHashOf,
-  metaSignedBytesHashOf,
-  signEnvManifestAs,
-  signMetaStatementAs,
-  wrapDekForAll,
-  testVariableId,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentComposite,
@@ -83,7 +83,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         environment_id: ENV,
         manifest_version: 1,
         epoch: 1,
-        variables_digest_hex: await digestOf([]),
+        variables_digest_hex: await variablesDigestOf([]),
         issuer_user_id: OWNER,
       },
     ]);
@@ -104,7 +104,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     expect(recorded.entries).toEqual([
       expect.objectContaining({ variableId: VAR, status: "deleted", metaVersion: 3 }),
     ]);
-    expect(rows[0]?.["variables_digest_hex"]).toBe(await digestOf(recorded.entries));
+    expect(rows[0]?.["variables_digest_hex"]).toBe(await variablesDigestOf(recorded.entries));
   });
 
   it("distributes the latest manifest with issuer info in both pull modes (§12-7)", async () => {
@@ -198,7 +198,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
     });
     const recorded = fixture.envStatements.get(ENV);
     if (recorded === undefined) throw new Error("missing recorded env statement");
-    const renameStatement = await signMetaStatementAs(MEMBER, projectId, {
+    const renameStatement = await signMetaStatement(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       name: "App2",
@@ -223,12 +223,12 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
   it("rejects a manifest whose epoch is not current at the declared head (422 manifest-epoch-mismatch — §12-5 (4))", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
-    const staleEpoch = await signEnvManifestAs(MEMBER, projectId, {
+    const staleEpoch = await signManifest(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
       epoch: 2,
       manifestVersion: 2,
-      variablesDigestHex: await digestOf([
+      variablesDigestHex: await variablesDigestOf([
         {
           variableId: VAR,
           status: "active",
@@ -267,12 +267,12 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       status: "active",
       authorUserId: MEMBER,
     });
-    const stale = await signEnvManifestAs(MEMBER, projectId, {
+    const stale = await signManifest(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
       epoch: 1,
       manifestVersion: 4,
-      variablesDigestHex: await digestOf([]),
+      variablesDigestHex: await variablesDigestOf([]),
       envMetaVersion: 1,
       envMetaSigHashHex: (await envMetaOf(fixture, ENV)).sigHashHex,
       prevManifestSigHashHex: "cd".repeat(32),
@@ -342,7 +342,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         projectId,
         environmentId: ENV,
         epoch: 2,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
@@ -362,7 +362,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         projectId,
         environmentId: ENV,
         epoch: 3,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
@@ -399,12 +399,12 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       deks: await wrapsFor(otherEnv, ALL_MEMBERS),
       dekCommitmentHex: "ab".repeat(32),
       statement,
-      manifest: await signEnvManifestAs(OWNER, projectId, {
+      manifest: await signManifest(identityOf(OWNER), projectId, {
         suite: "maruhi/v1",
         environmentId: otherEnv,
         epoch: 1,
         manifestVersion: 1,
-        variablesDigestHex: await digestOf([]),
+        variablesDigestHex: await variablesDigestOf([]),
         envMetaVersion: statement.metaVersion,
         envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
         prevManifestSigHashHex: "",
@@ -422,7 +422,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         projectId,
         environmentId: ENV,
         epoch: 2,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
@@ -515,7 +515,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       ),
     ).rejects.toThrow(missingRow);
 
-    const nextDek = makeDek();
+    const nextDek = generateDek();
     const rotation = {
       environmentId: ENV,
       newEpoch: 2,
@@ -527,7 +527,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, nextDek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, nextDek),
       manifest: await nextEnvironmentManifest(fixture, {
         environmentId: ENV,
         epoch: 2,
@@ -579,7 +579,7 @@ describe("composite acceptance of the environment manifest (§12-5 = CRYPTO_SPEC
       status: "active",
       authorUserId: MEMBER,
     });
-    const staleV1 = await signEnvManifestAs(MEMBER, projectId, {
+    const staleV1 = await signManifest(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
       epoch: 1,

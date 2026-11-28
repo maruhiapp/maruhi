@@ -1,4 +1,5 @@
 import { auditReadVariablesOf } from "@maruhi/core";
+import { testProjectId } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { isClass1Event } from "../src/audit-store-query.ts";
@@ -8,7 +9,6 @@ import {
   scopedToken,
   seedProjectActivity,
 } from "./support/audit-read-scenario.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   MEMBER,

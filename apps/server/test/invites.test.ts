@@ -1,3 +1,4 @@
+import { testProjectId } from "@maruhi/test-kit";
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -7,7 +8,6 @@ import {
   MAX_PENDING_INVITES_PER_PROJECT,
 } from "../src/db.package/index.ts";
 import { BASE, bearer, cliToken, JSON_HEADERS } from "./support/auth.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 import {
   appendOperation,
   MEMBER,

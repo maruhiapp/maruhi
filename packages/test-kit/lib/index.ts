@@ -20,9 +20,7 @@ export {
   rotateEpochOp,
   setApprovalPolicyOp,
   signEntryAt,
-  type SignedEntry,
   type TestRole,
-  type TestScope,
   withdrawOp,
 } from "./chain.ts";
 export {
@@ -46,7 +44,6 @@ export {
   distributedVariableStatement,
   metaSignedBytesHashOf,
   signMetaStatement,
-  type UnsignedMetaStatement,
   variablesDigestOf,
   type WireDigestEntry,
 } from "./statements.ts";
@@ -72,13 +69,7 @@ export type {
   WireVariableMetaStatement,
   WireWrappedDek,
 } from "./wire.ts";
-export {
-  distributedWrapOf,
-  signWrap,
-  type UnsignedWrap,
-  verifyWrapSignature,
-  wrapDekTo,
-} from "./wraps.ts";
+export { distributedWrapOf, signWrap, verifyWrapSignature, wrapDekTo } from "./wraps.ts";
 export {
   type BuiltChain,
   hexBytes,

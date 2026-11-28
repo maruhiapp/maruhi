@@ -1,3 +1,5 @@
+import { generateDek } from "@maruhi/crypto";
+import { signEntryAt, testDekCommitmentHex } from "@maruhi/test-kit";
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -5,7 +7,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { AuditEventInput, AuditHeadExtensionOutcome } from "../src/audit-store.ts";
 import { makeAuditStore, MAX_HEAD_EXTENSION_CHUNKS_PER_CALL } from "../src/audit-store.ts";
 import { ensureProjectDoTables } from "../src/do/do-schema.ts";
-import { commitmentOf, makeDek, signEntryAt, wrapDekForAll } from "./support/data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -121,7 +123,7 @@ async function sendAttestedCheckpoint(
   const { entry, hash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId: OWNER,
+    actor: identityOf(OWNER),
     operation: { op: "checkpoint", payload: { environments: [], auditHeadHashHex } },
   });
   const response = await requestJson("POST", "/chain/entries", token(OWNER), {
@@ -162,7 +164,7 @@ describe("bounded extension of the boundary composite (rotate)'s non-empty notar
     expect(headResponse.status).toBe(200);
     const attested = ((await headResponse.json()) as { auditHeadHashHex: string }).auditHeadHashHex;
     await seedAuditBacklog(ROWS_PER_CALL + 10);
-    const next = makeDek();
+    const next = generateDek();
     const send = async (): Promise<Response> =>
       rotateEnvironmentComposite(fixture, {
         environmentId: ENV,
@@ -176,7 +178,7 @@ describe("bounded extension of the boundary composite (rotate)'s non-empty notar
           recipientUserIds: ALL_MEMBERS,
           signerUserId: OWNER,
         }),
-        dekCommitmentHex: await commitmentOf(projectId, ENV, 2, next),
+        dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, next),
         checkpointAuditHeadHashHex: attested,
       });
     const first = await send();

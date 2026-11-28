@@ -1,3 +1,4 @@
+import { testProjectId } from "@maruhi/test-kit";
 import { env, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -15,7 +16,6 @@ import {
   resetAuthDb,
   sessionHeaders,
 } from "./support/auth.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 
 beforeEach(async () => {
   await resetAuthDb();

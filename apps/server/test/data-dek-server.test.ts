@@ -4,24 +4,22 @@ import {
   encodeHex,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
+  generateDek,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import {
+  hexBytes,
+  signEntryAt,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
-import {
-  commitmentOf,
-  hexBytes,
-  makeDek,
-  signEntryAt,
-  vectorKeyOf,
-  wrapDekForAll,
-  wrapDekTo,
-  wrapDekToServer,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -69,14 +67,14 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     readonly signerUserId?: string;
     readonly environmentId?: string;
   }) {
-    return wrapDekToServer({
+    return wrapDekTo({
       projectId,
       environmentId: input.environmentId ?? ENV,
       epoch: input.epoch,
       dek: input.dek,
-      serverKeyFingerprintHex: input.fpHex,
-      serverEncPubHex: input.encPubHex ?? SERVER_ENC_PUB_HEX,
-      signerUserId: input.signerUserId ?? OWNER,
+      recipient: { userId: input.fpHex, encPubHex: input.encPubHex ?? SERVER_ENC_PUB_HEX },
+      recipientClass: "server",
+      signer: identityOf(input.signerUserId ?? OWNER),
     });
   }
 
@@ -193,7 +191,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
   it("requires the server key in the composite complete set once granted (§12-4)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const fpHex = await grantServer([ENV]);
-    const dek2 = makeDek();
+    const dek2 = generateDek();
     const memberWraps = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -206,7 +204,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       environmentId: ENV,
       newEpoch: 2,
       deks: memberWraps,
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek2),
       actorUserId: MEMBER,
     });
     expect(missing.status).toBe(422);
@@ -220,7 +218,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
         ...memberWraps,
         await serverWrap({ epoch: 2, dek: dek2, fpHex, signerUserId: MEMBER }),
       ],
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek2),
       actorUserId: MEMBER,
     });
     expect(full.status).toBe(200);
@@ -246,7 +244,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       },
     });
 
-    const dek2 = makeDek();
+    const dek2 = generateDek();
     const memberWraps = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -260,9 +258,8 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
       environmentId: ENV,
       epoch: 2,
       dek: dek2,
-      recipientUserId: fpHex,
-      recipientEncPubHex: sockEncPubHex,
-      signerUserId: MEMBER,
+      recipient: { userId: fpHex, encPubHex: sockEncPubHex },
+      signer: identityOf(MEMBER),
     });
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
@@ -272,7 +269,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
         sockWrap,
         await serverWrap({ epoch: 2, dek: dek2, fpHex, signerUserId: MEMBER }),
       ],
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek2),
       actorUserId: MEMBER,
     });
     expect(response.status).toBe(200);
@@ -295,7 +292,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "add_member",
         payload: {
@@ -387,7 +384,7 @@ describe("recipient class server (AUTH_SPEC §12-6 / CRYPTO_SPEC §9)", () => {
 
     const fpHex = await grantServer([ENV]);
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
-      deks: [await serverWrap({ epoch: 1, dek: makeDek(), fpHex })],
+      deks: [await serverWrap({ epoch: 1, dek: generateDek(), fpHex })],
     });
     expect(registered.status).toBe(204);
     const reverse = await requestJson("DELETE", `/environments/${ENV}/deks`, token(OWNER), {

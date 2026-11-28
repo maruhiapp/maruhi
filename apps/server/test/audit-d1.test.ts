@@ -1,5 +1,6 @@
 import { decodeOrgId } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
+import { testProjectId } from "@maruhi/test-kit";
 import { env, SELF } from "cloudflare:test";
 import { Cause, Context, Effect, Exit } from "effect";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
@@ -27,7 +28,6 @@ import {
   STATE_COOKIE,
 } from "./support/auth.ts";
 import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 interface AuditRow {

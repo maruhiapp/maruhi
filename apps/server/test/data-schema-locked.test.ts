@@ -1,8 +1,8 @@
+import { encryptValue, testEnvironmentId, testProjectId, testVariableId } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_SCHEMA_DESCRIPTION_CODEPOINTS } from "../src/policy.ts";
-import { encryptValue } from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -40,18 +40,17 @@ describe("schema-locked (§12-11 — the one-time check at creation)", () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await setSchemaPolicyOk("locked", OWNER);
     const v1Statement = await variableStatementFor(MEMBER, VAR, "DATABASE_URL");
-    const v1Value = await encryptValue(
+    const v1Value = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 1,
-      },
-      "postgres://alpha",
-      { writerUserId: MEMBER, head: fixture.head },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 1,
+      plaintext: "postgres://alpha",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+    });
     const v1Bundle = await manifestForStatement(v1Statement, MEMBER);
     const v1Response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
       statement: v1Statement,

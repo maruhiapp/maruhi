@@ -10,6 +10,8 @@ import {
   schemaPolicyGroup,
   variablesGroup,
 } from "@maruhi/api-schema";
+import { generateDek } from "@maruhi/crypto";
+import { signEntryAt, testEnvironmentId, testProjectId, testVariableId } from "@maruhi/test-kit";
 import { Cause, Effect, Exit } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
 import { describe, expect, it } from "vite-plus/test";
@@ -25,9 +27,7 @@ import {
   MAX_VARIABLE_ROWS_PER_ENVIRONMENT,
 } from "../src/policy.ts";
 import { wrapRowsExceeded } from "../src/quotas.ts";
-import { makeDek, signEntryAt, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -96,7 +96,7 @@ describe("suite persistence and the wire (§12-2 / CRYPTO_SPEC §2 design princi
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "create_environment",
         payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
@@ -247,7 +247,7 @@ describe("quantity policy (the rest of §12-8: environment / variable / wrap cou
         projectId,
         environmentId: ENV,
         epoch: 2,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
@@ -340,7 +340,7 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "create_environment",
         payload: {
@@ -380,7 +380,7 @@ describe("judgment order and the Schema boundary (§12-3 / §12-2)", () => {
       const { entry } = await signEntryAt({
         seq: fixture.head.seq + 1,
         prevHashHex: fixture.head.hashHex,
-        actorUserId: OWNER,
+        actor: identityOf(OWNER),
         operation: {
           op: "create_environment",
           payload: { environmentId: testEnvironmentId(badId), dekCommitmentHex: "ab".repeat(32) },

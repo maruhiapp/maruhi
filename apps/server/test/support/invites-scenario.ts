@@ -20,13 +20,13 @@ import {
   SUITE_ID,
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
+import { hexBytes, testProjectId, testUserId } from "@maruhi/test-kit";
 import { env, SELF } from "cloudflare:test";
 import { Effect } from "effect";
 import { beforeEach, expect } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS } from "./auth.ts";
-import { hexBytes, vectorKeyOf } from "./data-crypto.ts";
-import { testProjectId, testUserId } from "./data-crypto.ts";
+import { vectorKeyOf } from "./data-crypto.ts";
 import type { DataFixture } from "./data-fixture.ts";
 import { OWNER, projectId, setupDataProject, tokenOf } from "./data-fixture.ts";
 

@@ -1,20 +1,23 @@
 import type { EncryptedPayload } from "@maruhi/api-schema";
-import { beforeEach, expect } from "vite-plus/test";
-
+import { generateDek } from "@maruhi/crypto";
 import type {
   WireEncryptedPayload,
   WireEnvironmentManifest,
   WireVariableMetaStatement,
-} from "./data-crypto.ts";
+} from "@maruhi/test-kit";
 import {
   createVariableStatement,
   encryptValue,
   metaSignedBytesHashOf,
-  signMetaStatementAs,
-  signValueAs,
-} from "./data-crypto.ts";
-import { makeDek, resetDeviceKeys, wrapDekForAll } from "./data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./data-crypto.ts";
+  signMetaStatement,
+  signValueAt,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+} from "@maruhi/test-kit";
+import { beforeEach, expect } from "vite-plus/test";
+
+import { identityOf, resetDeviceKeys, wrapDekForAll } from "./data-crypto.ts";
 import type { DataFixture, EnvManifestState } from "./data-fixture.ts";
 import {
   manifestForVariableOp,
@@ -76,7 +79,7 @@ export async function variableStatementFor(
   environmentId = ENV,
 ): Promise<WireVariableMetaStatement> {
   return createVariableStatement({
-    authorUserId,
+    author: identityOf(authorUserId),
     projectId,
     environmentId,
     variableId,
@@ -125,7 +128,7 @@ export async function nextVariableStatement(input: {
     last.statement,
     last.authorUserId,
   );
-  return signMetaStatementAs(input.authorUserId, projectId, {
+  return signMetaStatement(identityOf(input.authorUserId), projectId, {
     suite: "maruhi/v1" as const,
     environmentId: input.environmentId ?? ENV,
     variableId: input.variableId,
@@ -232,8 +235,8 @@ export async function fakePayload(
     readonly prevValueSigHashHex?: string;
   },
 ): Promise<EncryptedPayload> {
-  return (await signValueAs(
-    writerUserId,
+  return (await signValueAt(
+    identityOf(writerUserId),
     {
       suite: "maruhi/v1",
       aad: brandedAad(aad),
@@ -288,18 +291,17 @@ export async function createVariableOk(
   name: string,
   plaintext: string,
 ): Promise<WireEncryptedPayload> {
-  const value = await encryptValue(
+  const value = await encryptValue({
     dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: 1,
-      variableId: testVariableId(variableId),
-      version: 1,
-    },
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: 1,
+    variableId: testVariableId(variableId),
+    version: 1,
     plaintext,
-    { writerUserId: MEMBER, head: fixture.head },
-  );
+    writer: identityOf(MEMBER),
+    head: fixture.head,
+  });
   const statement = await variableStatementFor(MEMBER, variableId, name);
   const { manifest, record } = await manifestForStatement(statement, MEMBER);
   const response = await requestJson("POST", `/environments/${ENV}/variables`, token(MEMBER), {
@@ -322,7 +324,7 @@ export async function variableStatementV3For(input: {
   readonly schema?: Partial<WireSchemaFields>;
   readonly environmentId?: string;
 }): Promise<WireVariableMetaStatement> {
-  return signMetaStatementAs(input.authorUserId, projectId, {
+  return signMetaStatement(identityOf(input.authorUserId), projectId, {
     suite: "maruhi/v1" as const,
     environmentId: input.environmentId ?? ENV,
     variableId: input.variableId,
@@ -407,24 +409,20 @@ export async function activateVariableRequest(input: {
     authorUserId: input.actorUserId,
     v3: v3Fields(input.schema),
   });
-  const value = await encryptValue(
-    input.dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: input.epoch ?? 1,
-      variableId: testVariableId(input.variableId),
-      version: input.version ?? 1,
-    },
-    input.plaintext,
-    {
-      writerUserId: input.actorUserId,
-      head: fixture.head,
-      ...(input.prevValueSigHashHex === undefined
-        ? {}
-        : { prevValueSigHashHex: input.prevValueSigHashHex }),
-    },
-  );
+  const value = await encryptValue({
+    dek: input.dek,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: input.epoch ?? 1,
+    variableId: testVariableId(input.variableId),
+    version: input.version ?? 1,
+    plaintext: input.plaintext,
+    writer: identityOf(input.actorUserId),
+    head: fixture.head,
+    ...(input.prevValueSigHashHex === undefined
+      ? {}
+      : { prevValueSigHashHex: input.prevValueSigHashHex }),
+  });
   const { manifest, record } = await manifestForStatement(statement, input.actorUserId);
   const response = await requestJson(
     "POST",
@@ -459,7 +457,7 @@ export const wrapsFor = (
     projectId,
     environmentId,
     epoch,
-    dek: makeDek(),
+    dek: generateDek(),
     recipientUserIds: recipients,
     signerUserId,
   });

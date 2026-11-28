@@ -10,23 +10,21 @@ import {
   verifyChainWithHistory,
   verifyDistributedValue,
 } from "@maruhi/crypto";
-import { describe, expect, it } from "vite-plus/test";
-
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
 import {
   encryptValue,
   hexBytes,
   signEntryAt,
-  signValueAs,
-  valueSignedBytesHashOf,
-  vectorKeyOf,
-} from "./support/data-crypto.ts";
-import {
+  signValueAt,
   testEnvironmentId,
   testProjectId,
   testUserId,
   testVariableId,
-} from "./support/data-crypto.ts";
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -72,22 +70,18 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   it("rejects a value signed by someone other than the caller (422 signature-invalid)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    const ownerSigned = await encryptValue(
+    const ownerSigned = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 2,
-      },
-      "postgres://beta",
-      {
-        writerUserId: OWNER,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-      },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 2,
+      plaintext: "postgres://beta",
+      writer: identityOf(OWNER),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+    });
     const response = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -101,18 +95,17 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
 
   it("rejects creation with a tampered signature and writes nothing (no bypassing verification via the create path)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
-    const value = await encryptValue(
+    const value = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 1,
-      },
-      "postgres://alpha",
-      { writerUserId: MEMBER, head: fixture.head },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 1,
+      plaintext: "postgres://alpha",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+    });
     const flipped = `${value.signatureHex.slice(0, -2)}${
       value.signatureHex.endsWith("00") ? "01" : "00"
     }`;
@@ -142,8 +135,8 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
   it("rejects unknown declared heads (422 chain-head-unknown): hash mismatch and future seq", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    const mismatched = await signValueAs(
-      MEMBER,
+    const mismatched = await signValueAt(
+      identityOf(MEMBER),
       {
         suite: "maruhi/v1",
         aad: aadFor(1, 2),
@@ -164,8 +157,8 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     expect(hashMismatch.status).toBe(422);
     expect(((await hashMismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
 
-    const future = await signValueAs(
-      MEMBER,
+    const future = await signValueAt(
+      identityOf(MEMBER),
       {
         suite: "maruhi/v1",
         aad: aadFor(1, 2),
@@ -196,8 +189,8 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     const entries = ((await chain.json()) as { entries: { seq: number }[] }).entries;
     expect(entries.length).toBe(fixture.head.seq);
 
-    const beforeMembership = await signValueAs(
-      MEMBER,
+    const beforeMembership = await signValueAt(
+      identityOf(MEMBER),
       {
         suite: "maruhi/v1",
         aad: aadFor(1, 2),
@@ -220,8 +213,8 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
       "chain-head-state-mismatch",
     );
 
-    const beforeCreate = await signValueAs(
-      MEMBER,
+    const beforeCreate = await signValueAt(
+      identityOf(MEMBER),
       {
         suite: "maruhi/v1",
         aad: aadFor(1, 2),
@@ -432,7 +425,7 @@ describe("acceptance verification of value signatures (§12-5 = CRYPTO_SPEC §4.
     const rejoin = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "add_member",
         payload: {

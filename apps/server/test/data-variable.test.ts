@@ -1,6 +1,20 @@
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
+import type {
+  WireEncryptedPayload,
+  WireEnvironmentManifest,
+  WireVariableMetaStatement,
+} from "@maruhi/test-kit";
+import {
+  encryptValue,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+  unwrapAndDecrypt,
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -11,23 +25,7 @@ import {
 } from "../src/policy.ts";
 import { projectBytesExceeded } from "../src/quotas.ts";
 import { cliToken, loginSession, sessionHeaders } from "./support/auth.ts";
-import type {
-  WireEncryptedPayload,
-  WireEnvironmentManifest,
-  WireVariableMetaStatement,
-} from "./support/data-crypto.ts";
-import {
-  encryptValue,
-  unwrapAndDecrypt,
-  valueSignedBytesHashOf,
-  vectorKeyOf,
-} from "./support/data-crypto.ts";
-import {
-  testEnvironmentId,
-  testProjectId,
-  testUserId,
-  testVariableId,
-} from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   dataUrl,
@@ -108,7 +106,7 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     });
 
     const plaintext = await unwrapAndDecrypt({
-      recipientUserId: READER,
+      recipient: identityOf(READER),
       wrapped: wrappedDek,
       projectId,
       environmentId: ENV,
@@ -117,22 +115,18 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     expect(plaintext).toBe("postgres://alpha");
 
     const v1 = variable.value;
-    const v2 = await encryptValue(
+    const v2 = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 2,
-      },
-      "postgres://beta",
-      {
-        writerUserId: MEMBER,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-      },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 2,
+      plaintext: "postgres://beta",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+    });
     const push = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -149,7 +143,7 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
     if (latest === undefined || latestDek === undefined) throw new Error("missing pull data");
     expect(latest.value.aad.version).toBe(2);
     const decrypted = await unwrapAndDecrypt({
-      recipientUserId: READER,
+      recipient: identityOf(READER),
       wrapped: latestDek,
       projectId,
       environmentId: ENV,
@@ -267,18 +261,18 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
 
     const contenders = await Promise.all(
       Array.from({ length: 8 }, (_v, index) =>
-        encryptValue(
+        encryptValue({
           dek,
-          {
-            projectId: testProjectId(projectId),
-            environmentId: testEnvironmentId(ENV),
-            epoch: 1,
-            variableId: testVariableId(VAR),
-            version: 2,
-          },
-          `postgres://contender-${index}`,
-          { writerUserId: MEMBER, head: fixture.head, prevValueSigHashHex: prevHash },
-        ),
+          projectId: testProjectId(projectId),
+          environmentId: testEnvironmentId(ENV),
+          epoch: 1,
+          variableId: testVariableId(VAR),
+          version: 2,
+          plaintext: `postgres://contender-${index}`,
+          writer: identityOf(MEMBER),
+          head: fixture.head,
+          prevValueSigHashHex: prevHash,
+        }),
       ),
     );
     const responses = await Promise.all(
@@ -324,22 +318,18 @@ describe("variable push→pull→client-side decrypt (§12-5 / §12-7)", () => {
       ids.map(async (id) => {
         const v1 = firstVersions.get(id);
         if (v1 === undefined) throw new Error("missing first version");
-        return encryptValue(
+        return encryptValue({
           dek,
-          {
-            projectId: testProjectId(projectId),
-            environmentId: testEnvironmentId(ENV),
-            epoch: 1,
-            variableId: testVariableId(id),
-            version: 2,
-          },
-          `next-${id}`,
-          {
-            writerUserId: MEMBER,
-            head: fixture.head,
-            prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-          },
-        );
+          projectId: testProjectId(projectId),
+          environmentId: testEnvironmentId(ENV),
+          epoch: 1,
+          variableId: testVariableId(id),
+          version: 2,
+          plaintext: `next-${id}`,
+          writer: identityOf(MEMBER),
+          head: fixture.head,
+          prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+        });
       }),
     );
     const responses = await Promise.all(

@@ -1,7 +1,7 @@
+import { encryptValue, testEnvironmentId, testProjectId, testVariableId } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
-import { encryptValue } from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -226,18 +226,17 @@ describe("declared creation and activation (§12-5)", () => {
   it("a normal push against a declared is 422 activation-required", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await declareVariableOk({ variableId: VAR, name: "API_KEY" });
-    const value = await encryptValue(
+    const value = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 1,
-      },
-      "secret-value",
-      { writerUserId: MEMBER, head: fixture.head },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 1,
+      plaintext: "secret-value",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+    });
     const response = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -271,22 +270,18 @@ describe("declared creation and activation (§12-5)", () => {
     };
     expect(pulled.variables).toHaveLength(1);
     expect(pulled.declaredVariables).toBeUndefined();
-    const next = await encryptValue(
+    const next = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 2,
-      },
-      "rotated-value",
-      {
-        writerUserId: MEMBER,
-        head: fixture.head,
-        prevValueSigHashHex: await storedValueSigHash(VAR, 1),
-      },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 2,
+      plaintext: "rotated-value",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+      prevValueSigHashHex: await storedValueSigHash(VAR, 1),
+    });
     const push = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,

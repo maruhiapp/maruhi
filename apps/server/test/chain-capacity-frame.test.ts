@@ -1,5 +1,6 @@
 import type { ChainOperation } from "@maruhi/crypto";
 import { canonicalChainEntryBytes } from "@maruhi/crypto";
+import { rotateEpochOp, signEntryAt } from "@maruhi/test-kit";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -9,7 +10,7 @@ import {
   MAX_ENVIRONMENT_CIPHERTEXT_BYTES,
   MAX_VALUE_CIPHERTEXT_BYTES,
 } from "../src/policy.ts";
-import { rotateEpochOperation, signEntryAt } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -50,7 +51,7 @@ async function canonicalSizeAt(seq: number, operation: ChainOperation): Promise<
   const { entry } = await signEntryAt({
     seq,
     prevHashHex: "00".repeat(32),
-    actorUserId: OWNER,
+    actor: identityOf(OWNER),
     operation,
   });
   return canonicalChainEntryBytes(entry).length;
@@ -84,10 +85,7 @@ async function fillChainToCheckpointRoom(): Promise<void> {
   for (;;) {
     const seq = fixture.head.seq + 1;
     const left = MAX_CHAIN_TOTAL_CANONICAL_BYTES - used - (await checkpointSizeAt(seq + 1));
-    const bare = await canonicalSizeAt(
-      seq,
-      rotateEpochOperation(BLOAT_ENV, epoch + 1, COMMITMENT, ""),
-    );
+    const bare = await canonicalSizeAt(seq, rotateEpochOp(BLOAT_ENV, epoch + 1, COMMITMENT, ""));
     const last = left - bare <= MAX_REASON_BYTES;
     const reasonBytes = last ? left - bare : Math.min(MAX_REASON_BYTES, left - 2 * bare - 1);
     expect(reasonBytes).toBeGreaterThanOrEqual(0);
@@ -95,8 +93,8 @@ async function fillChainToCheckpointRoom(): Promise<void> {
     const { entry, hash } = await signEntryAt({
       seq,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
-      operation: rotateEpochOperation(BLOAT_ENV, epoch, COMMITMENT, "r".repeat(reasonBytes)),
+      actor: identityOf(OWNER),
+      operation: rotateEpochOp(BLOAT_ENV, epoch, COMMITMENT, "r".repeat(reasonBytes)),
     });
     const bytes = canonicalChainEntryBytes(entry).length;
     rows.push({ seq, json: JSON.stringify(entry), hash, bytes });
@@ -169,7 +167,7 @@ describe("the chain cap against the RPC frame (CRYPTO_SPEC §6.4 / AUTH_SPEC §1
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: TUPLE_LESS_CHECKPOINT,
     });
     const refused = await requestJson("POST", "/chain/entries", token(OWNER), {

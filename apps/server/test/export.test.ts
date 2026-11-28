@@ -1,4 +1,5 @@
 import { testUserId } from "@maruhi/crypto/test-support";
+import { addMemberOp, changeRoleOp } from "@maruhi/test-kit";
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -15,7 +16,7 @@ import type { RestoreJobResult } from "../src/restore-worker.ts";
 import { processRestoreJobs } from "../src/restore-worker.ts";
 import { fetchEvents, seedProjectActivity } from "./support/audit-read-scenario.ts";
 import { cliToken, resetAuthDb, seedUser } from "./support/auth.ts";
-import { addMemberOperation, changeRoleOperation } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -333,7 +334,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect((await exportPage(STRANGER)).status).toBe(404);
     expect((await requestJson("GET", "/export/identities", token(MEMBER))).status).toBe(403);
     expect((await requestJson("GET", "/export/identities", token(STRANGER))).status).toBe(404);
-    await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "admin"));
+    await appendOperation(fixture, OWNER, changeRoleOp({ userId: MEMBER }, "admin"));
     expect((await exportPage(MEMBER)).status).toBe(403);
     expect((await requestJson("GET", "/export/identities", token(MEMBER))).status).toBe(403);
     const exported = (await readAuditEvents(projectId)).filter(
@@ -384,7 +385,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
     expect((await exportPage(OWNER, current)).status).toBe(200);
     const liveAudit = await queryProjectDo(projectId, "SELECT COUNT(*) AS n FROM audit_events");
     expect(Number(liveAudit[0]?.["n"])).toBeGreaterThan(head.auditMaxSeq);
-    await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "owner"));
+    await appendOperation(fixture, OWNER, changeRoleOp({ userId: MEMBER }, "owner"));
     const afterPromotion = await exportPage(OWNER);
     expect(afterPromotion.status).toBe(200);
     const ownersHead = ((await afterPromotion.json()) as WirePage).head;
@@ -551,7 +552,7 @@ describe("project export (AUTH_SPEC §11-6)", () => {
   it("the identities companion lists the current members' provider identities and names an unlinked member", async () => {
     await seedProjectActivity();
     const DEV = testUserId("user-devmember-0010");
-    await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member"));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member"));
     const response = await requestJson("GET", "/export/identities", token(OWNER));
     expect(response.status).toBe(200);
     const body = (await response.json()) as WireIdentities;
@@ -783,7 +784,7 @@ describe("project import (the restore job with identitiesKey)", () => {
 
   it("refuses a companion read at another chain head than the file's, and accepts a re-run under a co-owner's project row", async () => {
     await seedProjectActivity();
-    await appendOperation(fixture, OWNER, changeRoleOperation(MEMBER, "owner"));
+    await appendOperation(fixture, OWNER, changeRoleOp({ userId: MEMBER }, "owner"));
     const { objectKey, identitiesKey, identities } = await exportToBucket();
     await resetProjectDo(projectId);
     await resetAuthDb();

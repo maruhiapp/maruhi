@@ -1,18 +1,19 @@
 import type { ChainEntry, CheckpointEnvironmentEntry } from "@maruhi/crypto";
+import { generateDek } from "@maruhi/crypto";
+import {
+  manifestSignedBytesHashOf,
+  signEntryAt,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valuesDigestOf,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, cliToken } from "./support/auth.ts";
-import {
-  commitmentOf,
-  makeDek,
-  manifestSignedBytesHashOf,
-  signEntryAt,
-  valuesDigestOf,
-  wrapDekForAll,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentOk,
@@ -96,7 +97,7 @@ async function sendStandaloneCheckpoint(input: {
   const { entry, hash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId: input.actorUserId,
+    actor: identityOf(input.actorUserId),
     operation: {
       op: "checkpoint",
       payload: {
@@ -394,7 +395,7 @@ describe("audit-head notarization on a boundary checkpoint (§16-2 — the same 
   it("accepts a rotate composite whose boundary checkpoint attests a fresh audit head (effective admin)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
     const head = await auditHeadOk(token(OWNER));
-    const next = makeDek();
+    const next = generateDek();
     const response = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -407,7 +408,7 @@ describe("audit-head notarization on a boundary checkpoint (§16-2 — the same 
         recipientUserIds: ALL_MEMBERS,
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, next),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, next),
       checkpointAuditHeadHashHex: head,
     });
     expect(response.status).toBe(200);
@@ -421,7 +422,7 @@ describe("audit-head notarization on a boundary checkpoint (§16-2 — the same 
       newEpoch: 2,
       actorUserId: MEMBER,
       deks: await wrapsFor(ENV, [...ALL_MEMBERS], 2, MEMBER),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, makeDek()),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, generateDek()),
       checkpointAuditHeadHashHex: head,
     });
     expect(response.status).toBe(403);

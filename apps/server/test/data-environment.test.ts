@@ -1,17 +1,16 @@
+import { generateDek } from "@maruhi/crypto";
+import {
+  checkpointOp,
+  signEntryAt,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  valuesDigestOf,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  checkpointOperation,
-  commitmentOf,
-  makeDek,
-  signEntryAt,
-  valuesDigestOf,
-  vectorKeyOf,
-  wrapDekForAll,
-  wrapDekTo,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentComposite,
@@ -46,7 +45,7 @@ registerDataScenario();
 describe("environment management (the §12-4 composite request)", () => {
   it("creates an environment atomically: chain entry + epoch-1 wrap set + name in one request", async () => {
     const headBefore = fixture.head;
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -60,7 +59,7 @@ describe("environment management (the §12-4 composite request)", () => {
       ENV,
       "App",
       deks,
-      await commitmentOf(projectId, ENV, 1, dek),
+      await testDekCommitmentHex(projectId, ENV, 1, dek),
     );
     expect(created.status).toBe(200);
     const body = (await created.json()) as {
@@ -117,7 +116,7 @@ describe("environment management (the §12-4 composite request)", () => {
 
   it("rejects a duplicate environment id with 422 chain-entry-invalid (duplicate-environment)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -216,7 +215,7 @@ describe("environment management (the §12-4 composite request)", () => {
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: { op: "delete_environment", payload: { environmentId: testEnvironmentId(ENV) } },
     });
     const response = await requestJson("POST", "/chain/entries", token(OWNER), {
@@ -233,7 +232,7 @@ describe("environment management (the §12-4 composite request)", () => {
     const { entry: createEntry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: MEMBER,
+      actor: identityOf(MEMBER),
       operation: {
         op: "create_environment",
         payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
@@ -251,7 +250,7 @@ describe("environment management (the §12-4 composite request)", () => {
     const { entry: rotateEntry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: MEMBER,
+      actor: identityOf(MEMBER),
       operation: {
         op: "rotate_epoch",
         payload: {
@@ -275,7 +274,7 @@ describe("environment management (the §12-4 composite request)", () => {
   });
 
   it("retries a composite creation after a head CAS conflict (409 ChainHeadConflict → re-sign → 200)", async () => {
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -284,7 +283,7 @@ describe("environment management (the §12-4 composite request)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const dekCommitmentHex = await commitmentOf(projectId, ENV, 1, dek);
+    const dekCommitmentHex = await testDekCommitmentHex(projectId, ENV, 1, dek);
     const stale = await createEnvironmentComposite(fixture, {
       environmentId: ENV,
       name: "App",
@@ -313,7 +312,7 @@ describe("environment management (the §12-4 composite request)", () => {
 
   it("enforces display-name uniqueness on create and rename (409 duplicate-name)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: "env-app-0002",
@@ -322,7 +321,7 @@ describe("environment management (the §12-4 composite request)", () => {
       recipientUserIds: ALL_MEMBERS,
       signerUserId: OWNER,
     });
-    const commitment = await commitmentOf(projectId, "env-app-0002", 1, dek);
+    const commitment = await testDekCommitmentHex(projectId, "env-app-0002", 1, dek);
     const duplicate = await createEnvironmentWith(fixture, "env-app-0002", "App", deks, commitment);
     expect(duplicate.status).toBe(409);
     const body = (await duplicate.json()) as { reason: string };
@@ -356,7 +355,7 @@ describe("environment management (the §12-4 composite request)", () => {
   });
 
   it("requires chain role member for creation: reader gets 403 insufficient-role", async () => {
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -378,7 +377,7 @@ describe("environment management (the §12-4 composite request)", () => {
   });
 
   it("rejects a composite whose entry actor differs from the principal (403 actor-mismatch)", async () => {
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -390,7 +389,7 @@ describe("environment management (the §12-4 composite request)", () => {
     const { entry, hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "create_environment",
         payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
@@ -399,8 +398,8 @@ describe("environment management (the §12-4 composite request)", () => {
     const { entry: checkpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
-      actorUserId: OWNER,
-      operation: checkpointOperation({
+      actor: identityOf(OWNER),
+      operation: checkpointOp({
         environmentId: ENV,
         epoch: 1,
         manifestVersion: 1,
@@ -481,10 +480,9 @@ describe("DEK-wrap verification at environment creation (§12-6)", () => {
         projectId,
         environmentId: ENV,
         epoch: 1,
-        dek: makeDek(),
-        recipientUserId: STRANGER,
-        recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
-        signerUserId: OWNER,
+        dek: generateDek(),
+        recipient: { userId: STRANGER, encPubHex: vectorKeyOf(MEMBER).enc_pub_hex },
+        signer: identityOf(OWNER),
       }),
     ];
     const response = await createEnvironmentWith(fixture, ENV, "App", deks);
@@ -499,10 +497,9 @@ describe("DEK-wrap verification at environment creation (§12-6)", () => {
       projectId,
       environmentId: ENV,
       epoch: 1,
-      dek: makeDek(),
-      recipientUserId: READER,
-      recipientEncPubHex: vectorKeyOf(MEMBER).enc_pub_hex,
-      signerUserId: OWNER,
+      dek: generateDek(),
+      recipient: { userId: READER, encPubHex: vectorKeyOf(MEMBER).enc_pub_hex },
+      signer: identityOf(OWNER),
     });
     const response = await createEnvironmentWith(fixture, ENV, "App", [...good, badKey]);
     expect(response.status).toBe(422);

@@ -1,7 +1,8 @@
+import { resignEntryAt } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { toWireEntry, vectorAuthzNegatives } from "./support/chain-vectors.ts";
-import { resignEntryAt } from "./support/data-crypto.ts";
+import { signerOf } from "./support/data-crypto.ts";
 import {
   registerMembershipScenario,
   replayNegativePrefix,
@@ -75,11 +76,8 @@ describe("server-side verification (§6.4) — authorization negative vectors (v
     }
     it(`rejects ${negative.name} via the composite endpoint with ${expectation.status}${expectation.reason === undefined ? "" : ` (${expectation.reason})`}`, async () => {
       const { members, head } = await replayNegativePrefix(negative);
-      const { entry } = await resignEntryAt(
-        toWireEntry(negative.entry),
-        head.seq + 1,
-        head.hashHex,
-      );
+      const base = toWireEntry(negative.entry);
+      const { entry } = await resignEntryAt(base, head.seq + 1, head.hashHex, signerOf(base));
       if (entry.op === "delete_environment") {
         const response = await submitDeletion(
           entry,

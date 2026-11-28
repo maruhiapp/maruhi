@@ -5,6 +5,7 @@ import {
   importEncryptionPublicKey,
   wrapDek,
 } from "@maruhi/crypto";
+import { testEnvironmentId, testProjectId, testUserId } from "@maruhi/test-kit";
 import { Effect, Exit, Fiber, Redacted } from "effect";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -14,7 +15,6 @@ import {
   type ServerKeyInfo,
   type StoredServerWrap,
 } from "../src/server-key.ts";
-import { testEnvironmentId, testProjectId, testUserId } from "./support/data-crypto.ts";
 
 const IKM = Redacted.make("b0".repeat(32), { label: "SERVER_ENC_KEY_IKM" });
 const PROJECT_ID = "0".repeat(64);

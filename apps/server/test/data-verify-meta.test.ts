@@ -1,16 +1,18 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { verifyChainWithHistory, verifyDistributedMetaStatement } from "@maruhi/crypto";
-import { describe, expect, it } from "vite-plus/test";
-
-import { metaVersionsExceeded } from "../src/data.package/index.ts";
-import { MAX_VERSIONS_PER_VARIABLE } from "../src/policy.ts";
-import { metaSignedBytesHashOf, signMetaStatementAs, vectorKeyOf } from "./support/data-crypto.ts";
 import {
+  metaSignedBytesHashOf,
+  signMetaStatement,
   testEnvironmentId,
   testProjectId,
   testUserId,
   testVariableId,
-} from "./support/data-crypto.ts";
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { metaVersionsExceeded } from "../src/data.package/index.ts";
+import { MAX_VERSIONS_PER_VARIABLE } from "../src/policy.ts";
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -142,7 +144,7 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const created = varStatements.get(VAR);
     if (created === undefined) throw new Error("missing recorded statement");
-    const stale = await signMetaStatementAs(MEMBER, projectId, {
+    const stale = await signMetaStatement(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
@@ -261,7 +263,7 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     if (created === undefined) throw new Error("missing recorded statement");
     const prevHash = await metaSignedBytesHashOf(projectId, created.statement, MEMBER);
 
-    const beforeMembership = await signMetaStatementAs(MEMBER, projectId, {
+    const beforeMembership = await signMetaStatement(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
@@ -283,7 +285,7 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       "chain-head-state-mismatch",
     );
 
-    const unknownHead = await signMetaStatementAs(MEMBER, projectId, {
+    const unknownHead = await signMetaStatement(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
@@ -303,7 +305,7 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     expect(mismatch.status).toBe(422);
     expect(((await mismatch.json()) as { reason: string }).reason).toBe("chain-head-unknown");
 
-    const wrongPrev = await signMetaStatementAs(MEMBER, projectId, {
+    const wrongPrev = await signMetaStatement(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
@@ -472,7 +474,7 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
       `/environments/${ENV}/variables/${VAR}`,
       token(MEMBER),
       {
-        statement: await signMetaStatementAs(MEMBER, projectId, {
+        statement: await signMetaStatement(identityOf(MEMBER), projectId, {
           suite: "maruhi/v1" as const,
           environmentId: ENV,
           variableId: VAR,
@@ -524,7 +526,7 @@ describe("acceptance verification of meta statements (the §12-5 meta rules = CR
     if (typeof prevHash !== "string") {
       throw new Error("seeded meta statement row missing");
     }
-    const deleteStatement = await signMetaStatementAs(MEMBER, projectId, {
+    const deleteStatement = await signMetaStatement(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: VAR,
