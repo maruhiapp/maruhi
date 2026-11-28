@@ -131,6 +131,7 @@ packages/
   crypto/        # E2EE core. WebCrypto + HPKE. Runs in every environment (browser/Bun/workerd). Human review required
   core/          # Domain types, Effect Schema, shared logic
   api-schema/    # HttpApi definitions (shared source for server impl and client derivation)
+  test-kit/      # Test data builders shared by the CLI and server tests (`lib/`, not `src/`: never shipped, imported by tests only)
 apps/
   server/        # Workers + DO + D1. Effect HttpApi
   cli/           # `effect/cli` + Effect. `maruhi` / `mh` binaries
@@ -147,7 +148,7 @@ apps/
 
 ### Layers (enforced by fallow `boundaries` in `.fallowrc.json`)
 
-- Workspace packages sit below the apps. `crypto` imports no other workspace package, `core` may import `crypto`, and `api-schema` may import `core` and `crypto`. Packages never import an app, and apps (`cli`, `server`, `web`, `site`) never import each other.
+- Workspace packages sit below the apps. `crypto` imports no other workspace package, `core` may import `crypto`, and `api-schema` may import `core` and `crypto`. `test-kit` sits above the three and is imported by test files only: no `src` zone lists it. Packages never import an app, and apps (`cli`, `server`, `web`, `site`) never import each other.
 - CLI (`apps/cli/src`): six zones. A zone imports itself and the zones listed below it.
   1. Entry: `bin.ts`, `index.ts`, `cli.ts`, `cli-runner.ts`.
   2. Command layer: `commands/**` and each `*.package/command.ts`.

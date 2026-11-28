@@ -4575,6 +4575,22 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 
 - L1: Workerd config rationale (§11): tests run under the real Cloudflare Workers environment; not picked up by the root vitest glob, run from a dedicated CI step (the spike-c setup)
 
+### `packages/test-kit/lib/chain.ts`
+
+- Added 2026-11-28 (after the audit; no base line): `signEntryAt` and `resignEntryAt` stamp an entry `BASE_TIME_MS + seq * 1000`, one second later than `buildChain` stamps the same seq (`buildChainWith` in `@maruhi/crypto/test-support` counts from index 0). Both are kept as they were in the two support files, because the server tests append entries after built and vector chains that were written against these times. A scope list is put in the payload as given: the server support file never sorted one, and the CLI support file sorts before it calls
+
+### `packages/test-kit/lib/identity.ts`
+
+- Added 2026-11-28 (after the audit; no base line): one key model for both test suites. A `TestIdentity` is a user id, the hex of both key pairs and the fingerprint. `generateIdentity` makes fresh keys on each run (the CLI suite's source); `vectorIdentity` reads the pinned vector keys (the server suite's source, so that entries appended in a test continue the vector chain). Every builder takes the identity as an argument and the kit keeps no table from user id to key. The server support file keeps its own table (the alias and the device-key override recorded under `apps/server/test/support/data-crypto.ts`) and resolves a user id to an identity before it calls the kit
+
+### `packages/test-kit/lib/index.ts`
+
+- Added 2026-11-28 (after the audit; no base line): `apps/cli/test/support/crypto.ts` and `apps/server/test/support/data-crypto.ts` built the same signed data twice, on two key models, and a change of the wire had to be made in both. This package holds the one implementation (owner decision 2026-11-28); the two files are now renames onto it, to be removed when their tests use the kit's names. The package sits above `api-schema`, where the wire types come from. Its code is under `lib/`, not `src/`: the `packages/*/src/**` lint rules describe shipped code (no test mints, no `@maruhi/crypto/test-support`), and the kit is neither shipped nor imported by a `src` file (no zone in `.fallowrc.json` lists `test-kit`). The builders come in two layers: what a client sends (`wrapDekTo`, `encryptValue`, `signMetaStatement`, `signManifest`), which the server tests use, and what the server returns (`distributed*`), with which the CLI tests fill a mock server; the second layer is built on the first. The records under the two support files' headings describe code that now lives here
+
+### `packages/test-kit/lib/wire.ts`
+
+- Added 2026-11-28 (after the audit; no base line): a wire shape is the `Encoded` side of its `api-schema` schema, not a hand-written interface, so a field that is renamed, added or retyped on the wire fails the typecheck of the tests that build it. The signer inputs (`UnsignedWrap`, `UnsignedMetaStatement`, `UnsignedManifest`) take any string as `suite`, so that a test can sign a shape the schema refuses
+
 ### `packaging/install-test.sh`
 
 - L2: install-test.sh is a live-run test of install.sh (positive + tampered negative cases) on local artifacts, independent of a real release
