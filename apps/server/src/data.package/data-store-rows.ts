@@ -1,3 +1,4 @@
+import type { EnvironmentId, KeyFingerprintHex, UserId, VariableId } from "@maruhi/core";
 import {
   decodeEnvironmentId,
   decodeKeyFingerprintHex,
@@ -31,6 +32,22 @@ export function stringColumn(row: StoredRow, column: string): string {
     throw new Error(`stored column "${column}" is not a string`);
   }
   return value;
+}
+
+export function userIdColumn(row: StoredRow, column: string): UserId {
+  return decodeUserId(stringColumn(row, column));
+}
+
+export function keyFingerprintColumn(row: StoredRow, column: string): KeyFingerprintHex {
+  return decodeKeyFingerprintHex(stringColumn(row, column));
+}
+
+export function environmentIdColumn(row: StoredRow, column: string): EnvironmentId {
+  return decodeEnvironmentId(stringColumn(row, column));
+}
+
+export function variableIdColumn(row: StoredRow, column: string): VariableId {
+  return decodeVariableId(stringColumn(row, column));
 }
 
 export function numberColumn(row: StoredRow, column: string): number {
@@ -143,16 +160,14 @@ export function statementColumns<S extends MetaStatementStatusInput>(
     chainHeadHashHex: stringColumn(row, `${prefix}chain_head_hash_hex`),
     chainHeadSeq: numberColumn(row, `${prefix}chain_head_seq`),
     signatureHex: stringColumn(row, `${prefix}signature_hex`),
-    authorUserId: decodeUserId(stringColumn(row, `${prefix}author_user_id`)),
-    authorKeyFingerprintHex: decodeKeyFingerprintHex(
-      stringColumn(row, `${prefix}author_key_fingerprint`),
-    ),
+    authorUserId: userIdColumn(row, `${prefix}author_user_id`),
+    authorKeyFingerprintHex: keyFingerprintColumn(row, `${prefix}author_key_fingerprint`),
   };
 }
 
 export function statementOf(row: StoredRow): DistributedMetaStatementValue {
   return {
-    environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+    environmentId: environmentIdColumn(row, "environment_id"),
     ...statementColumns(row, "", storedEnvStatus),
   };
 }
@@ -179,8 +194,8 @@ export function variableStatementV3Fields(
 
 export function variableStatementOf(row: StoredRow): DistributedVariableMetaStatementValue {
   return {
-    environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
-    variableId: decodeVariableId(stringColumn(row, "variable_id")),
+    environmentId: environmentIdColumn(row, "environment_id"),
+    variableId: variableIdColumn(row, "variable_id"),
     ...statementColumns(row, "", storedVariableStatus),
     ...variableStatementV3Fields(row, ""),
   };

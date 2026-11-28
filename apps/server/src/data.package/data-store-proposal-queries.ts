@@ -1,8 +1,14 @@
 import type { EnvironmentId, VariableId } from "@maruhi/core";
-import { decodeEnvironmentId, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
+import {
+  environmentIdColumn,
+  numberColumn,
+  type StoredRow,
+  stringColumn,
+  userIdColumn,
+  variableIdColumn,
+} from "./data-store-rows.ts";
 import type { StoredProposal, StoredProposalVariable } from "./data-store.ts";
 
 function storedFacts(value: string): readonly string[] {
@@ -31,14 +37,14 @@ export const makeProposalQueries = (sql: SqlStorage) => {
       )
       .toArray()
       .map((variable): StoredProposalVariable => {
-        const variableId = decodeVariableId(stringColumn(variable, "variable_id"));
+        const variableId = variableIdColumn(variable, "variable_id");
         return {
           variableId,
           baseVersion: numberColumn(variable, "base_version"),
           wraps: wraps
             .filter((wrap) => stringColumn(wrap, "variable_id") === variableId)
             .map((wrap) => ({
-              recipientUserId: decodeUserId(stringColumn(wrap, "recipient_user_id")),
+              recipientUserId: userIdColumn(wrap, "recipient_user_id"),
               recipientEncPubHex: stringColumn(wrap, "recipient_enc_pub_hex"),
               encHex: stringColumn(wrap, "enc_hex"),
               ciphertextHex: stringColumn(wrap, "ciphertext_hex"),
@@ -47,7 +53,7 @@ export const makeProposalQueries = (sql: SqlStorage) => {
       });
     return {
       proposalId,
-      environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+      environmentId: environmentIdColumn(row, "environment_id"),
       connector: stringColumn(row, "connector"),
       facts: storedFacts(stringColumn(row, "facts_json")),
       claimsDigestHex: stringColumn(row, "claims_digest_hex"),

@@ -1,5 +1,4 @@
 import type { EnvironmentId, VariableId } from "@maruhi/core";
-import { decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { CheckpointSnapshotEntryValue, CheckpointSnapshotValue } from "./data-plane.ts";
@@ -9,9 +8,10 @@ import {
   numberColumn,
   storedVariableStatus,
   stringColumn,
-  variableAnchorOf,
-  variableStatementOf,
   VAR_MS_COLUMNS,
+  variableAnchorOf,
+  variableIdColumn,
+  variableStatementOf,
 } from "./data-store-rows.ts";
 import type { CheckpointValueEntryRow, VariableDigestEntryRow } from "./data-store.ts";
 
@@ -36,7 +36,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        variableId: decodeVariableId(stringColumn(row, "variable_id")),
+        variableId: variableIdColumn(row, "variable_id"),
         name: stringColumn(row, "name"),
         latestMetaVersion: numberColumn(row, "latest_meta_version"),
         latestVersion: numberColumn(row, "latest_version"),
@@ -138,7 +138,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row): VariableDigestEntryRow => ({
-          variableId: decodeVariableId(stringColumn(row, "variable_id")),
+          variableId: variableIdColumn(row, "variable_id"),
           status: storedVariableStatus(stringColumn(row, "status")),
           metaVersion: numberColumn(row, "meta_version"),
           metaSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
@@ -160,7 +160,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row): CheckpointValueEntryRow => ({
-          variableId: decodeVariableId(stringColumn(row, "variable_id")),
+          variableId: variableIdColumn(row, "variable_id"),
           version: numberColumn(row, "version"),
           valueSigHashHex: stringColumn(row, "signed_bytes_hash_hex"),
         })),
@@ -185,7 +185,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((value): CheckpointSnapshotEntryValue => ({
-          variableId: decodeVariableId(stringColumn(value, "variable_id")),
+          variableId: variableIdColumn(value, "variable_id"),
           version: numberColumn(value, "version"),
           valueSigHashHex: stringColumn(value, "value_sig_hash_hex"),
         }));
@@ -222,7 +222,7 @@ export const makeVariableQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          variableId: decodeVariableId(stringColumn(row, "variable_id")),
+          variableId: variableIdColumn(row, "variable_id"),
           name: stringColumn(row, "name"),
         })),
     ),
