@@ -13,14 +13,14 @@ import { displayText } from "../display.ts";
 import { cliError, type CliError } from "../errors.ts";
 import { rejectIntentOnServerRejection } from "../floor-check.ts";
 import type { ManifestFloor, VariableFloor } from "../floor.ts";
-import { type ManifestDigestEntry } from "../manifest.ts";
+import type { ManifestDigestEntry } from "../manifest.ts";
 import { confirmMetaMutation, issueManifestWithIntent } from "../meta-confirm.ts";
 import { signCreateStatement } from "../meta-statement.ts";
 import { decryptVerifiedValue } from "../pull.ts";
 import { retryOnConflict } from "../retry.ts";
 import { signContinuationStatementV3 } from "../schema.package/index.ts";
 import type { VerifiedPulledValue } from "../values-verify.ts";
-import { type ManifestIssueBase } from "../values.ts";
+import type { ManifestIssueBase } from "../values.ts";
 import { nextVersionOf, prevHashOf } from "./push-resolve.ts";
 import {
   classifyPushConflict,
