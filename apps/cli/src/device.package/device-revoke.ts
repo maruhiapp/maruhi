@@ -8,34 +8,34 @@ import type { ChainDevice, ChainMember, MemberScope, Role } from "@maruhi/crypto
 import { effectivePermissionOf, scopeIncludesEnvironment } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import type { CliServices } from "./cli.ts";
-import { openProject, type ProjectContext } from "./context.ts";
-import { ROLE_RANK } from "./dek-wrap.ts";
-import { chainEnvironmentIds } from "./deks.ts";
-import { describeCap, describeDevice, devicesOf, findOwnDevice } from "./device-key.ts";
+import type { MaruhiClient } from "../api.ts";
+import { resyncExtended, type VerifiedProject } from "../chain-sync.ts";
+import type { CliServices } from "../cli.ts";
+import { openProject, type ProjectContext } from "../context.ts";
+import { ROLE_RANK } from "../dek-wrap.ts";
+import { chainEnvironmentIds } from "../deks.ts";
+import { describeCap, describeDevice, devicesOf, findOwnDevice } from "../device-key.ts";
 import {
   appendRevokeDevice,
   DEVICE_REVOKED_ROTATION_REASON,
   type DeviceSweepOutcome,
   sweepAfterDeviceRevoke,
-} from "./device-ops.ts";
+} from "../device-ops.ts";
+import { displayText, formatUtcMinutes } from "../display.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import { logNote } from "../notice.ts";
+import { OwnDeviceStore } from "../own-devices.ts";
+import { compareCodePoints } from "../scope.ts";
+import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
+import { sweepRotateFor } from "../sweep-rotate.ts";
 import {
   FINGERPRINT_PREFIX,
   fetchRegistry,
   type RegistryRow,
   resolveProjectIds,
 } from "./device.ts";
-import { displayText, formatUtcMinutes } from "./display.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
-import { OwnDeviceStore } from "./own-devices.ts";
-import { compareCodePoints } from "./scope.ts";
-import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
-import { sweepRotateFor } from "./sweep-rotate.ts";
 
 const resolveRevokeRefs = Effect.fn("device-revoke.resolveRevokeRefs")(function* (input: {
   readonly refs: readonly string[];

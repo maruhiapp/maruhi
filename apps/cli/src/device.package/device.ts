@@ -2,10 +2,10 @@ import { type KeyFingerprintHex, type ProjectId, userKeyFingerprintHex } from "@
 import { decodeHex } from "@maruhi/crypto";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { CliError } from "./errors.ts";
-import { fetchProjectMemberships } from "./project.package/index.ts";
-import { compareCodePoints } from "./scope.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { CliError } from "../errors.ts";
+import { fetchProjectMemberships } from "../project.package/index.ts";
+import { compareCodePoints } from "../scope.ts";
 
 export interface RegistryRow {
   readonly keyFingerprintHex: KeyFingerprintHex;

@@ -23,6 +23,13 @@ import {
 } from "../ci.package/command.ts";
 import type { CommandSpec } from "../cli-formatter.ts";
 import {
+  deviceAddConfig,
+  deviceApproveConfig,
+  deviceListConfig,
+  deviceRevokeConfig,
+  makeDeviceCommands,
+} from "../device.package/command.ts";
+import {
   envCreateConfig,
   envDiffConfig,
   envListConfig,
@@ -114,13 +121,6 @@ import {
 } from "../var.package/command.ts";
 import { agentConfig, agentStatusConfig, makeAgentCommands } from "./agent.ts";
 import { configGetConfig, configSetConfig, makeConfigCommands } from "./config.ts";
-import {
-  deviceAddConfig,
-  deviceApproveConfig,
-  deviceListConfig,
-  deviceRevokeConfig,
-  makeDeviceCommands,
-} from "./device.ts";
 import { specOf } from "./flags.ts";
 import { loginConfig, logoutConfig, makeLoginLogoutCommands } from "./login-logout.ts";
 import { mcpConfig, makeMcpCommand } from "./mcp.ts";

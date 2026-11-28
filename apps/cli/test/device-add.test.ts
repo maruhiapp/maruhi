@@ -6,7 +6,7 @@ import { computeUserKeyFingerprint, encodeHex } from "@maruhi/crypto";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device-add.ts";
+import { DEVICE_ADD_WAIT_HINT_AFTER_MS } from "../src/device.package/device-add.ts";
 import { formatUtcMinutes } from "../src/display.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import {

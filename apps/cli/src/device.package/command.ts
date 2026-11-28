@@ -5,12 +5,6 @@ import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
 import type { CliServices } from "../cli.ts";
-import type { DeviceRevokeSummary, ProjectRevokeOutcome } from "../device-revoke.ts";
-import { displayText } from "../display.ts";
-import { CliError } from "../errors.ts";
-import { CliIo } from "../io.ts";
-import { logNote, logWarning } from "../notice.ts";
-import { scopeFromFlags } from "../scope.ts";
 import {
   NonBlank,
   projectIdFlag,
@@ -20,10 +14,17 @@ import {
   singleFlag,
   singleValued,
   userIdFlag,
-} from "./flags.ts";
-import { openSession } from "./lazy.ts";
-import { reportSweepOutcome } from "./shared.ts";
+} from "../commands/flags.ts";
+import { openSession } from "../commands/lazy.ts";
+import { reportSweepOutcome } from "../commands/shared.ts";
+import { displayText } from "../display.ts";
+import { CliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { scopeFromFlags } from "../scope.ts";
+import type { DeviceRevokeSummary, ProjectRevokeOutcome } from "./device-revoke.ts";
 
+/** @public */
 export const deviceAddConfig = {
   ...serverOnlyFlags(),
   label: singleValued(
@@ -35,6 +36,7 @@ export const deviceAddConfig = {
     "Generate a new key even though this machine already has one, replacing the old key in this keychain once the new key's request is created (for a device that was revoked, or a copy of another device's key)",
   ),
 };
+/** @public */
 export const deviceApproveConfig = {
   ...serverOnlyFlags(),
   project: projectIdFlag(
@@ -57,6 +59,7 @@ export const deviceApproveConfig = {
     Argument.withSchema(NonBlank),
   ),
 };
+/** @public */
 export const deviceListConfig = {
   ...serverOnlyFlags(),
   project: projectIdFlag(
@@ -64,6 +67,7 @@ export const deviceListConfig = {
     "Show only this project's chain (default: every project you belong to)",
   ),
 };
+/** @public */
 export const deviceRevokeConfig = {
   ...serverOnlyFlags(),
   project: projectIdFlag(
@@ -87,7 +91,7 @@ export const deviceRevokeConfig = {
     Argument.atLeast(1),
   ),
 };
-const reportDeviceRevoke = Effect.fn("commands-device.reportDeviceRevoke")(function* (
+const reportDeviceRevoke = Effect.fn("device-command.reportDeviceRevoke")(function* (
   summary: DeviceRevokeSummary,
 ): Effect.fn.Return<number, CliError, CliServices> {
   let exitCode = 0;
@@ -133,13 +137,14 @@ function reportRevokedProject(
   });
 }
 
+/** @public */
 export function makeDeviceCommands(onExitCode: (code: number) => void) {
   const deviceAdd = Command.make(
     "add",
     deviceAddConfig,
-    Effect.fn("commands-device.deviceAdd")(function* (values) {
+    Effect.fn("device-command.deviceAdd")(function* (values) {
       const { deviceAddOp } = yield* Effect.promise(() =>
-        import("../device-add.ts").then((m) => ({ deviceAddOp: m.deviceAddOp })),
+        import("./device-add.ts").then((m) => ({ deviceAddOp: m.deviceAddOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -159,17 +164,17 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
   const deviceApprove = Command.make(
     "approve",
     deviceApproveConfig,
-    Effect.fn("commands-device.deviceApprove")(function* (values) {
+    Effect.fn("device-command.deviceApprove")(function* (values) {
       const { deviceApproveOp, parseApproveRef, reportApproveOutcomes } = yield* Effect.promise(
         () =>
-          import("../device-approve.ts").then((m) => ({
+          import("./device-approve.ts").then((m) => ({
             deviceApproveOp: m.deviceApproveOp,
             parseApproveRef: m.parseApproveRef,
             reportApproveOutcomes: m.reportApproveOutcomes,
           })),
       );
       const { parseCapRole } = yield* Effect.promise(() =>
-        import("../device-revoke.ts").then((m) => ({ parseCapRole: m.parseCapRole })),
+        import("./device-revoke.ts").then((m) => ({ parseCapRole: m.parseCapRole })),
       );
 
       const ref = yield* parseApproveRef(values["fp-or-words"]);
@@ -200,9 +205,9 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
   const deviceList = Command.make(
     "list",
     deviceListConfig,
-    Effect.fn("commands-device.deviceList")(function* (values) {
+    Effect.fn("device-command.deviceList")(function* (values) {
       const { deviceListOp } = yield* Effect.promise(() =>
-        import("../device-list.ts").then((m) => ({ deviceListOp: m.deviceListOp })),
+        import("./device-list.ts").then((m) => ({ deviceListOp: m.deviceListOp })),
       );
 
       const context = yield* openSession(values.server);
@@ -221,9 +226,9 @@ export function makeDeviceCommands(onExitCode: (code: number) => void) {
   const deviceRevoke = Command.make(
     "revoke",
     deviceRevokeConfig,
-    Effect.fn("commands-device.deviceRevoke")(function* (values) {
+    Effect.fn("device-command.deviceRevoke")(function* (values) {
       const { deviceRevokeOp } = yield* Effect.promise(() =>
-        import("../device-revoke.ts").then((m) => ({ deviceRevokeOp: m.deviceRevokeOp })),
+        import("./device-revoke.ts").then((m) => ({ deviceRevokeOp: m.deviceRevokeOp })),
       );
 
       const context = yield* openSession(values.server);
