@@ -3717,6 +3717,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 ### `apps/site/test/unit/doc-paths.test.ts`
 
 - L1: Doc/source file references must resolve against the tracked tree; an extractor under-count fails first, and legitimate non-repo references live in ALLOWED with a reason each.
+- Added 2026-11-28 (after the audit; no base line): a brace path such as `src/do/{chain-do,do-schema}.ts` is expanded into one path per alternative before extraction; before that the extractor stopped at the brace and checked none of them. A group expands only inside a path run, without spaces, with a letter in it; nested groups stay unchecked.
 - L43: The extension alternation is longest-first with a trailing word boundary, and env is deliberately absent because .env-suffixed tokens are env-var namespaces in practice.
 - L155: URLs are stripped before comment extraction so a // inside a scheme is never mistaken for a comment start.
 

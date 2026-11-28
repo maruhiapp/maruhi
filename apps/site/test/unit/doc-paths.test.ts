@@ -20,6 +20,26 @@ const TOKEN = new RegExp(
   "g",
 );
 
+const PATH_RUN = "[A-Za-z0-9_@+~./-]*";
+const BRACE_GROUP = `\\{(?=[^{}]*[A-Za-z])${PATH_RUN}(?:,${PATH_RUN})+\\}`;
+const BRACE_WORD = new RegExp(
+  `(?<![A-Za-z0-9_@+~./$\\\\-])(?:${PATH_RUN}${BRACE_GROUP})+${PATH_RUN}`,
+  "g",
+);
+
+function expandWord(word: string): readonly string[] {
+  const group = /^([^{]*)\{([^{}]*)\}(.*)$/.exec(word);
+  if (group === null) {
+    return [word];
+  }
+  const [, prefix = "", items = "", suffix = ""] = group;
+  return items.split(",").flatMap((item) => expandWord(`${prefix}${item}${suffix}`));
+}
+
+function expandBraces(text: string): string {
+  return text.replace(BRACE_WORD, (word) => expandWord(word).join(" "));
+}
+
 const ALLOWED: Readonly<Record<string, string>> = {
   "args.test.ts": "former test file name (its cases moved)",
   "data-programs.ts": "the former pre-split file, referenced as history",
@@ -124,10 +144,6 @@ interface Miss {
 let extracted = 0;
 const misses = new Map<string, Miss>();
 
-function record(file: string, token: string): void {
-  misses.set(`${token} @ ${file}`, { file, token });
-}
-
 function relPathMiss(file: string, token: string): boolean {
   const resolved = resolve(dirname(join(repoRoot, file)), token).slice(repoRoot.length + 1);
   return !trackedSet.has(resolved);
@@ -151,15 +167,21 @@ function skippable(token: string): boolean {
   return token.includes("*") || ALLOWED[token] !== undefined;
 }
 
+function checkedTokens(text: string): readonly string[] {
+  const noUrls = expandBraces(text.replace(/https?:\/\/\S+/g, " "));
+  return [...noUrls.matchAll(TOKEN)].map((match) => match[0]).filter((token) => !skippable(token));
+}
+
+function missesIn(file: string, text: string): readonly string[] {
+  return checkedTokens(text).filter((token) => isMiss(file, token));
+}
+
 function scanTokens(file: string, text: string): void {
-  const noUrls = text.replace(/https?:\/\/\S+/g, " ");
-  for (const match of noUrls.matchAll(TOKEN)) {
-    const token = match[0];
-    if (!skippable(token)) {
-      extracted += 1;
-      if (isMiss(file, token)) {
-        record(file, token);
-      }
+  const tokens = checkedTokens(text);
+  extracted += tokens.length;
+  for (const token of tokens) {
+    if (isMiss(file, token)) {
+      misses.set(`${token} @ ${file}`, { file, token });
     }
   }
 }
@@ -170,6 +192,38 @@ for (const file of targetDocs()) {
 for (const file of targetSources()) {
   scanTokens(file, commentsOf(readFileSync(join(repoRoot, file), "utf8")));
 }
+
+describe("brace paths", () => {
+  it("expands every alternative into its own path", () => {
+    expect(expandBraces("apps/server/src/do/{chain-do,do-schema}.ts and src/{a,b}/{c,d}.ts")).toBe(
+      "apps/server/src/do/chain-do.ts apps/server/src/do/do-schema.ts and src/a/c.ts src/a/d.ts src/b/c.ts src/b/d.ts",
+    );
+  });
+
+  it("expands an empty alternative", () => {
+    expect(expandBraces("src/foo{,.test}.ts")).toBe("src/foo.ts src/foo.test.ts");
+  });
+
+  it("leaves prose braces, quantifiers and template placeholders as they are", () => {
+    const text =
+      "{single}.ts {epoch, recipientUserId} [a-z]{0,63} x{1,3}.md \\w{2,4}.ts ${a,b}.ts {} {,}";
+    expect(expandBraces(text)).toBe(text);
+  });
+
+  it("keeps a path that a quantifier follows", () => {
+    expect(
+      missesIn("CLAUDE.md", "apps/cli/src/bin.ts{1,2} apps/cli/src/no-such-file.ts{1,2}"),
+    ).toEqual(["apps/cli/src/no-such-file.ts"]);
+  });
+
+  it("checks each expanded path against the tracked files", () => {
+    expect(missesIn("CLAUDE.md", "apps/site/test/unit/{doc-paths,no-such-file}.test.ts")).toEqual([
+      "apps/site/test/unit/no-such-file.test.ts",
+    ]);
+    expect(missesIn("CLAUDE.md", "apps/cli/src/{bin,cli}.ts")).toEqual([]);
+    expect(missesIn("CLAUDE.md", "{bin,no-such-file}.ts")).toEqual(["no-such-file.ts"]);
+  });
+});
 
 describe("file references in live docs and source comments", () => {
   it("extracts a real corpus (the check isn't idling — ≈500 tokens after the ADR-0020 comment removal)", () => {
