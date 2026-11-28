@@ -4,28 +4,28 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { chdir, cwd } from "node:process";
 
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { acceptedProxyConfigsPathOf } from "../src/proxy.package/proxy-accept.ts";
 import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
 import { parseListenAddress } from "../src/proxy.package/proxy-run.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedVariableStatement,
-  wrapDekFor,
-} from "./support/crypto.ts";
 import {
   makeTestEnv,
   type RunnerCall,
@@ -42,7 +42,7 @@ const REAL_DB = "postgres://user:hunter2@db.internal:5432/app";
 const REAL_OTHER = "other-secret-value-xyz";
 
 interface Fixture {
-  readonly owner: TestUser;
+  readonly owner: GeneratedIdentity;
   readonly built: BuiltChain;
   readonly wraps: readonly unknown[];
   readonly envStatement: WireDistributedEnvironmentStatement;
@@ -59,20 +59,28 @@ let originCa: Awaited<ReturnType<typeof makeEphemeralCa>>;
 let origin: Origin;
 
 beforeAll(async () => {
-  const owner = await makeTestUser("user-owner-1111");
+  const owner = await generateIdentity("user-owner-1111");
   const dek = crypto.getRandomValues(new Uint8Array(32));
   const built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  const wraps = [await wrapDekFor({ ...common, epoch: 1, dek, recipient: owner, signer: owner })];
+  const wraps = [
+    await distributedWrap({ ...common, epoch: 1, dek, recipient: owner, signer: owner }),
+  ];
   const head = headOf(built, 2);
   const anchor = { seq: 1, hashHex: built.projectId };
   const entry = async (variableId: string, name: string, plaintext: string) => ({
     variableId,
-    statement: await statementFor({ ...common, variableId, name, author: owner, head: anchor }),
-    value: await encryptValueFor({
+    statement: await distributedVariableStatement({
+      ...common,
+      variableId,
+      name,
+      author: owner,
+      head: anchor,
+    }),
+    value: await distributedValue({
       dek,
       ...common,
       epoch: 1,
@@ -87,7 +95,7 @@ beforeAll(async () => {
     owner,
     built,
     wraps,
-    envStatement: await environmentStatementFor({
+    envStatement: await distributedEnvironmentStatement({
       ...common,
       name: ENV_ID,
       author: owner,
@@ -132,7 +140,7 @@ function handlers(): MockHandler[] {
         variables: entries,
         deletedVariables: [],
         deks: wraps,
-        manifest: await manifestFor({
+        manifest: await distributedManifest({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,

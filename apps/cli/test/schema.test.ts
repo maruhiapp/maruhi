@@ -1,33 +1,33 @@
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { findHighEntropySubstring } from "../src/entropy.ts";
 import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  statementFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
-  wrapDekFor,
   type WireRecipientDek,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { findHighEntropySubstring } from "../src/entropy.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "dev";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let dek1: Uint8Array;
 let wrap1: WireRecipientDek;
@@ -49,22 +49,28 @@ let servers: MockServer[] = [];
 const DESCRIPTION_REQUIRED = "Primary endpoint of the shop";
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  wrap1 = await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner });
-  envStatement = await environmentStatementFor({
+  wrap1 = await distributedWrap({
+    ...common,
+    epoch: 1,
+    dek: dek1,
+    recipient: owner,
+    signer: owner,
+  });
+  envStatement = await distributedEnvironmentStatement({
     ...common,
     name: ENV_ID,
     author: owner,
     head: { seq: 1, hashHex: built.projectId },
   });
   const head = { seq: 1, hashHex: built.projectId };
-  declaredRequired = await statementFor({
+  declaredRequired = await distributedVariableStatement({
     ...common,
     variableId: "v-declared",
     name: "SHOP_URL",
@@ -73,7 +79,7 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "url", required: true, description: DESCRIPTION_REQUIRED },
   });
-  declaredOptional = await statementFor({
+  declaredOptional = await distributedVariableStatement({
     ...common,
     variableId: "v-optional",
     name: "OPTIONAL_HINT",
@@ -84,7 +90,7 @@ beforeAll(async () => {
   });
   activeV3 = {
     variableId: "v-port",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       ...common,
       variableId: "v-port",
       name: "PORT",
@@ -92,7 +98,7 @@ beforeAll(async () => {
       head,
       schema: { varType: "number", required: true, description: "listen port" },
     }),
-    value: await encryptValueFor({
+    value: await distributedValue({
       ...common,
       dek: dek1,
       epoch: 1,
@@ -105,14 +111,14 @@ beforeAll(async () => {
   };
   activeV1 = {
     variableId: "v-legacy",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       ...common,
       variableId: "v-legacy",
       name: "LEGACY_KEY",
       author: owner,
       head,
     }),
-    value: await encryptValueFor({
+    value: await distributedValue({
       ...common,
       dek: dek1,
       epoch: 1,
@@ -174,7 +180,7 @@ function pullHandler(overrides?: {
   return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
     const variables = overrides?.variables ?? [activeV3, activeV1];
     const declaredVariables = overrides?.declaredVariables ?? [declaredRequired, declaredOptional];
-    const manifest = await manifestFor({
+    const manifest = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -246,7 +252,7 @@ async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unkno
     declaredRequired,
     declaredOptional,
   ];
-  const manifest = await manifestFor({
+  const manifest = await distributedManifest({
     projectId: built.projectId,
     environmentId: ENV_ID,
     epoch: 1,
@@ -351,7 +357,7 @@ describe("maruhi schema (display — §1-1)", () => {
   });
 
   it("description is neutralized by escapeText (rulings CK and CW — signed isn't necessarily benign)", async () => {
-    const malicious = await statementFor({
+    const malicious = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-evil",
@@ -398,7 +404,7 @@ describe("verifying a distribution containing declared (§6.3 / §12-7)", () => 
   });
 
   it("a distribution that pairs a declared statement with a value is refused (only declared is the legitimate valueless state)", async () => {
-    const bogusValue = await encryptValueFor({
+    const bogusValue = await distributedValue({
       projectId: built.projectId,
       environmentId: ENV_ID,
       dek: dek1,
@@ -503,7 +509,7 @@ describe("maruhi run's fail-fast (§1-4 — hard presence / soft type)", () => {
   });
 
   it("a type mismatch is an advisory warning only and the run proceeds (§14.3-7 — the value stays out of the wording)", async () => {
-    const badPort = await encryptValueFor({
+    const badPort = await distributedValue({
       projectId: built.projectId,
       environmentId: ENV_ID,
       dek: dek1,
@@ -861,7 +867,7 @@ describe("maruhi push's activation (the first value push onto a declared — §1
     const echo: MutationEcho = { body: null, base: [declaredRequired] };
     let metadataCalls = 0;
     const activateCalls: MockRequest[] = [];
-    const emptyManifest = await manifestFor({
+    const emptyManifest = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -870,7 +876,7 @@ describe("maruhi push's activation (the first value push onto a declared — §1
       envStatement,
       statements: [],
     });
-    const declaredManifest = await manifestFor({
+    const declaredManifest = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -879,7 +885,7 @@ describe("maruhi push's activation (the first value push onto a declared — §1
       envStatement,
       statements: [declaredRequired],
       manifestVersion: 2,
-      prevManifestSigHashHex: await manifestHashOf(built.projectId, emptyManifest),
+      prevManifestSigHashHex: await distributedManifestHashOf(built.projectId, emptyManifest),
     });
     const env = await startEnv([
       chainHandler(),

@@ -6,6 +6,14 @@ import {
   unwrapMasterBlob,
   wrapMasterSecret,
 } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+} from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -17,30 +25,22 @@ import {
 } from "../src/keychain.ts";
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
-import {
-  addMemberOp,
-  buildChain,
-  type BuiltChain,
-  genesisOp,
-  makeTestUser,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let ward: TestUser;
-let reserve: TestUser;
-let alice: TestUser;
-let bob: TestUser;
+let ward: GeneratedIdentity;
+let reserve: GeneratedIdentity;
+let alice: GeneratedIdentity;
+let bob: GeneratedIdentity;
 let built: BuiltChain;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  ward = await makeTestUser("user-ward-0001");
-  reserve = await makeTestUser("user-ward-0001");
-  alice = await makeTestUser("user-alice-0002");
-  bob = await makeTestUser("user-bob-00003");
+  ward = await generateIdentity("user-ward-0001");
+  reserve = await generateIdentity("user-ward-0001");
+  alice = await generateIdentity("user-alice-0002");
+  bob = await generateIdentity("user-bob-00003");
   built = await buildChain([
     { actor: ward, operation: genesisOp(ward) },
     { actor: ward, operation: addMemberOp(alice, "member") },
@@ -80,7 +80,7 @@ function createHandler(record: (body: CreateBody) => void): MockHandler {
   });
 }
 
-function recordOf(user: TestUser): StoredMasterKey {
+function recordOf(user: GeneratedIdentity): StoredMasterKey {
   return {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
@@ -120,7 +120,10 @@ interface Started {
   readonly server: MockServer;
 }
 
-async function startEnv(handlers: readonly MockHandler[], user: TestUser): Promise<Started> {
+async function startEnv(
+  handlers: readonly MockHandler[],
+  user: GeneratedIdentity,
+): Promise<Started> {
   const server = await MockServer.start(handlers);
   servers.push(server);
   const env = await makeTestEnv();
@@ -135,7 +138,7 @@ function createCount(server: MockServer): number {
   ).length;
 }
 
-async function lastWordOf(user: TestUser): Promise<string> {
+async function lastWordOf(user: GeneratedIdentity): Promise<string> {
   const bytes = decodeHex(user.fingerprintHex);
   if (bytes === null) throw new Error("fingerprint hex");
   const words = await fingerprintToWords(bytes);
@@ -149,7 +152,7 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-async function openShareAs(user: TestUser, body: CreateBody): Promise<Uint8Array> {
+async function openShareAs(user: GeneratedIdentity, body: CreateBody): Promise<Uint8Array> {
   const share = body.shares.find((entry) => entry.guardianUserId === user.userId);
   if (share === undefined) throw new Error("share missing");
   const opened = await openGuardianShare({

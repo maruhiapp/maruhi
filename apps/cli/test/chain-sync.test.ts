@@ -1,30 +1,31 @@
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  removeMemberOp,
+  rotateEpochOp,
+  testEnvironmentId,
+  testProjectId,
+} from "@maruhi/test-kit";
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { makeApiClient } from "../src/api.ts";
 import { syncProject } from "../src/chain-sync.ts";
-import {
-  addMemberOp,
-  type BuiltChain,
-  buildChain,
-  createEnvironmentOp,
-  genesisOp,
-  makeTestUser,
-  removeMemberOp,
-  rotateEpochOp,
-  type TestUser,
-} from "./support/crypto.ts";
-import { testEnvironmentId, testProjectId } from "./support/crypto.ts";
 import { type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
-let owner: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
 });
 
 afterEach(async () => {

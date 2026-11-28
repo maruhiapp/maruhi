@@ -1,21 +1,20 @@
 import { computeEnvValuesDigest, SUITE_ID, verifyDekCommitment } from "@maruhi/crypto";
-import { describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
-  addScopedMemberOp,
   buildChain,
   createEnvironmentOp,
-  decryptWire,
+  decryptValue,
+  distributedWrap,
+  generateIdentity,
   genesisOp,
-  makeTestUser,
   testEnvironmentId,
   testProjectId,
   testVariableId,
-  valueHashOf,
-  wrapDekFor,
-} from "./support/crypto.ts";
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import {
   chainBase,
   dek1,
@@ -30,7 +29,7 @@ import {
 
 describe("maruhi env rotate", () => {
   it("composite request: sends a rotate_epoch entry (with commitment) + the complete wrap set, and re-encrypts current values under the new DEK", async () => {
-    const member = await makeTestUser("user-member-3333");
+    const member = await generateIdentity("user-member-3333");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "member") },
@@ -63,7 +62,7 @@ describe("maruhi env rotate", () => {
       built,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -126,28 +125,28 @@ describe("maruhi env rotate", () => {
     if (pushedA === undefined || pushedB === undefined) throw new Error("missing pushes");
     expect(pushedA.value.aad).toMatchObject({ epoch: 2, version: 2, variableId: "vaa" });
     expect(pushedB.value.aad).toMatchObject({ epoch: 2, version: 3, variableId: "vbb" });
-    expect(await decryptWire(newDek, pushedA.value)).toBe("postgres://example");
-    expect(await decryptWire(newDek, pushedB.value)).toBe("key-abc");
+    expect(await decryptValue(newDek, pushedA.value)).toBe("postgres://example");
+    expect(await decryptValue(newDek, pushedB.value)).toBe("key-abc");
     expect(pushedA.value.prevValueSigHashHex).toMatch(/^[0-9a-f]{64}$/);
     expect(env.logs.join("\n")).toContain("epoch 1 → 2");
     expect(env.logs.join("\n")).toContain("re-encrypted 2 variables");
   });
 
   it("the complete wrap set = R(E): a current member whose scope excludes the environment gets no new-DEK wrap (ES K4 — CRYPTO_SPEC §6.2 / §6.3)", async () => {
-    const insider = await makeTestUser("user-insider-7777");
-    const outsider = await makeTestUser("user-outsider-8888");
+    const insider = await generateIdentity("user-insider-7777");
+    const outsider = await generateIdentity("user-outsider-8888");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp("env-other", dek1) },
-      { actor: owner, operation: addScopedMemberOp(insider, "reader", [ENV_ID]) },
-      { actor: owner, operation: addScopedMemberOp(outsider, "member", ["env-other"]) },
+      { actor: owner, operation: addMemberOp(insider, "reader", [ENV_ID]) },
+      { actor: owner, operation: addMemberOp(outsider, "member", ["env-other"]) },
     ]);
     const state = makeServer({
       built,
       variables: [],
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -192,7 +191,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -222,7 +221,7 @@ describe("maruhi env rotate", () => {
       {
         variableId: testVariableId("vaa"),
         version: reencrypted.value.aad.version,
-        valueSigHashHex: await valueHashOf(reencrypted.value, owner.userId),
+        valueSigHashHex: await valueSignedBytesHashOf(reencrypted.value, owner.userId),
       },
     ]);
     if (!digest.ok) throw new Error("digest failed");
@@ -258,7 +257,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -287,7 +286,7 @@ describe("maruhi env rotate", () => {
     if (resumed === undefined) throw new Error("resume push missing");
     expect(resumed.variableId).toBe("vbb");
     expect(resumed.value.aad).toMatchObject({ epoch: 2, version: 2 });
-    expect(await decryptWire(newDek, resumed.value)).toBe("key-abc");
+    expect(await decryptValue(newDek, resumed.value)).toBe("key-abc");
     expect(env.errors.join("\n")).toContain("with incomplete re-encryption");
     expect(env.logs.join("\n")).toContain("resumed re-encryption");
     expect(env.logs.join("\n")).toContain("No new epoch was created");
@@ -323,7 +322,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -362,12 +361,12 @@ describe("maruhi env rotate", () => {
       {
         variableId: testVariableId("vaa"),
         version: pushedA.value.aad.version,
-        valueSigHashHex: await valueHashOf(pushedA.value, owner.userId),
+        valueSigHashHex: await valueSignedBytesHashOf(pushedA.value, owner.userId),
       },
       {
         variableId: testVariableId("vbb"),
         version: pushedB.value.aad.version,
-        valueSigHashHex: await valueHashOf(pushedB.value, owner.userId),
+        valueSigHashHex: await valueSignedBytesHashOf(pushedB.value, owner.userId),
       },
     ]);
     if (!digest.ok) throw new Error("digest failed");
@@ -393,7 +392,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -435,7 +434,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -489,7 +488,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -532,7 +531,7 @@ describe("maruhi env rotate", () => {
       built: chainBase,
       variables,
       deks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: chainBase.projectId,
           environmentId: ENV_ID,
           epoch: 1,

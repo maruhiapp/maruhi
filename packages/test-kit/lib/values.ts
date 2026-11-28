@@ -98,7 +98,7 @@ export async function encryptValue(input: {
   );
 }
 
-export function distributedValueOf(
+function distributedValueOf(
   payload: WireEncryptedPayload,
   writer: Pick<TestIdentity, "userId" | "fingerprintHex">,
 ): WireDistributedValue {
@@ -107,6 +107,25 @@ export function distributedValueOf(
     writerUserId: writer.userId,
     writerKeyFingerprintHex: writer.fingerprintHex,
   };
+}
+
+export async function distributedValue(input: {
+  readonly dek: Uint8Array;
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly variableId: string;
+  readonly version: number;
+  readonly plaintext: string | Uint8Array;
+  readonly writer: ValueWriter & Pick<TestIdentity, "fingerprintHex">;
+  readonly head: ChainHead;
+  readonly prevValueSigHashHex?: string;
+}): Promise<WireDistributedValue> {
+  const payload = await encryptValue({
+    ...input,
+    prevValueSigHashHex: input.prevValueSigHashHex ?? (input.version === 1 ? "" : "cd".repeat(32)),
+  });
+  return distributedValueOf(payload, input.writer);
 }
 
 export async function decryptValue(

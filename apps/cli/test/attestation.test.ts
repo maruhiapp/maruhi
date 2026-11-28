@@ -3,6 +3,16 @@ import { join } from "node:path";
 
 import type { ProjectId } from "@maruhi/core";
 import { signHeadAttestation } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  removeMemberOp,
+  testProjectId,
+} from "@maruhi/test-kit";
 import { Effect, Exit, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -17,28 +27,18 @@ import {
   type VerifiedProject,
 } from "../src/chain-sync.ts";
 import type { CliError } from "../src/errors.ts";
-import {
-  addMemberOp,
-  buildChain,
-  genesisOp,
-  makeTestUser,
-  removeMemberOp,
-  testProjectId,
-  type BuiltChain,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
 
-let owner: TestUser;
-let member: TestUser;
-let outsider: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
+let outsider: GeneratedIdentity;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
-  outsider = await makeTestUser("user-outsider-3333");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
+  outsider = await generateIdentity("user-outsider-3333");
 });
 
 afterEach(async () => {
@@ -69,7 +69,7 @@ async function verifiedViewOf(
 }
 
 async function attestationBy(
-  attester: TestUser,
+  attester: GeneratedIdentity,
   projectId: string,
   head: { readonly seq: number; readonly hashHex: string },
   overrides?: Partial<DistributedAttestationWire>,

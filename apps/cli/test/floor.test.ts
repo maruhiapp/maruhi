@@ -2,6 +2,7 @@ import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { testEnvironmentId, testProjectId, testVariableId } from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -9,7 +10,6 @@ import { cliError } from "../src/errors.ts";
 import { makeFloorHandle } from "../src/floor-check.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { EnvironmentFloor, FloorStoreShape } from "../src/floor.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/crypto.ts";
 const PROJECT_ID = "ab".repeat(32);
 const HASH_A = "11".repeat(32);
 const HASH_B = "22".repeat(32);

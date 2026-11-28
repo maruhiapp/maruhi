@@ -1,44 +1,44 @@
 import type { ChainEntry } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { describeDue } from "../src/max-age.ts";
 import {
   addMemberOp,
-  addScopedMemberOp,
   buildChain,
   type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
   removeMemberOp,
   rotateEpochOp,
-  statementFor,
-  type TestUser,
+  testEnvironmentId,
+  testVariableId,
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { describeDue } from "../src/max-age.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
-let owner: TestUser;
-let target: TestUser;
+let owner: GeneratedIdentity;
+let target: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  target = await makeTestUser("user-target-2222");
+  owner = await generateIdentity("user-owner-1111");
+  target = await generateIdentity("user-target-2222");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
 });
@@ -102,14 +102,14 @@ async function makeRotationServer(input: {
   const dismissBodies: {
     readonly targets: readonly { environmentId: string; variableId: string }[];
   }[] = [];
-  const envStatement: WireDistributedEnvironmentStatement = await environmentStatementFor({
+  const envStatement: WireDistributedEnvironmentStatement = await distributedEnvironmentStatement({
     projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head: headOf(input.built, 1),
   });
-  const activeStatement: WireDistributedVariableStatement = await statementFor({
+  const activeStatement: WireDistributedVariableStatement = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "va",
@@ -117,7 +117,7 @@ async function makeRotationServer(input: {
     author: owner,
     head: headOf(input.built, 1),
   });
-  const deletedStatement: WireDistributedVariableStatement = await statementFor({
+  const deletedStatement: WireDistributedVariableStatement = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "vdel",
@@ -127,7 +127,7 @@ async function makeRotationServer(input: {
     status: "deleted",
     metaVersion: 2,
   });
-  const expiringStatement: WireDistributedVariableStatement = await statementFor({
+  const expiringStatement: WireDistributedVariableStatement = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "vexp",
@@ -137,7 +137,7 @@ async function makeRotationServer(input: {
     schema: { varType: "string", required: true, description: "", maxAgeDays: 30 },
   });
   const expiringStatements = input.expiringPushedAtMs === undefined ? [] : [expiringStatement];
-  const manifest = await manifestFor({
+  const manifest = await distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch: currentEpoch,
@@ -355,7 +355,7 @@ describe("maruhi rotation list", () => {
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_ID]) },
       { actor: owner, operation: deleteEnvironmentOp(GONE) },
     ]);
     const state = await makeRotationServer({ built: scoped, flags: [] });
@@ -372,7 +372,7 @@ describe("maruhi rotation list", () => {
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: owner, operation: createEnvironmentOp(GONE, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [GONE]) },
+      { actor: owner, operation: addMemberOp(target, "member", [GONE]) },
       { actor: owner, operation: deleteEnvironmentOp(GONE) },
     ]);
     const dueState = await makeRotationServer({
@@ -442,7 +442,7 @@ describe("maruhi rotation list", () => {
     const scoped = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_ID]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_ID]) },
     ]);
     const asScoped = async (state: RotationServerState) => {
       const server = await MockServer.start([...state.handlers]);

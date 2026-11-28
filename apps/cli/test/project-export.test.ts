@@ -4,6 +4,14 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 import type { ProjectId } from "@maruhi/core";
+import {
+  buildChain,
+  type BuiltChain,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  testProjectId,
+} from "@maruhi/test-kit";
 import { Cause, Effect, Exit, Fiber } from "effect";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
@@ -12,14 +20,6 @@ import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { projectExportOp } from "../src/project.package/project-export.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
-import {
-  buildChain,
-  genesisOp,
-  makeTestUser,
-  testProjectId,
-  type BuiltChain,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
@@ -54,12 +54,12 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
 });
 

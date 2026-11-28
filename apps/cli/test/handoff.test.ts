@@ -14,6 +14,13 @@ import {
   sealHandoffValue,
   wrapMasterBlob,
 } from "@maruhi/crypto";
+import {
+  addDeviceOp,
+  buildChain,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+} from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -26,29 +33,22 @@ import {
   tokenEntryName,
 } from "../src/keychain.ts";
 import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
-import {
-  addOwnerDeviceOp,
-  buildChain,
-  genesisOp,
-  makeTestUser,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 import { advanceUntilSettled, waitFor, withTestClock } from "./support/test-clock.ts";
 
-let ward: TestUser;
-let reserve: TestUser;
-let alice: TestUser;
+let ward: GeneratedIdentity;
+let reserve: GeneratedIdentity;
+let alice: GeneratedIdentity;
 
 const servers: MockServer[] = [];
 const GROUP_ID = "01J9Z8Y7X6W5V4T3S2R1Q0P9N8";
 const FAR_FUTURE_MS = Date.now() + 10 * 60 * 1000;
 
 beforeAll(async () => {
-  ward = await makeTestUser("user-ward-0001");
-  reserve = await makeTestUser("user-ward-0001");
-  alice = await makeTestUser("user-alice-0002");
+  ward = await generateIdentity("user-ward-0001");
+  reserve = await generateIdentity("user-ward-0001");
+  alice = await generateIdentity("user-alice-0002");
 });
 
 afterEach(async () => {
@@ -61,7 +61,7 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-function recordOf(user: TestUser): StoredMasterKey {
+function recordOf(user: GeneratedIdentity): StoredMasterKey {
   return {
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
@@ -85,7 +85,7 @@ async function start(handlers: readonly MockHandler[]): Promise<Started> {
   return { env, server };
 }
 
-function seedTokenOnly(env: TestEnv, origin: string, user: TestUser): void {
+function seedTokenOnly(env: TestEnv, origin: string, user: GeneratedIdentity): void {
   env.keychain.set(
     tokenEntryName(origin),
     JSON.stringify({
@@ -144,9 +144,9 @@ async function wrappedReserve(kek: Uint8Array): Promise<{
 
 async function guardianApprovalFor(
   env: TestEnv,
-  approver: TestUser,
+  approver: GeneratedIdentity,
   kek: Uint8Array,
-  sealedAs: TestUser = approver,
+  sealedAs: GeneratedIdentity = approver,
 ): Promise<ApprovalWire> {
   const { publicKey, requestId } = await decodeDisplayed(env);
   const ephemeral = await importEncryptionPublicKey(publicKey);
@@ -244,7 +244,7 @@ describe("maruhi key recover --handoff (the requester)", () => {
     const kek = generateMasterWrapKek();
     const chain = await buildChain([
       { actor: ward, operation: genesisOp(ward) },
-      { actor: ward, operation: addOwnerDeviceOp(reserve) },
+      { actor: ward, operation: addDeviceOp(reserve, "owner") },
     ]);
     let createBody: { requestId: string } | null = null;
     const { env, server } = await start([
@@ -407,7 +407,7 @@ interface ApproveBody {
   readonly ciphertextHex: string;
 }
 
-function lookupOf(wardUser: TestUser, wardLogin: string | null): unknown {
+function lookupOf(wardUser: GeneratedIdentity, wardLogin: string | null): unknown {
   return {
     wardUserId: wardUser.userId,
     wardLogin,
@@ -428,7 +428,7 @@ function approveHandler(requestId: string, record: (body: ApproveBody) => void):
 }
 
 async function sealedShareFor(
-  guardian: TestUser,
+  guardian: GeneratedIdentity,
   kek: Uint8Array,
 ): Promise<{ readonly encHex: string; readonly ciphertextHex: string }> {
   const publicKey = await importEncryptionPublicKey(hex(guardian.encPubHex));

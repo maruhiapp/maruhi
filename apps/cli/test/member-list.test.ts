@@ -1,37 +1,37 @@
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+} from "@maruhi/test-kit";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
-import {
-  addScopedMemberOp,
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  genesisOp,
-  makeTestUser,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let owner: TestUser;
-let devMember: TestUser;
-let noneReader: TestUser;
+let owner: GeneratedIdentity;
+let devMember: GeneratedIdentity;
+let noneReader: GeneratedIdentity;
 let built: BuiltChain;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  devMember = await makeTestUser("user-dev-2222");
-  noneReader = await makeTestUser("user-none-3333");
+  owner = await generateIdentity("user-owner-1111");
+  devMember = await generateIdentity("user-dev-2222");
+  noneReader = await generateIdentity("user-none-3333");
   const dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp("env-staging", dek) },
     { actor: owner, operation: createEnvironmentOp("env-dev", dek) },
-    { actor: owner, operation: addScopedMemberOp(devMember, "member", ["env-staging", "env-dev"]) },
-    { actor: owner, operation: addScopedMemberOp(noneReader, "reader", []) },
+    { actor: owner, operation: addMemberOp(devMember, "member", ["env-staging", "env-dev"]) },
+    { actor: owner, operation: addMemberOp(noneReader, "reader", []) },
   ]);
 });
 
@@ -52,7 +52,9 @@ function chainHandler(): MockHandler {
   }));
 }
 
-async function startEnv(user: TestUser): Promise<TestEnv & { readonly server: MockServer }> {
+async function startEnv(
+  user: GeneratedIdentity,
+): Promise<TestEnv & { readonly server: MockServer }> {
   const server = await MockServer.start([chainHandler()]);
   servers.push(server);
   const env = await makeTestEnv();

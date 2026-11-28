@@ -1,42 +1,43 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash, computeEnvValuesDigest, SUITE_ID } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   type BuiltChain,
   checkpointSnapshotValuesOf,
   createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
   rotateEpochOp,
-  statementFor,
-  type TestUser,
+  testEnvironmentId,
+  testVariableId,
   type WireCheckpointSnapshot,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-  wrapDekFor,
-  type WireRotateBody,
-} from "./support/crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "prod";
 
-let owner: TestUser;
-let reader: TestUser;
-let member2: TestUser;
+let owner: GeneratedIdentity;
+let reader: GeneratedIdentity;
+let member2: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 let chain1: BuiltChain;
@@ -52,9 +53,9 @@ let projectId: string;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  reader = await makeTestUser("user-reader-2222");
-  member2 = await makeTestUser("user-member2-3333");
+  owner = await generateIdentity("user-owner-1111");
+  reader = await generateIdentity("user-reader-2222");
+  member2 = await generateIdentity("user-member2-3333");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   const steps = [
@@ -71,16 +72,28 @@ beforeAll(async () => {
   projectId = chain1.projectId;
   expect(chain2.projectId).toBe(projectId);
   const common = { projectId, environmentId: ENV_ID };
-  wrap1 = await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner });
-  wrap2 = await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner });
-  envStatement = await environmentStatementFor({
+  wrap1 = await distributedWrap({
+    ...common,
+    epoch: 1,
+    dek: dek1,
+    recipient: owner,
+    signer: owner,
+  });
+  wrap2 = await distributedWrap({
+    ...common,
+    epoch: 2,
+    dek: dek2,
+    recipient: owner,
+    signer: owner,
+  });
+  envStatement = await distributedEnvironmentStatement({
     projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head: { seq: 1, hashHex: projectId },
   });
-  alphaStatement = await statementFor({
+  alphaStatement = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "va",
@@ -88,7 +101,7 @@ beforeAll(async () => {
     author: owner,
     head: { seq: 1, hashHex: projectId },
   });
-  alphaValue1 = await encryptValueFor({
+  alphaValue1 = await distributedValue({
     dek: dek1,
     ...common,
     epoch: 1,
@@ -98,7 +111,7 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(chain1, 4),
   });
-  alphaValue2 = await encryptValueFor({
+  alphaValue2 = await distributedValue({
     dek: dek2,
     ...common,
     epoch: 2,
@@ -191,13 +204,13 @@ function manifestV1(
     readonly statements?: readonly WireDistributedVariableStatement[];
     readonly epoch?: number;
     readonly head?: { readonly seq: number; readonly hashHex: string };
-    readonly issuer?: TestUser;
+    readonly issuer?: GeneratedIdentity;
     readonly manifestVersion?: number;
     readonly prevManifestSigHashHex?: string;
   } = {},
 ): Promise<WireDistributedManifest> {
   const { manifestVersion, prevManifestSigHashHex } = overrides;
-  return manifestFor({
+  return distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch: overrides.epoch ?? 1,
@@ -237,7 +250,7 @@ describe("manifest distribution-time verification (§6.3 — wiring into crypto'
   });
 
   it("refuses a missing tombstone (a digest that excludes the deletion record)", async () => {
-    const tombstone = await statementFor({
+    const tombstone = await distributedVariableStatement({
       projectId,
       environmentId: ENV_ID,
       variableId: "vd",
@@ -361,7 +374,7 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
                 environmentId: testEnvironmentId(ENV_ID),
                 epoch: 1,
                 manifestVersion: 1,
-                manifestSigHashHex: await manifestHashOf(projectId, v1),
+                manifestSigHashHex: await distributedManifestHashOf(projectId, v1),
                 valuesDigestHex: valuesDigest.value,
               },
             ],
@@ -538,7 +551,7 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    return manifestHashOf(projectId, await manifestV1());
+    return distributedManifestHashOf(projectId, await manifestV1());
   }
 
   it("floor v1 → v2 with the correct prev: accepted", async () => {
@@ -623,7 +636,7 @@ describe("prev-chain verification of adjacent manifestVersions (§4.3 verificati
       }),
     ]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
-    const v2Hash = await manifestHashOf(
+    const v2Hash = await distributedManifestHashOf(
       projectId,
       await manifestV1({ epoch: 2, head: headOf(chain2, 5), manifestVersion: 2 }),
     );

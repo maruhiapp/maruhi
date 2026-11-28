@@ -1,16 +1,16 @@
 import { unwrapDek, verifyDekWrapSignature } from "@maruhi/crypto";
 import { testKeyFingerprintHex, unwrapResult } from "@maruhi/crypto/test-support";
+import {
+  generateIdentity,
+  hexBytes,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+} from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { wrapAndSignFor } from "../src/dek-wrap.ts";
-import {
-  hexBytes,
-  makeTestUser,
-  testEnvironmentId,
-  testProjectId,
-  testUserId,
-} from "./support/crypto.ts";
 
 function serverRecipient(serverEncPubHex: string) {
   return {
@@ -27,7 +27,7 @@ function serverRecipient(serverEncPubHex: string) {
 
 describe("wrapAndSignFor", () => {
   it("fails with the hex-decode reason for a non-hex recipient enc key", async () => {
-    const signer = await makeTestUser("user-signer-0001");
+    const signer = await generateIdentity("user-signer-0001");
     const built = await wrapAndSignFor({
       projectId: testProjectId("aa".repeat(32)),
       environmentId: testEnvironmentId("prod"),
@@ -44,7 +44,7 @@ describe("wrapAndSignFor", () => {
   });
 
   it("fails with the key-import reason for an enc key that is hex but not a public key", async () => {
-    const signer = await makeTestUser("user-signer-0001");
+    const signer = await generateIdentity("user-signer-0001");
     const built = await wrapAndSignFor({
       projectId: testProjectId("aa".repeat(32)),
       environmentId: testEnvironmentId("prod"),
@@ -61,8 +61,8 @@ describe("wrapAndSignFor", () => {
   });
 
   it("wraps and signs for a valid recipient ({kind: 'ok'} shape)", async () => {
-    const signer = await makeTestUser("user-signer-0001");
-    const server = await makeTestUser("user-server-0001");
+    const signer = await generateIdentity("user-signer-0001");
+    const server = await generateIdentity("user-server-0001");
     const projectId = "aa".repeat(32);
     const dek = new Uint8Array(32).map((_, index) => index);
     const built = await wrapAndSignFor({

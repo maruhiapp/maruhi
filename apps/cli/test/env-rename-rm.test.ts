@@ -1,30 +1,30 @@
 import { type ChainEntry, computeChainEntryHash } from "@maruhi/crypto";
-import { Effect } from "effect";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { makeFileFloorStore } from "../src/floor-log.ts";
-import type { ProjectFloor } from "../src/floor.ts";
 import {
   addMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedStatementHashOf,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  statementFor,
-  statementHashOf,
-  type TestUser,
+  testProjectId,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { Effect } from "effect";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { makeFileFloorStore } from "../src/floor-log.ts";
+import type { ProjectFloor } from "../src/floor.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
@@ -32,8 +32,8 @@ import { type MockHandler, type MockRequest, MockServer, onRequest } from "./sup
 const ENV_ID = "dev";
 const ENV_NAME = "Development";
 
-let owner: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
 let built: BuiltChain;
 let deletedChain: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
@@ -42,8 +42,8 @@ let manifestV1: WireDistributedManifest;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
   const steps = [
     { actor: owner, operation: genesisOp(owner) },
     {
@@ -59,9 +59,20 @@ beforeAll(async () => {
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const head = { seq: 1, hashHex: built.projectId };
-  envStatement = await environmentStatementFor({ ...common, name: ENV_NAME, author: owner, head });
-  port = await statementFor({ ...common, variableId: "v-port", name: "PORT", author: owner, head });
-  manifestV1 = await manifestFor({
+  envStatement = await distributedEnvironmentStatement({
+    ...common,
+    name: ENV_NAME,
+    author: owner,
+    head,
+  });
+  port = await distributedVariableStatement({
+    ...common,
+    variableId: "v-port",
+    name: "PORT",
+    author: owner,
+    head,
+  });
+  manifestV1 = await distributedManifest({
     ...common,
     epoch: 1,
     issuer: owner,
@@ -77,7 +88,7 @@ afterEach(async () => {
 });
 
 async function startEnv(options?: {
-  readonly user?: TestUser;
+  readonly user?: GeneratedIdentity;
   readonly before?: (state: MetaEnvironmentState) => readonly MockHandler[];
   readonly ignoreEnvironmentMutations?: boolean;
   readonly resurrectDeleted?: boolean;
@@ -149,17 +160,17 @@ function environmentCalls(requests: readonly MockRequest[], method: string): Moc
 }
 
 async function concurrentRename(state: MetaEnvironmentState, name: string): Promise<void> {
-  const renamed = await environmentStatementFor({
+  const renamed = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name,
     author: owner,
     head: headOf(built, built.entries.length),
     metaVersion: 2,
-    prevMetaSigHashHex: await statementHashOf(built.projectId, envStatement),
+    prevMetaSigHashHex: await distributedStatementHashOf(built.projectId, envStatement),
   });
   state.envStatement = renamed;
-  state.manifest = await manifestFor({
+  state.manifest = await distributedManifest({
     projectId: built.projectId,
     environmentId: ENV_ID,
     epoch: 1,
@@ -168,7 +179,7 @@ async function concurrentRename(state: MetaEnvironmentState, name: string): Prom
     envStatement: renamed,
     statements: [port],
     manifestVersion: 2,
-    prevManifestSigHashHex: await manifestHashOf(built.projectId, manifestV1),
+    prevManifestSigHashHex: await distributedManifestHashOf(built.projectId, manifestV1),
   });
 }
 
@@ -203,14 +214,14 @@ describe("maruhi env rename", () => {
       name: "Staging",
       status: "active",
       metaVersion: 2,
-      prevMetaSigHashHex: await statementHashOf(built.projectId, envStatement),
+      prevMetaSigHashHex: await distributedStatementHashOf(built.projectId, envStatement),
       chainHeadSeq: built.entries.length,
     });
     expect(body.manifest).toMatchObject({
       manifestVersion: 2,
       envMetaVersion: 2,
       variablesDigestHex: manifestV1.variablesDigestHex,
-      prevManifestSigHashHex: await manifestHashOf(built.projectId, manifestV1),
+      prevManifestSigHashHex: await distributedManifestHashOf(built.projectId, manifestV1),
     });
     expect(env.logs.join("\n")).toContain(
       "Renamed environment dev from Development to Staging (metaVersion=2)",
@@ -234,7 +245,7 @@ describe("maruhi env rename", () => {
   });
 
   it("refuses a reader before signing (member or above — §12-3)", async () => {
-    const reader = await makeTestUser("user-reader-3333");
+    const reader = await generateIdentity("user-reader-3333");
     const readerChain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       {
@@ -283,7 +294,7 @@ describe("maruhi env rename", () => {
       name: "Staging",
       metaVersion: 3,
       prevMetaSigHashHex:
-        winner === undefined ? "" : await statementHashOf(built.projectId, winner),
+        winner === undefined ? "" : await distributedStatementHashOf(built.projectId, winner),
     });
     expect(retried.manifest).toMatchObject({ manifestVersion: 3, envMetaVersion: 3 });
     expect(env.logs.join("\n")).toContain("from Concurrent to Staging (metaVersion=3)");

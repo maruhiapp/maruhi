@@ -1,4 +1,5 @@
 import { unwrapMasterSecret, wrapMasterSecret } from "@maruhi/crypto";
+import { type GeneratedIdentity, generateIdentity, testUserId } from "@maruhi/test-kit";
 import { Effect, Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -16,7 +17,6 @@ import {
   ownDevicesPathOf,
 } from "../src/own-devices.ts";
 import { formatRecoveryCode, parseRecoveryCode } from "../src/reserve.package/recovery-code.ts";
-import { makeTestUser, testUserId, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
@@ -190,7 +190,7 @@ describe("the reserve-key mark (CRYPTO_SPEC §8 — DK K16)", () => {
   });
 
   it("stops without using a marked key in the keychain as a device key", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const env = await loggedInEnv("https://maruhi.test", user.userId);
     env.keychain.set(
       masterKeyEntryName("https://maruhi.test", user.userId),
@@ -334,7 +334,7 @@ describe("maruhi key generate recovery issuance", () => {
 
 describe("maruhi key recovery (issue / re-issue)", () => {
   it("generates a reserve key and seals it for the first time when unregistered", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let put: PutBody | null = null;
     const maruhi = await start([
       statusHandler(false),
@@ -355,8 +355,8 @@ describe("maruhi key recovery (issue / re-issue)", () => {
   });
 
   it("when already registered (reserve key), opens the ledger first and re-issues with explicit notice that it is a replacement", async () => {
-    const user = await makeTestUser("user-0001");
-    const reserveUser = await makeTestUser("user-0001-reserve");
+    const user = await generateIdentity("user-0001");
+    const reserveUser = await generateIdentity("user-0001-reserve");
     const { handler, code } = await ledgerHandlerFor(
       storedReserveRecord(reserveUser),
       user.userId,
@@ -393,7 +393,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
   });
 
   it("--replace substitutes without opening the ledger (the escape hatch for a lost code)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let fetched = false;
     let put: PutBody | null = null;
     const maruhi = await start([
@@ -437,7 +437,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
   });
 
   it("--replace shows the count and the --passkey alternative before writing when passkey rows exist, then removes them", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const wrapId = "01JMKWRAP000000000000PASSK";
     const deleted: string[] = [];
     let put: PutBody | null = null;
@@ -487,7 +487,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
   });
 
   it("--replace does not stop the replacement when the ledger's row list is unreadable (warning in the general form + Note)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let put: PutBody | null = null;
     const maruhi = await start([
       statusHandler(true),
@@ -516,7 +516,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
   });
 
   it("refuses issuance in an AI-agent environment", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([statusHandler(false), putHandler(() => {})]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -531,7 +531,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
       { stdin: true, stdout: false, stderr: true },
       { stdin: true, stdout: true, stderr: false },
     ]) {
-      const user = await makeTestUser("user-0001");
+      const user = await generateIdentity("user-0001");
       let putSeen = false;
       const maruhi = await start([
         statusHandler(false),
@@ -554,15 +554,15 @@ describe("maruhi key recovery (issue / re-issue)", () => {
 
 describe("maruhi key recover (restore)", () => {
   function wrappedBlobHandler(
-    user: TestUser,
+    user: GeneratedIdentity,
     secret: Uint8Array,
   ): Promise<{ handler: MockHandler; code: string }> {
     return ledgerHandlerFor(storedReserveRecord(user), user.userId, secret);
   }
 
   it("opens the reserve key with the correct code, issues a new device key, and discards the reserve key", async () => {
-    const user = await makeTestUser("user-0001");
-    const reserveUser = await makeTestUser("user-0001-reserve");
+    const user = await generateIdentity("user-0001");
+    const reserveUser = await generateIdentity("user-0001-reserve");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await ledgerHandlerFor(
       storedReserveRecord(reserveUser),
@@ -602,7 +602,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("records a key carrying the reserve-key mark without asking, even on no chain (DK K16-6)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler, code } = await wrappedBlobHandler(user, secret);
     const maruhi = await start([handler, noProjectsHandler()]);
@@ -618,7 +618,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("does not dead-end an unknown-suite blob; guides toward updating and re-registering", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const future = { ...storedMasterRecord(user), suite: "maruhi/v2" };
     const wrapped = await wrapMasterSecret({
@@ -681,7 +681,7 @@ describe("maruhi key recover (restore)", () => {
       },
     ] as const;
     for (const testCase of cases) {
-      const user = await makeTestUser("user-0001");
+      const user = await generateIdentity("user-0001");
       const secret = crypto.getRandomValues(new Uint8Array(32));
       const wrapped = await wrapMasterSecret({
         recoverySecret: secret,
@@ -710,7 +710,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("retries a wrong code locally and fails after 3 attempts (fetch happens once)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler } = await wrappedBlobHandler(user, secret);
     let fetches = 0;
@@ -731,7 +731,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("a tampered wrap gets the same retry wording as a wrong code (the full messages)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const wrapped = await wrapMasterSecret({
       recoverySecret: secret,
@@ -769,7 +769,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("refuses code input in an AI-agent environment (the symmetric line to the issuance side)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let fetched = false;
     const maruhi = await start([
       onRequest("GET", "/auth/recovery", () => {
@@ -790,7 +790,7 @@ describe("maruhi key recover (restore)", () => {
       { stdin: true, stdout: false, stderr: true },
       { stdin: true, stdout: true, stderr: false },
     ]) {
-      const user = await makeTestUser("user-0001");
+      const user = await generateIdentity("user-0001");
       let fetched = false;
       const maruhi = await start([
         onRequest("GET", "/auth/recovery", () => {
@@ -808,7 +808,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("refuses before touching the server on a device that already has a device key", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let reachedServer = false;
     const maruhi = await start([
       () => {
@@ -827,7 +827,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("guides the registration steps when unregistered (404)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([
       onRequest("GET", "/auth/recovery", () => ({
         status: 404,
@@ -840,7 +840,7 @@ describe("maruhi key recover (restore)", () => {
   });
 
   it("a rate limit (429) reports the seconds until retry", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([
       onRequest("GET", "/auth/recovery", () => ({
         status: 429,

@@ -1,21 +1,21 @@
 import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   createEnvironmentOp,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   grantServerOp,
   innerOf,
-  makeTestUser,
   proposeOp,
   removeMemberOp,
   setApprovalPolicyOp,
-  type TestUser,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type FourEyesServerState, makeFourEyesServer } from "./support/four-eyes-server.ts";
 import { acceptanceFixture, INVITE_ID, issueInviteFixture } from "./support/invite.ts";
@@ -24,20 +24,20 @@ import { MockServer } from "./support/server.ts";
 const ENV_ID = "env-app-1";
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 
-let owner: TestUser;
-let owner2: TestUser;
-let target: TestUser;
-let acceptor: TestUser;
+let owner: GeneratedIdentity;
+let owner2: GeneratedIdentity;
+let target: GeneratedIdentity;
+let acceptor: GeneratedIdentity;
 let dek1: Uint8Array;
 let serverFpHex: string;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  owner2 = await makeTestUser("user-owner-2222");
-  target = await makeTestUser("user-target-4444");
-  acceptor = await makeTestUser("user-acceptor-66");
+  owner = await generateIdentity("user-owner-1111");
+  owner2 = await generateIdentity("user-owner-2222");
+  target = await generateIdentity("user-target-4444");
+  acceptor = await generateIdentity("user-acceptor-66");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   const fp = await computeServerKeyFingerprint(Uint8Array.from({ length: 32 }, () => 0x5a));
   if (!fp.ok) throw new Error("server fingerprint failed");
@@ -51,7 +51,7 @@ afterEach(async () => {
 async function startEnv(
   state: FourEyesServerState,
   projectId: string,
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const server = await MockServer.start([...state.handlers]);
   servers.push(server);
@@ -63,7 +63,7 @@ async function startEnv(
 
 type PolicyOp = Parameters<typeof setApprovalPolicyOp>[0][number];
 
-async function invitationFor(projectId: string, invitee: TestUser) {
+async function invitationFor(projectId: string, invitee: GeneratedIdentity) {
   const issued = await issueInviteFixture({
     inviter: owner,
     projectId,
@@ -105,7 +105,7 @@ describe("auto-proposal of existing commands (K6-A)", () => {
         [ENV_ID]: {
           currentEpoch: 1,
           deks: [
-            await wrapDekFor({
+            await distributedWrap({
               projectId: built.projectId,
               environmentId: ENV_ID,
               epoch: 1,
@@ -180,7 +180,7 @@ describe("auto-proposal of existing commands (K6-A)", () => {
   });
 
   it("member remove: the proposal path does not refuse a self-remove (the fulfiller is the approver — K6-N)", async () => {
-    const owner3 = await makeTestUser("user-owner-3333");
+    const owner3 = await generateIdentity("user-owner-3333");
     const steps = baseSteps(["remove_member"]);
     const built = await buildChain([
       ...steps.slice(0, -1),
@@ -423,7 +423,7 @@ describe("member add proposal and the key-FP re-registration warning (K6-D / K6-
         [ENV_ID]: {
           currentEpoch: 1,
           deks: [
-            await wrapDekFor({
+            await distributedWrap({
               projectId: built.projectId,
               environmentId: ENV_ID,
               epoch: 1,
@@ -468,7 +468,7 @@ describe("resuming an operation applied via a proposal (K6-C)", () => {
         [ENV_ID]: {
           currentEpoch: 1,
           deks: [
-            await wrapDekFor({
+            await distributedWrap({
               projectId: built.projectId,
               environmentId: ENV_ID,
               epoch: 1,

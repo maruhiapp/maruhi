@@ -1,28 +1,28 @@
-import { afterEach, beforeAll } from "vite-plus/test";
-
-import { chainHandlerOf } from "./chain-handler.ts";
 import {
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  statementFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireRecipientDek,
-  wrapDekFor,
-} from "./crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll } from "vite-plus/test";
+
+import { chainHandlerOf } from "./chain-handler.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./server.ts";
 import { type StoredVariable } from "./value-env.ts";
 
 export const ENV_ID = "prod";
 export const ALPHA_VALUE = "alpha-value";
 
-export let owner: TestUser;
+export let owner: GeneratedIdentity;
 export let built: BuiltChain;
 let dek: Uint8Array;
 export let wrap: WireRecipientDek;
@@ -31,16 +31,16 @@ export let alpha: StoredVariable;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     { actor: owner, operation: createEnvironmentOp(ENV_ID, dek) },
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  wrap = await wrapDekFor({ ...common, epoch: 1, dek, recipient: owner, signer: owner });
+  wrap = await distributedWrap({ ...common, epoch: 1, dek, recipient: owner, signer: owner });
   const head = { seq: 1, hashHex: built.projectId };
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     ...common,
     name: ENV_ID,
     author: owner,
@@ -48,14 +48,14 @@ beforeAll(async () => {
   });
   alpha = {
     variableId: "va",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       ...common,
       variableId: "va",
       name: "ALPHA",
       author: owner,
       head,
     }),
-    value: await encryptValueFor({
+    value: await distributedValue({
       dek,
       ...common,
       epoch: 1,

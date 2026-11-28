@@ -3,35 +3,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { decryptVariable } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  hexBytes,
+  rotateEpochOp,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedValue,
+  type WireRecipientDek,
+  type WireStatementSchema,
+} from "@maruhi/test-kit";
 import { Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { type CliServices, runCli } from "../src/cli.ts";
 import { IssuerEndpoints } from "../src/connector.package/connector-shared.ts";
-import {
-  buildChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  hexBytes,
-  makeTestUser,
-  rotateEpochOp,
-  statementFor,
-  testEnvironmentId,
-  testProjectId,
-  testVariableId,
-  type BuiltChain,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedValue,
-  type WireRecipientDek,
-  type WireStatementSchema,
-  valueHashOf,
-  wrapDekFor,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer } from "./support/server.ts";
 import { withTestClock } from "./support/test-clock.ts";
@@ -40,14 +40,14 @@ import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./suppor
 const ENV_ID = "prod";
 const OPS_ID = "ops";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let dekProd: Uint8Array;
 let dekOps: Uint8Array;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dekProd = crypto.getRandomValues(new Uint8Array(32));
   dekOps = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
@@ -74,7 +74,7 @@ async function environmentServer(input: {
   readonly dek: Uint8Array;
   readonly seeds: readonly Seed[];
 }) {
-  const wrap: WireRecipientDek = await wrapDekFor({
+  const wrap: WireRecipientDek = await distributedWrap({
     projectId: built.projectId,
     environmentId: input.environmentId,
     recipient: owner,
@@ -83,7 +83,7 @@ async function environmentServer(input: {
     dek: input.dek,
   });
   const head = { seq: 1, hashHex: built.projectId };
-  const envStatement: WireDistributedEnvironmentStatement = await environmentStatementFor({
+  const envStatement: WireDistributedEnvironmentStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: input.environmentId,
     name: input.environmentId,
@@ -93,7 +93,7 @@ async function environmentServer(input: {
   const initialVariables = [];
   const initialHistory = new Map<string, WireDistributedValue[]>();
   for (const seed of input.seeds) {
-    const statement = await statementFor({
+    const statement = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: input.environmentId,
       variableId: seed.variableId,
@@ -106,7 +106,7 @@ async function environmentServer(input: {
     for (const [index, plaintext] of seed.plaintexts.entries()) {
       const previous = values.at(-1);
       values.push(
-        await encryptValueFor({
+        await distributedValue({
           dek: input.dek,
           projectId: built.projectId,
           environmentId: input.environmentId,
@@ -118,7 +118,7 @@ async function environmentServer(input: {
           head: headOf(built, 3),
           ...(previous === undefined
             ? {}
-            : { prevValueSigHashHex: await valueHashOf(previous, owner.userId) }),
+            : { prevValueSigHashHex: await valueSignedBytesHashOf(previous, owner.userId) }),
         }),
       );
     }
@@ -1039,7 +1039,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
       { actor: owner, operation: rotateEpochOp(ENV_ID, 2, dek2) },
     ]);
     const projectId = chain.projectId;
-    const wrap2 = await wrapDekFor({
+    const wrap2 = await distributedWrap({
       projectId,
       environmentId: ENV_ID,
       recipient: owner,
@@ -1048,7 +1048,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
       dek: dek2,
     });
     const head = { seq: 1, hashHex: projectId };
-    const envStatement = await environmentStatementFor({
+    const envStatement = await distributedEnvironmentStatement({
       projectId,
       environmentId: ENV_ID,
       name: ENV_ID,
@@ -1060,7 +1060,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
       name: string,
       entries: readonly { readonly plaintext: string; readonly epoch: 1 | 2 }[],
     ) => {
-      const statement = await statementFor({
+      const statement = await distributedVariableStatement({
         projectId,
         environmentId: ENV_ID,
         variableId,
@@ -1072,7 +1072,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
       for (const [index, entry] of entries.entries()) {
         const previous = values.at(-1);
         values.push(
-          await encryptValueFor({
+          await distributedValue({
             dek: entry.epoch === 1 ? dek1 : dek2,
             projectId,
             environmentId: ENV_ID,
@@ -1084,7 +1084,7 @@ describe("maruhi var rotate --finalize with an ancestor this device cannot decry
             head: headOf(chain, entry.epoch === 1 ? 2 : 3),
             ...(previous === undefined
               ? {}
-              : { prevValueSigHashHex: await valueHashOf(previous, owner.userId) }),
+              : { prevValueSigHashHex: await valueSignedBytesHashOf(previous, owner.userId) }),
           }),
         );
       }

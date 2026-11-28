@@ -8,28 +8,27 @@ import {
   verifyDekCommitment,
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  buildChain,
+  createEnvironmentOp,
+  distributedStatementHashOf,
+  distributedVariablesDigestOf,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  grantServerOp,
+  hexBytes,
+  removeMemberOp,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
-import {
-  addMemberOp,
-  addScopedMemberOp,
-  buildChain,
-  createEnvironmentOp,
-  genesisOp,
-  grantServerOp,
-  hexBytes,
-  makeTestUser,
-  removeMemberOp,
-  statementHashOf,
-  testEnvironmentId,
-  testProjectId,
-  testUserId,
-  type TestUser,
-  variablesDigestOf,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
@@ -72,7 +71,7 @@ afterEach(async () => {
 async function startEnv(
   projectId: string,
   handlers: readonly MockHandler[],
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const server = await MockServer.start(handlers);
   servers.push(server);
@@ -168,8 +167,8 @@ function acceptingCreateServer(input: {
 async function verifyAndUnwrapWrap(input: {
   readonly wrap: WrappedDek;
   readonly projectId: string;
-  readonly signer: TestUser;
-  readonly recipient: TestUser;
+  readonly signer: GeneratedIdentity;
+  readonly recipient: GeneratedIdentity;
 }): Promise<Uint8Array> {
   const { wrap, projectId, signer, recipient } = input;
   expect(wrap.epoch).toBe(1);
@@ -219,9 +218,9 @@ async function verifyAndUnwrapWrap(input: {
 
 describe("maruhi env create", () => {
   it("composite request: bundles the signed create_environment entry (with commitment) + the complete wrap set", async () => {
-    const owner = await makeTestUser("user-owner-1111");
-    const member = await makeTestUser("user-member-2222");
-    const removed = await makeTestUser("user-removed-3333");
+    const owner = await generateIdentity("user-owner-1111");
+    const member = await generateIdentity("user-member-2222");
+    const removed = await generateIdentity("user-removed-3333");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "reader") },
@@ -286,10 +285,12 @@ describe("maruhi env create", () => {
     expect(body.manifest.epoch).toBe(1);
     expect(body.manifest.chainHeadHashHex).toBe(head);
     expect(body.manifest.chainHeadSeq).toBe(built.entries.length);
-    expect(body.manifest.variablesDigestHex).toBe(await variablesDigestOf(built.projectId, []));
+    expect(body.manifest.variablesDigestHex).toBe(
+      await distributedVariablesDigestOf(built.projectId, []),
+    );
     expect(body.manifest.envMetaVersion).toBe(1);
     expect(body.manifest.envMetaSigHashHex).toBe(
-      await statementHashOf(built.projectId, {
+      await distributedStatementHashOf(built.projectId, {
         suite: "maruhi/v1",
         environmentId: "staging",
         name: "Staging",
@@ -307,8 +308,8 @@ describe("maruhi env create", () => {
   });
 
   it("ChainHeadConflict (409) resyncs, re-signs the entry, and retries (§12-4)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
-    const other = await makeTestUser("user-other-4444");
+    const owner = await generateIdentity("user-owner-1111");
+    const other = await generateIdentity("user-other-4444");
     const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const chainB = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -344,8 +345,8 @@ describe("maruhi env create", () => {
   });
 
   it("the ChainHeadConflict resync carries an extension check (no re-signing onto a shortened or forked chain)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
-    const other = await makeTestUser("user-other-4444");
+    const owner = await generateIdentity("user-owner-1111");
+    const other = await generateIdentity("user-other-4444");
     const long = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(other, "reader") },
@@ -391,9 +392,9 @@ describe("maruhi env create", () => {
   });
 
   it("reuses the wrap set on a ChainHeadConflict retry when the member set is unchanged (§12-4)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
-    const passerby = await makeTestUser("user-passerby-5555");
+    const passerby = await generateIdentity("user-passerby-5555");
     const chainB = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(passerby, "reader") },
@@ -417,7 +418,7 @@ describe("maruhi env create", () => {
   });
 
   it("after a ChainHeadConflict, the checks run again on the resynced view: a concurrent creation of the same ID stops the retry", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const chainA = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const chainB = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
@@ -436,7 +437,7 @@ describe("maruhi env create", () => {
   });
 
   it("an AuditHeadNotReady (503) is retried like a conflict; after five attempts the wording names both causes", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const base = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({
       projectId: base.projectId,
@@ -453,7 +454,7 @@ describe("maruhi env create", () => {
   });
 
   it("a missing environment-ID positional is refused before the network (never calls the create API with a bogus id)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = await MockServer.start([chainHandler(built.projectId, built)]);
     servers.push(server);
@@ -466,8 +467,8 @@ describe("maruhi env create", () => {
   });
 
   it("a reader cannot create environments (member or above — §6.2). Refused before any wraps are built", async () => {
-    const owner = await makeTestUser("user-owner-1111");
-    const reader = await makeTestUser("user-reader-5555");
+    const owner = await generateIdentity("user-owner-1111");
+    const reader = await generateIdentity("user-reader-5555");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(reader, "reader") },
@@ -484,13 +485,13 @@ describe("maruhi env create", () => {
   });
 
   it("a listed-scope member cannot create environments (scope = all only — §6.2 / ruling E). Refused before any wraps are built", async () => {
-    const owner = await makeTestUser("user-owner-1111");
-    const dev = await makeTestUser("user-dev-6666");
+    const owner = await generateIdentity("user-owner-1111");
+    const dev = await generateIdentity("user-dev-6666");
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("dev", dek) },
-      { actor: owner, operation: addScopedMemberOp(dev, "admin", ["dev"]) },
+      { actor: owner, operation: addMemberOp(dev, "admin", ["dev"]) },
     ]);
     const server = await MockServer.start([chainHandler(built.projectId, built)]);
     servers.push(server);
@@ -506,7 +507,7 @@ describe("maruhi env create", () => {
   });
 
   it("when the environment being created is inside a grant_server's disclosure scope, the complete set includes the server-destined wrap and it succeeds (§12-4)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: await grantServerOp(["staging"]) },
@@ -530,7 +531,7 @@ describe("maruhi env create", () => {
   });
 
   it("a grant_server with an empty scope targets no environment (creation can proceed without a server-destined wrap)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: await grantServerOp([]) },
@@ -544,7 +545,7 @@ describe("maruhi env create", () => {
   });
 
   it("a grant_server disclosing only another environment does not stop creating this one (a §6.2 scope is a subset)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: await grantServerOp(["dev"]) },
@@ -557,7 +558,7 @@ describe("maruhi env create", () => {
   });
 
   it("the completion report's epoch is the structural 1, not the server's claim (§12-4)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({
       projectId: built.projectId,
@@ -581,7 +582,7 @@ describe("maruhi env create", () => {
   });
 
   it("establishes the v1 floor (empty variable set + self-issued manifest) after the acceptance check and closes the intent", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({ projectId: built.projectId, base: built });
     const env = await startEnv(built.projectId, server.handlers, owner);
@@ -600,7 +601,7 @@ describe("maruhi env create", () => {
   });
 
   it("does not call 2xx a success when the chain lacks our entry, and does not advance the floor (§12-10 (3))", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({
       projectId: built.projectId,
@@ -632,7 +633,7 @@ describe("maruhi env create", () => {
   });
 
   it("an intent left by a run whose acceptance-check resync failed is resolved by the next run's reconciliation (chain sync), advancing the floor", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const entries: ChainEntry[] = [...built.entries];
     const hashes: string[] = [...built.hashes];
@@ -711,7 +712,7 @@ describe("maruhi env create", () => {
   });
 
   it("sends no composite when the intent append fails (journal-before-send is fail-closed)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([{ actor: owner, operation: genesisOp(owner) }]);
     const server = acceptingCreateServer({ projectId: built.projectId, base: built });
     const env = await startEnv(built.projectId, server.handlers, owner);
@@ -723,7 +724,7 @@ describe("maruhi env create", () => {
   });
 
   it("refuses early, without calling HTTP, an environment ID already observed on the chain (unique across all history — §6.2)", async () => {
-    const owner = await makeTestUser("user-owner-1111");
+    const owner = await generateIdentity("user-owner-1111");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp("burned", new Uint8Array(32).fill(1)) },

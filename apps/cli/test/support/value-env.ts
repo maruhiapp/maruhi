@@ -1,16 +1,17 @@
-import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
 import {
   type BuiltChain,
+  distributedManifest,
+  type GeneratedIdentity,
   headOf,
-  manifestFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireEncryptedPayload,
   type WireRecipientDek,
-} from "./crypto.ts";
+} from "@maruhi/test-kit";
+
+import { chainHandlerOf, deksHandlerOf } from "./chain-handler.ts";
 import type { MockHandler, MockRequest, MockResponse } from "./server.ts";
 
 export interface StoredVariable {
@@ -29,7 +30,7 @@ export interface ValueEnvironmentState {
 
 export interface ValueEnvironmentServerInput {
   readonly chain: BuiltChain;
-  readonly owner: TestUser;
+  readonly owner: GeneratedIdentity;
   readonly environmentId: string;
   readonly envStatement: WireDistributedEnvironmentStatement;
   readonly wrap: WireRecipientDek;
@@ -83,7 +84,7 @@ export function makeValueEnvironmentServer(input: ValueEnvironmentServerInput): 
   const wraps = input.wraps ?? [input.wrap];
   const manifest = async (): Promise<WireDistributedManifest> =>
     state.manifest ??
-    manifestFor({
+    distributedManifest({
       projectId: input.chain.projectId,
       environmentId: input.environmentId,
       epoch: currentEpoch,

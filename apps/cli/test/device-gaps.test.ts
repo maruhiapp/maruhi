@@ -6,41 +6,44 @@ import {
   unwrapDek,
   verifyDekWrapSignature,
 } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   buildChain,
+  type BuiltChain,
   createEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
   rotateEpochOp,
   testEnvironmentId,
   testProjectId,
-  type BuiltChain,
-  type TestUser,
   type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app";
 const OTHER_ENV_ID = "env-other";
 
-let owner: TestUser;
-let sibling: TestUser;
-let narrow: TestUser;
+let owner: GeneratedIdentity;
+let sibling: GeneratedIdentity;
+let narrow: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 let built: BuiltChain;
 
 const servers: MockServer[] = [];
 
-function addDeviceOp(device: TestUser, environmentIds?: readonly string[]): ChainOperation {
+function addDeviceOp(
+  device: GeneratedIdentity,
+  environmentIds?: readonly string[],
+): ChainOperation {
   return {
     op: "add_device",
     payload: {
@@ -55,9 +58,9 @@ function addDeviceOp(device: TestUser, environmentIds?: readonly string[]): Chai
 }
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-0001");
-  sibling = await makeTestUser("user-owner-0001");
-  narrow = await makeTestUser("user-owner-0001");
+  owner = await generateIdentity("user-owner-0001");
+  sibling = await generateIdentity("user-owner-0001");
+  narrow = await generateIdentity("user-owner-0001");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
@@ -77,8 +80,8 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-async function rowFor(device: TestUser, epoch: number): Promise<WireRecipientDek> {
-  return wrapDekFor({
+async function rowFor(device: GeneratedIdentity, epoch: number): Promise<WireRecipientDek> {
+  return distributedWrap({
     projectId: built.projectId,
     environmentId: ENV_ID,
     epoch,
@@ -103,14 +106,14 @@ async function start(input: {
 }): Promise<{ env: TestEnv; posted: Posted[] }> {
   const { projectId } = built;
   const posted: Posted[] = [];
-  const envStatement = await environmentStatementFor({
+  const envStatement = await distributedEnvironmentStatement({
     projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head: { seq: 1, hashHex: projectId },
   });
-  const manifest = await manifestFor({
+  const manifest = await distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch: 2,

@@ -4,30 +4,29 @@ import { join } from "node:path";
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { decodeHex, fingerprintToWords } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
 import {
   addMemberOp,
-  addScopedMemberOp,
   buildChain,
+  type BuiltChain,
   createEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   grantServerOp,
   headOf,
-  makeTestUser,
   removeMemberOp,
   revokeServerOp,
   rotateEpochOp,
   testEnvironmentId,
-  type BuiltChain,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   type AcceptanceFixture,
@@ -43,16 +42,16 @@ import { type MockHandler, type MockResponse, MockServer, onRequest } from "./su
 
 const ENV_ID = "env-app-1";
 
-let inviter: TestUser;
-let acceptor: TestUser;
+let inviter: GeneratedIdentity;
+let acceptor: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  inviter = await makeTestUser("user-inviter-11");
-  acceptor = await makeTestUser("user-acceptor-22");
+  inviter = await generateIdentity("user-inviter-11");
+  acceptor = await generateIdentity("user-acceptor-22");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
 });
@@ -80,7 +79,7 @@ async function issuedFor(projectId: string): Promise<IssuedInviteFixture> {
   return issued;
 }
 
-async function acceptanceFor(projectId: string, invitee: TestUser): Promise<Acceptance> {
+async function acceptanceFor(projectId: string, invitee: GeneratedIdentity): Promise<Acceptance> {
   return acceptanceFixture({ projectId, issued: await issuedFor(projectId), invitee });
 }
 
@@ -138,7 +137,7 @@ async function makeAddServer(input: {
   const counters = { appendAttempts: 0, registerAttempts: 0 };
   const occupied = new Set(input.occupiedSlots ?? []);
   const listedStatements = input.listedStatements ?? [
-    await environmentStatementFor({
+    await distributedEnvironmentStatement({
       projectId,
       environmentId: ENV_ID,
       name: ENV_ID,
@@ -297,7 +296,7 @@ describe("maruhi member add", () => {
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       currentEpoch: 2,
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -305,7 +304,7 @@ describe("maruhi member add", () => {
           recipient: inviter,
           signer: inviter,
         }),
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 2,
@@ -347,12 +346,12 @@ describe("maruhi member add", () => {
   });
 
   it("rejects add_member before the ceremony when the executor's scope does not contain the invite row's scope (principle 1 — independent review S1)", async () => {
-    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const devAdmin = await generateIdentity("user-devadmin-4444");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
       { actor: inviter, operation: createEnvironmentOp("env-prod", dek2) },
-      { actor: inviter, operation: addScopedMemberOp(devAdmin, "admin", [ENV_ID]) },
+      { actor: inviter, operation: addMemberOp(devAdmin, "admin", [ENV_ID]) },
     ]);
     const state = await makeAddServer({
       built,
@@ -398,7 +397,7 @@ describe("maruhi member add", () => {
       }),
       currentEpoch: 1,
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -408,14 +407,14 @@ describe("maruhi member add", () => {
         }),
       ],
       listedStatements: [
-        await environmentStatementFor({
+        await distributedEnvironmentStatement({
           projectId: built.projectId,
           environmentId: ENV_ID,
           name: ENV_ID,
           author: inviter,
           head: headOf(built, 1),
         }),
-        await environmentStatementFor({
+        await distributedEnvironmentStatement({
           projectId: built.projectId,
           environmentId: "env-prod",
           name: "env-prod",
@@ -440,7 +439,7 @@ describe("maruhi member add", () => {
   });
 
   it("re-syncs on ChainHeadConflict (409), re-signs add_member, and retries (§12-4)", async () => {
-    const passerby = await makeTestUser("user-passerby-5555");
+    const passerby = await generateIdentity("user-passerby-5555");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -454,7 +453,7 @@ describe("maruhi member add", () => {
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -494,7 +493,7 @@ describe("maruhi member add", () => {
   });
 
   it("when re-registration fails after a repair-path deletion, fails while making explicit that the slot is empty", async () => {
-    const oldKeys = await makeTestUser(acceptor.userId);
+    const oldKeys = await generateIdentity(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -507,7 +506,7 @@ describe("maruhi member add", () => {
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       currentEpoch: 2,
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -515,7 +514,7 @@ describe("maruhi member add", () => {
           recipient: inviter,
           signer: inviter,
         }),
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 2,
@@ -562,7 +561,7 @@ describe("maruhi member add", () => {
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
     ]);
     const ownDeks = [
-      await wrapDekFor({
+      await distributedWrap({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -608,7 +607,7 @@ describe("maruhi member add", () => {
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -633,7 +632,7 @@ describe("maruhi member add", () => {
   });
 
   it("re-adding (past membership under another key): deletes the 409 slot then re-registers to repair to the new key", async () => {
-    const oldKeys = await makeTestUser(acceptor.userId);
+    const oldKeys = await generateIdentity(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -646,7 +645,7 @@ describe("maruhi member add", () => {
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       currentEpoch: 2,
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -654,7 +653,7 @@ describe("maruhi member add", () => {
           recipient: inviter,
           signer: inviter,
         }),
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 2,
@@ -696,7 +695,7 @@ describe("maruhi member add", () => {
   });
 
   it("does not delete when the 409's stored enc public key matches the acceptance key — even with a different-key membership history (blocks mis-deletion)", async () => {
-    const oldKeys = await makeTestUser(acceptor.userId);
+    const oldKeys = await generateIdentity(acceptor.userId);
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -711,7 +710,7 @@ describe("maruhi member add", () => {
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       currentEpoch: 2,
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -719,7 +718,7 @@ describe("maruhi member add", () => {
           recipient: inviter,
           signer: inviter,
         }),
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 2,
@@ -743,7 +742,7 @@ describe("maruhi member add", () => {
   });
 
   it("repairs when the 409's stored enc public key mismatches the acceptance key, regardless of key history", async () => {
-    const strangerKeys = await makeTestUser("user-someone-else");
+    const strangerKeys = await generateIdentity("user-someone-else");
     const built = await buildChain([
       { actor: inviter, operation: genesisOp(inviter) },
       { actor: inviter, operation: createEnvironmentOp(ENV_ID, dek1) },
@@ -753,7 +752,7 @@ describe("maruhi member add", () => {
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -800,7 +799,7 @@ describe("maruhi member add", () => {
     const acceptance = await acceptanceFor(built.projectId, acceptor);
     const completedRow = invitationRow(built.projectId, acceptance, { status: "completed" });
     const ownDeks = [
-      await wrapDekFor({
+      await distributedWrap({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -976,7 +975,7 @@ describe("maruhi member add", () => {
         built,
         invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
         ownDeks: [
-          await wrapDekFor({
+          await distributedWrap({
             projectId: built.projectId,
             environmentId: ENV_ID,
             epoch: 1,
@@ -1129,7 +1128,7 @@ describe("maruhi member add", () => {
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -1197,7 +1196,7 @@ describe("maruhi member add", () => {
       await acceptanceFor(built.projectId, acceptor),
     );
     const ownDeks = [
-      await wrapDekFor({
+      await distributedWrap({
         projectId: built.projectId,
         environmentId: ENV_ID,
         epoch: 1,
@@ -1254,7 +1253,7 @@ describe("maruhi member add", () => {
       built,
       invitation: invitationRow(built.projectId, await acceptanceFor(built.projectId, acceptor)),
       ownDeks: [
-        await wrapDekFor({
+        await distributedWrap({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,

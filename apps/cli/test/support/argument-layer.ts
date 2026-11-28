@@ -1,6 +1,6 @@
+import { generateIdentity } from "@maruhi/test-kit";
 import { afterEach, expect, vi } from "vite-plus/test";
 
-import { makeTestUser } from "./crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./env.ts";
 import { MockServer } from "./server.ts";
 
@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 export async function startEnv(): Promise<{ env: TestEnv; server: MockServer }> {
-  const owner = await makeTestUser("user-owner-1111");
+  const owner = await generateIdentity("user-owner-1111");
   const server = await MockServer.start([]);
   servers.push(server);
   const env = await makeTestEnv();

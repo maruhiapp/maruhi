@@ -1,41 +1,41 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  rotateEpochOp,
+  testEnvironmentId,
+  testProjectId,
+  valueSignedBytesHashOf,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedValue,
+  type WireDistributedVariableStatement,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  rotateEpochOp,
-  statementFor,
-  type TestUser,
-  valueHashOf,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedValue,
-  type WireDistributedVariableStatement,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
-import { testEnvironmentId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "prod";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 let chain1: BuiltChain;
@@ -49,7 +49,7 @@ let projectId: string;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
   const dekB = crypto.getRandomValues(new Uint8Array(32));
@@ -73,9 +73,21 @@ beforeAll(async () => {
   expect(chainB.projectId).toBe(projectId);
   expect(chainB.hashes[1]).not.toBe(chain1.hashes[1]);
   const common = { projectId, environmentId: ENV_ID };
-  wrap1 = await wrapDekFor({ ...common, epoch: 1, dek: dek1, recipient: owner, signer: owner });
-  wrap2 = await wrapDekFor({ ...common, epoch: 2, dek: dek2, recipient: owner, signer: owner });
-  envStatement = await environmentStatementFor({
+  wrap1 = await distributedWrap({
+    ...common,
+    epoch: 1,
+    dek: dek1,
+    recipient: owner,
+    signer: owner,
+  });
+  wrap2 = await distributedWrap({
+    ...common,
+    epoch: 2,
+    dek: dek2,
+    recipient: owner,
+    signer: owner,
+  });
+  envStatement = await distributedEnvironmentStatement({
     projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -100,7 +112,7 @@ async function valueOf(input: {
   readonly plaintext: string;
   readonly prevValueSigHashHex?: string;
 }): Promise<WireDistributedValue> {
-  return encryptValueFor({
+  return distributedValue({
     dek: input.epoch === 1 ? dek1 : dek2,
     projectId,
     environmentId: ENV_ID,
@@ -123,7 +135,7 @@ async function statementOf(input: {
   readonly status?: "active" | "deleted";
   readonly prevMetaSigHashHex?: string;
 }): Promise<WireDistributedVariableStatement> {
-  return statementFor({
+  return distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: input.variableId,
@@ -163,7 +175,7 @@ interface ManifestPayload {
 
 async function manifestOf(payload: ManifestPayload): Promise<unknown> {
   const epoch = payload.currentEpoch ?? 1;
-  return manifestFor({
+  return distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch,
@@ -179,9 +191,9 @@ async function manifestOf(payload: ManifestPayload): Promise<unknown> {
 }
 
 async function prevOfPhase(payload: ManifestPayload): Promise<string> {
-  return manifestHashOf(
+  return distributedManifestHashOf(
     projectId,
-    (await manifestOf(payload)) as Parameters<typeof manifestHashOf>[1],
+    (await manifestOf(payload)) as Parameters<typeof distributedManifestHashOf>[1],
   );
 }
 
@@ -337,7 +349,7 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
       version: 2,
       epoch: 1,
       plaintext: "new",
-      prevValueSigHashHex: await valueHashOf(v1, owner.userId),
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, owner.userId),
     });
     await establishFloor(env, {
       variables: [{ variableId: "vb", statement, value: v2 }],
@@ -351,8 +363,8 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("value-version rollback");
-    expect(errors).toContain(await valueHashOf(v2, owner.userId));
-    expect(errors).toContain(await valueHashOf(v1, owner.userId));
+    expect(errors).toContain(await valueSignedBytesHashOf(v2, owner.userId));
+    expect(errors).toContain(await valueSignedBytesHashOf(v1, owner.userId));
     expect(errors).toContain(`variable=vb`);
     expect(errors).toContain(`declared head: seq=2`);
     expect(errors).not.toContain("old");
@@ -427,7 +439,7 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
     const env = await makeTestEnv();
     const value = await valueOf({ variableId: "vb", version: 1, epoch: 1, plaintext: "b" });
     const statement = await statementOf({ variableId: "vb", name: "BETA" });
-    const envMetaV2 = await environmentStatementFor({
+    const envMetaV2 = await distributedEnvironmentStatement({
       projectId,
       environmentId: ENV_ID,
       name: "prod-renamed",
@@ -462,7 +474,7 @@ describe("persistent detection of rollback (§6.3 rule (a))", () => {
       deks: [wrap1],
     });
 
-    const swapped = await environmentStatementFor({
+    const swapped = await distributedEnvironmentStatement({
       projectId,
       environmentId: ENV_ID,
       name: "prod-swapped",
@@ -655,7 +667,7 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
       version: 2,
       epoch: 1,
       plaintext: "v2",
-      prevValueSigHashHex: await valueHashOf(v1, owner.userId),
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, owner.userId),
     });
     const prevHash = await prevOfPhase({ variables: [statement] });
     await startPhase(env, [
@@ -678,7 +690,7 @@ describe("floor detection of forward injection without false refusal (§6.3 rule
       version: 3,
       epoch: 1,
       plaintext: "v3",
-      prevValueSigHashHex: await valueHashOf(v2, owner.userId),
+      prevValueSigHashHex: await valueSignedBytesHashOf(v2, owner.userId),
     });
     await startPhase(env, [
       chainHandlerFor([chain2]),
@@ -766,8 +778,8 @@ describe("evidencing differing signed bytes at the same coordinates (§6.3 rule 
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");
     expect(errors).toContain("equivocation");
-    expect(errors).toContain(await valueHashOf(original, owner.userId));
-    expect(errors).toContain(await valueHashOf(replaced, owner.userId));
+    expect(errors).toContain(await valueSignedBytesHashOf(original, owner.userId));
+    expect(errors).toContain(await valueSignedBytesHashOf(replaced, owner.userId));
   });
 
   it("refuses different signed bytes under the same metaVersion (a name swap)", async () => {
@@ -907,7 +919,7 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
       version: 2,
       epoch: 2,
       plaintext: "b2",
-      prevValueSigHashHex: await valueHashOf(v1, owner.userId),
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, owner.userId),
     });
     await startPhase(env, [
       chainHandlerFor([chain1, chain2]),
@@ -935,7 +947,7 @@ describe("distinguishing the two kinds of divergence (§6.3-2)", () => {
       deks: [wrap1],
     });
 
-    const forged = await encryptValueFor({
+    const forged = await distributedValue({
       dek: dek1,
       projectId,
       environmentId: ENV_ID,
@@ -1027,7 +1039,7 @@ describe("meta forward injection is not detected even by the floor (§14.3-5 —
       deks: [wrap1],
     });
 
-    const injectedEnvMeta = await environmentStatementFor({
+    const injectedEnvMeta = await distributedEnvironmentStatement({
       projectId,
       environmentId: ENV_ID,
       name: "prod-injected",

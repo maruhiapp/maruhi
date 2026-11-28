@@ -2,37 +2,37 @@ import type { ProposalIndex } from "@maruhi/core";
 import { chainMirrorEvents, indexProposals } from "@maruhi/core";
 import type { ChainEntry, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { verifyChainWithHistory } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
   addMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  type TestUser,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-audit-1";
 const BASE_TS = 1_755_000_000_000;
 
-let owner: TestUser;
-let member: TestUser;
+let owner: GeneratedIdentity;
+let member: GeneratedIdentity;
 let dek1: Uint8Array;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
+  owner = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
 });
 
@@ -150,14 +150,14 @@ interface AuditServerInput {
 
 async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHandler[]> {
   const projectId = input.built.projectId;
-  const envStatement = await environmentStatementFor({
+  const envStatement = await distributedEnvironmentStatement({
     projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
     author: owner,
     head: headOf(input.built, 2),
   });
-  const activeStatement = await statementFor({
+  const activeStatement = await distributedVariableStatement({
     projectId,
     environmentId: ENV_ID,
     variableId: "va",
@@ -165,7 +165,7 @@ async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHa
     author: owner,
     head: headOf(input.built, 2),
   });
-  const manifest = await manifestFor({
+  const manifest = await distributedManifest({
     projectId,
     environmentId: ENV_ID,
     epoch: 1,
@@ -603,7 +603,7 @@ describe("maruhi audit verify (mirror bijection check — §1-5 / §6)", () => {
   });
 });
 
-const removeMemberOp = (target: TestUser): ProposableOperation => ({
+const removeMemberOp = (target: GeneratedIdentity): ProposableOperation => ({
   op: "remove_member",
   payload: { targetUserId: target.userId },
 });
@@ -622,8 +622,8 @@ const approveOp = (proposalHashHex: string): ChainOperation => ({
 
 describe("maruhi audit verify — four-eyes application rows (AUDIT_SPEC §3.4 — K5)", () => {
   async function fourEyesChain(requiredApprovals: 2 | 3): Promise<BuiltChain> {
-    const owner2 = await makeTestUser("user-owner-3333");
-    const owner3 = await makeTestUser("user-owner-4444");
+    const owner2 = await generateIdentity("user-owner-3333");
+    const owner3 = await generateIdentity("user-owner-4444");
     const prefix = [
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },

@@ -1,15 +1,15 @@
 import { verifyChainWithHistory, wrapRecipientsOf } from "@maruhi/crypto";
-import { describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
-  addScopedMemberOp,
+  addMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
   genesisOp,
-} from "./support/crypto.ts";
-import { testEnvironmentId } from "./support/crypto.ts";
+  testEnvironmentId,
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import {
   ENV_ID,
   FAR_FUTURE_MS,
@@ -242,7 +242,7 @@ describe("the complete wrap set's recipients over a real chain (R(E) — the dev
         actor: owner,
         operation: addDeviceOp(dev2, { roleCap: "member", environmentIds: ["env-b"] }),
       },
-      { actor: owner, operation: addScopedMemberOp(member, "member", ["env-a"]) },
+      { actor: owner, operation: addMemberOp(member, "member", ["env-a"]) },
     ]);
     const verified = await verifyChainWithHistory(built.entries);
     if (!verified.ok) throw new Error("chain");

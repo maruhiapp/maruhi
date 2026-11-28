@@ -2326,13 +2326,6 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 
 - L1: Records the sharing map of the append helpers: which test servers use injectedAppendResponse / acceptAppendedEntry together and which use acceptAppendedEntry alone (DK K14)
 
-### `apps/cli/test/support/crypto.ts`
-
-- L1: Support design: real crypto fixtures from freshly generated keys each run, public @maruhi/crypto API only; the shared core lives in @maruhi/crypto/test-support (session-11 §5 ruling)
-- L203: The commitment is computed from the fixture's real DEK, so the pull side's §5.2 check passes on real data
-- L642: Fixture contract: the digest is computed for real from the given statements — pass the same set as the pull fixture's statements / deletedVariables (a mismatch makes the client's digest recomputation reject, itself a way to build a negative)
-- L770: encryptValueFor contract: the declared head is the chain head the writer last verified at signing; for version > 1 the prev is specified by the test (default dummy — pull is latest-only, so prev existence is out of scope, ruling B)
-
 ### `apps/cli/test/support/env-rotate.ts`
 
 - L299: Mock modeling decision: a checkpoint-hiding server stores no snapshot either (consistent hiding) — distributing an enumeration with no checkpoint on the chain would fail rule 2 right there
@@ -4578,15 +4571,29 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 
 ### `packages/test-kit/lib/chain.ts`
 
-- Added 2026-11-28 (after the audit; no base line): `signEntryAt` and `resignEntryAt` stamp an entry `BASE_TIME_MS + seq * 1000`, one second later than `buildChain` stamps the same seq (`buildChainWith` in `@maruhi/crypto/test-support` counts from index 0). Both are kept as they were in the two support files, because the server tests append entries after built and vector chains that were written against these times. A scope list is put in the payload as given: the server support file never sorted one, and the CLI support file sorts before it calls
+- Moved 2026-11-28 from `apps/cli/test/support/crypto.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
+- L203: The commitment is computed from the fixture's real DEK, so the pull side's §5.2 check passes on real data
+- Added 2026-11-28 (after the audit; no base line): `signEntryAt` and `resignEntryAt` stamp an entry `BASE_TIME_MS + seq * 1000`, one second later than `buildChain` stamps the same seq (`buildChainWith` in `@maruhi/crypto/test-support` counts from index 0). Both are kept as they were in the two support files, because the server tests append entries after built and vector chains that were written against these times. The scope list of a member, device or role operation is sorted before it goes into the payload (`grantServerOp` passes its list as given); a test of an unsorted list writes the payload itself
 
 ### `packages/test-kit/lib/identity.ts`
 
+- Moved 2026-11-28 from `apps/cli/test/support/crypto.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
+- L1: Support design: real crypto fixtures from freshly generated keys each run, public @maruhi/crypto API only; the shared core lives in @maruhi/crypto/test-support (session-11 §5 ruling)
 - Added 2026-11-28 (after the audit; no base line): one key model for both test suites. A `TestIdentity` is a user id, the hex of both key pairs and the fingerprint. `generateIdentity` makes fresh keys on each run (the CLI suite's source); `vectorIdentity` reads the pinned vector keys (the server suite's source, so that entries appended in a test continue the vector chain). Every builder takes the identity as an argument and the kit keeps no table from user id to key. The server support file keeps its own table (the alias and the device-key override recorded under `apps/server/test/support/data-crypto.ts`), and a server test resolves a user id to an identity through it (`identityOf`) where it calls the kit
 
 ### `packages/test-kit/lib/index.ts`
 
-- Added 2026-11-28 (after the audit; no base line): `apps/cli/test/support/crypto.ts` and `apps/server/test/support/data-crypto.ts` built the same signed data twice, on two key models, and a change of the wire had to be made in both. This package holds the one implementation (owner decision 2026-11-28); the CLI file is a rename onto it, to be removed when the CLI tests use the kit's names, and the server file is now only the server suite's table from user id to vector identity (recorded under `apps/server/test/support/data-crypto.ts`). The package sits above `api-schema`, where the wire types come from. Its code is under `lib/`, not `src/`: the `packages/*/src/**` lint rules describe shipped code (no test mints, no `@maruhi/crypto/test-support`), and the kit is neither shipped nor imported by a `src` file (no zone in `.fallowrc.json` lists `test-kit`). The builders come in two layers: what a client sends (`wrapDekTo`, `encryptValue`, `signMetaStatement`, `signManifest`), which the server tests use, and what the server returns (`distributed*`), with which the CLI tests fill a mock server; the second layer is built on the first. The records under the two support files' headings describe code that now lives here, except where the server file's own record says otherwise
+- Added 2026-11-28 (after the audit; no base line): `apps/cli/test/support/crypto.ts` and `apps/server/test/support/data-crypto.ts` built the same signed data twice, on two key models, and a change of the wire had to be made in both. This package holds the one implementation (owner decision 2026-11-28); the CLI file is gone, its tests use the kit's names, and the server file is now only the server suite's table from user id to vector identity (recorded under `apps/server/test/support/data-crypto.ts`). The package sits above `api-schema`, where the wire types come from. Its code is under `lib/`, not `src/`: the `packages/*/src/**` lint rules describe shipped code (no test mints, no `@maruhi/crypto/test-support`), and the kit is neither shipped nor imported by a `src` file (no zone in `.fallowrc.json` lists `test-kit`). The builders come in two layers: what a client sends (`wrapDekTo`, `encryptValue`, `signMetaStatement`, `signManifest`), which the server tests use, and what the server returns (`distributed*`), with which the CLI tests fill a mock server; the second layer is built on the first. The records of the CLI file are under this package's headings, and those under the server file's heading describe code that now lives here, except where that file's own record says otherwise
+
+### `packages/test-kit/lib/manifests.ts`
+
+- Moved 2026-11-28 from `apps/cli/test/support/crypto.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
+- L642: Fixture contract: the digest is computed for real from the given statements — pass the same set as the pull fixture's statements / deletedVariables (a mismatch makes the client's digest recomputation reject, itself a way to build a negative)
+
+### `packages/test-kit/lib/values.ts`
+
+- Moved 2026-11-28 from `apps/cli/test/support/crypto.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
+- L770: encryptValueFor contract (the function is `distributedValue` here): the declared head is the chain head the writer last verified at signing; for version > 1 the prev is specified by the test (default dummy — pull is latest-only, so prev existence is out of scope, ruling B)
 
 ### `packages/test-kit/lib/wire.ts`
 

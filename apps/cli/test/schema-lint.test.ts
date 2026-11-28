@@ -2,32 +2,32 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
 import { scanEnvReferences } from "../src/schema.package/schema-lint.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const SECRET_DESCRIPTION = "Endpoint description that must never reach the lint report";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let declaredShopUrl: WireDistributedVariableStatement;
@@ -36,7 +36,7 @@ let declaredUnread: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   const dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -44,8 +44,13 @@ beforeAll(async () => {
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const head = { seq: 1, hashHex: built.projectId };
-  envStatement = await environmentStatementFor({ ...common, name: ENV_ID, author: owner, head });
-  declaredShopUrl = await statementFor({
+  envStatement = await distributedEnvironmentStatement({
+    ...common,
+    name: ENV_ID,
+    author: owner,
+    head,
+  });
+  declaredShopUrl = await distributedVariableStatement({
     ...common,
     variableId: "v-shop-url",
     name: "SHOP_URL",
@@ -54,14 +59,14 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "url", required: true, description: SECRET_DESCRIPTION },
   });
-  activeV1 = await statementFor({
+  activeV1 = await distributedVariableStatement({
     ...common,
     variableId: "v-legacy",
     name: "LEGACY_KEY",
     author: owner,
     head,
   });
-  declaredUnread = await statementFor({
+  declaredUnread = await distributedVariableStatement({
     ...common,
     variableId: "v-unread",
     name: "UNREAD_FLAG",
@@ -102,7 +107,7 @@ function metadataHandler(variables: readonly WireDistributedVariableStatement[])
         statement: envStatement,
         variables,
         deletedVariables: [],
-        manifest: await manifestFor({
+        manifest: await distributedManifest({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,

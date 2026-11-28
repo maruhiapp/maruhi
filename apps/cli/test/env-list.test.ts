@@ -1,25 +1,25 @@
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { masterKeyEntryName } from "../src/keychain.ts";
 import {
-  addScopedMemberOp,
+  addMemberOp,
   buildChain,
   type BuiltChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
-  makeTestUser,
   rotateEpochOp,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { masterKeyEntryName } from "../src/keychain.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let owner: TestUser;
-let devMember: TestUser;
+let owner: GeneratedIdentity;
+let devMember: GeneratedIdentity;
 let built: BuiltChain;
 let devStatement: WireDistributedEnvironmentStatement;
 let prodStatement: WireDistributedEnvironmentStatement;
@@ -28,8 +28,8 @@ let oldStatement: WireDistributedEnvironmentStatement;
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  devMember = await makeTestUser("user-dev-2222");
+  owner = await generateIdentity("user-owner-1111");
+  devMember = await generateIdentity("user-dev-2222");
   const dek = () => crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -37,12 +37,12 @@ beforeAll(async () => {
     { actor: owner, operation: createEnvironmentOp("env-dev", dek()) },
     { actor: owner, operation: createEnvironmentOp("env-old", dek()) },
     { actor: owner, operation: rotateEpochOp("env-prod", 2, dek()) },
-    { actor: owner, operation: addScopedMemberOp(devMember, "member", ["env-dev"]) },
+    { actor: owner, operation: addMemberOp(devMember, "member", ["env-dev"]) },
     { actor: owner, operation: deleteEnvironmentOp("env-old") },
   ]);
   const head = { seq: 1, hashHex: built.projectId };
   const statementOf = (environmentId: string, name: string) =>
-    environmentStatementFor({
+    distributedEnvironmentStatement({
       projectId: built.projectId,
       environmentId,
       name,
@@ -86,7 +86,7 @@ function listHandler(statements: readonly WireDistributedEnvironmentStatement[])
 }
 
 async function startEnv(
-  user: TestUser,
+  user: GeneratedIdentity,
   statements: readonly WireDistributedEnvironmentStatement[] = [devStatement, prodStatement],
 ): Promise<TestEnv & { readonly server: MockServer }> {
   const server = await MockServer.start([chainHandler(), listHandler(statements)]);
@@ -206,7 +206,7 @@ describe("maruhi env list", () => {
       },
       { actor: owner, operation: deleteEnvironmentOp("env-prod") },
     ]);
-    const dev = await environmentStatementFor({
+    const dev = await distributedEnvironmentStatement({
       projectId: raced.projectId,
       environmentId: "env-dev",
       name: "Development",
@@ -269,7 +269,7 @@ describe("maruhi env list", () => {
   });
 
   it("refuses a listed environment the chain never created, after one resync", async () => {
-    const ghost = await environmentStatementFor({
+    const ghost = await distributedEnvironmentStatement({
       projectId: built.projectId,
       environmentId: "env-ghost",
       name: "Ghost",

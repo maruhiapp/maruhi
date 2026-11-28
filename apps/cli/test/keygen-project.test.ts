@@ -1,11 +1,10 @@
 import { computeChainEntryHash, verifyChain, type ChainEntry } from "@maruhi/crypto";
+import { addMemberOp, buildChain, generateIdentity, genesisOp, testUserId } from "@maruhi/test-kit";
 import { Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, parseStoredMasterKey, tokenEntryName } from "../src/keychain.ts";
-import { addMemberOp, buildChain, genesisOp, makeTestUser } from "./support/crypto.ts";
-import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -97,7 +96,7 @@ describe("maruhi key", () => {
   });
 
   it("rejects a master-key record of an unknown suite", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     env.keychain.set(
@@ -118,7 +117,7 @@ describe("maruhi key", () => {
   });
 
   it("show displays only the public key and FP, plus the recovery registration status", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([recoveryStatusHandler(true)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -132,7 +131,7 @@ describe("maruhi key", () => {
   });
 
   it("show does not fail when the recovery status can't be fetched (usable offline)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -143,7 +142,7 @@ describe("maruhi key", () => {
   });
 
   it("show nudges issuance when recovery is unregistered (the safekeeping reminder)", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([recoveryStatusHandler(false)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -153,7 +152,7 @@ describe("maruhi key", () => {
   });
 
   it("show sanitizes a userId containing control characters", async () => {
-    const user = await makeTestUser("user\u001b[31m-0001");
+    const user = await generateIdentity("user\u001b[31m-0001");
     const maruhi = await start([recoveryStatusHandler(true)]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -188,7 +187,7 @@ function initHandler(record: (body: { orgId: string; entry: ChainEntry }) => voi
 
 describe("maruhi project init", () => {
   it("signs and sends genesis, then cross-checks the response against the foreseen project ID", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let submitted: { orgId: string; entry: ChainEntry } | null = null;
     const maruhi = await start([
       meHandler(user.userId, [{ orgId: "org_personal", slug: "me" }]),
@@ -210,7 +209,7 @@ describe("maruhi project init", () => {
   });
 
   it("fails when the server returns an ID differing from the genesis hash", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const bogus = "ab".repeat(32);
     const maruhi = await start([
       meHandler(user.userId, [{ orgId: "org_personal", slug: "me" }]),
@@ -227,7 +226,7 @@ describe("maruhi project init", () => {
   });
 
   it("reports an empty org precisely as a state anomaly (never says 'multiple memberships')", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     const maruhi = await start([meHandler(user.userId, [])]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -239,7 +238,7 @@ describe("maruhi project init", () => {
   });
 
   it("multiple orgs require --org. A slug can create it", async () => {
-    const user = await makeTestUser("user-0001");
+    const user = await generateIdentity("user-0001");
     let submittedOrgId = "";
     const maruhi = await start([
       meHandler(user.userId, [
@@ -264,8 +263,8 @@ describe("maruhi project init", () => {
 
 describe("maruhi project verify", () => {
   it("verifies the chain and displays members and epochs", async () => {
-    const owner = await makeTestUser("user-owner-1111");
-    const member = await makeTestUser("user-member-2222");
+    const owner = await generateIdentity("user-owner-1111");
+    const member = await generateIdentity("user-member-2222");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: addMemberOp(member, "reader") },

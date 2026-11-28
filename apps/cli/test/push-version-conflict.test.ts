@@ -1,13 +1,13 @@
+import {
+  decryptValue,
+  distributedValue,
+  headOf,
+  valueSignedBytesHashOf,
+  type WireEncryptedPayload,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import {
-  decryptWire,
-  encryptValueFor,
-  headOf,
-  valueHashOf,
-  type WireEncryptedPayload,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandlerOf,
@@ -35,7 +35,7 @@ import { MockServer, onRequest } from "./support/server.ts";
 describe("maruhi push", () => {
   it("VersionConflict (409) verifies the refetched winner and retries with prev re-pointed to its hash", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
-    const existing = await encryptValueFor({
+    const existing = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -46,7 +46,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
-    const winner = await encryptValueFor({
+    const winner = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -103,10 +103,14 @@ describe("maruhi push", () => {
     expect(pushBodies).toHaveLength(2);
     expect(pushBodies[0]?.aad.version).toBe(5);
     expect(pushBodies[1]?.aad.version).toBe(8);
-    expect(pushBodies[0]?.prevValueSigHashHex).toBe(await valueHashOf(existing, owner.userId));
-    expect(pushBodies[1]?.prevValueSigHashHex).toBe(await valueHashOf(winner, owner.userId));
+    expect(pushBodies[0]?.prevValueSigHashHex).toBe(
+      await valueSignedBytesHashOf(existing, owner.userId),
+    );
+    expect(pushBodies[1]?.prevValueSigHashHex).toBe(
+      await valueSignedBytesHashOf(winner, owner.userId),
+    );
     expect(pushBodies[0]?.nonceHex).not.toBe(pushBodies[1]?.nonceHex);
-    expect(await decryptWire(dek1, pushBodies[1] as WireEncryptedPayload)).toBe("new-value");
+    expect(await decryptValue(dek1, pushBodies[1] as WireEncryptedPayload)).toBe("new-value");
     expect(
       server.requests.filter(
         (request) =>
@@ -118,7 +122,7 @@ describe("maruhi push", () => {
 
   it("refuses when the 409's claim is older than the verified latest (a rollback)", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
-    const v4 = await encryptValueFor({
+    const v4 = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -129,7 +133,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
-    const rolledBack = await encryptValueFor({
+    const rolledBack = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -177,7 +181,7 @@ describe("maruhi push", () => {
 
   it("refuses when the post-409 winner's prev does not chain to the verified previous version", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
-    const v4 = await encryptValueFor({
+    const v4 = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -188,7 +192,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
-    const forkedV5 = await encryptValueFor({
+    const forkedV5 = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -240,7 +244,7 @@ describe("maruhi push", () => {
   it("refuses when the post-409 winner regresses the epoch across a version-number gap", async () => {
     const head3 = headOf(chainV2, 3);
     const head2 = headOf(chainV2, 2);
-    const knownV4 = await encryptValueFor({
+    const knownV4 = await distributedValue({
       dek: dek2,
       projectId: chainV2.projectId,
       environmentId: ENV_ID,
@@ -251,7 +255,7 @@ describe("maruhi push", () => {
       writer: owner,
       head: head3,
     });
-    const regressedV6 = await encryptValueFor({
+    const regressedV6 = await distributedValue({
       dek: dek1,
       projectId: chainV2.projectId,
       environmentId: ENV_ID,
@@ -300,7 +304,7 @@ describe("maruhi push", () => {
   });
 
   it("a refetch after 409 older than the claimed currentVersion is refused as an inconsistency", async () => {
-    const existing = await encryptValueFor({
+    const existing = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -333,7 +337,7 @@ describe("maruhi push", () => {
   });
 
   it("refuses when the winner is missing from the post-409 refetch (the floor's absence detection fires first)", async () => {
-    const existing = await encryptValueFor({
+    const existing = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -388,8 +392,8 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     } as const;
-    const existing = await encryptValueFor({ ...coordinates, plaintext: "old" });
-    const forked = await encryptValueFor({ ...coordinates, plaintext: "forked" });
+    const existing = await distributedValue({ ...coordinates, plaintext: "old" });
+    const forked = await distributedValue({ ...coordinates, plaintext: "forked" });
     const entryExisting = await entryOf("v-existing", "API_KEY", existing);
     let pullCalls = 0;
     const server = await MockServer.start([
@@ -468,7 +472,7 @@ describe("maruhi push", () => {
     expect(createBodies).toHaveLength(2);
     expect(createBodies[0]?.value.aad.epoch).toBe(1);
     expect(createBodies[1]?.value.aad.epoch).toBe(2);
-    expect(await decryptWire(dek2, (createBodies[1] as CreateBody).value)).toBe("rotated-value");
+    expect(await decryptValue(dek2, (createBodies[1] as CreateBody).value)).toBe("rotated-value");
     expect(
       server.requests.filter((r) => r.path === `/projects/${chainV1.projectId}/chain`),
     ).toHaveLength(2);
@@ -514,7 +518,7 @@ describe("maruhi push", () => {
   });
 
   it("a create conflict (concurrent creation) re-resolves by name and switches to the push path", async () => {
-    const existing = await encryptValueFor({
+    const existing = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -567,7 +571,7 @@ describe("maruhi push", () => {
     const body = pushed as WireEncryptedPayload | null;
     expect(body?.aad.variableId).toBe("v-racer");
     expect(body?.aad.version).toBe(2);
-    expect(body?.prevValueSigHashHex).toBe(await valueHashOf(existing, owner.userId));
+    expect(body?.prevValueSigHashHex).toBe(await valueSignedBytesHashOf(existing, owner.userId));
   });
 
   it("a raw out-of-schema 413 is reported as 'the value is too large'", async () => {
@@ -590,7 +594,7 @@ describe("maruhi push", () => {
   });
 
   it("a VersionConflict on the create path (an anomalous response) also re-resolves by name and does not self-destruct", async () => {
-    const existing = await encryptValueFor({
+    const existing = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -644,7 +648,7 @@ describe("maruhi push", () => {
 
   it("refuses when name resolution finds duplicate variable names (never binds to an arbitrary one)", async () => {
     const head = headOf(chainV1, chainV1.entries.length);
-    const existing = await encryptValueFor({
+    const existing = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,
@@ -655,7 +659,7 @@ describe("maruhi push", () => {
       writer: owner,
       head,
     });
-    const other = await encryptValueFor({
+    const other = await distributedValue({
       dek: dek1,
       projectId: chainV1.projectId,
       environmentId: ENV_ID,

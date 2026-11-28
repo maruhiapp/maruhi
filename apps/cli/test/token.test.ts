@@ -1,7 +1,7 @@
+import { generateIdentity } from "@maruhi/test-kit";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { makeTestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
@@ -23,7 +23,7 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<{
 }> {
   const server = await MockServer.start(handlers);
   servers.push(server);
-  const owner = await makeTestUser("user-owner-1111");
+  const owner = await generateIdentity("user-owner-1111");
   const env = await makeTestEnv();
   seedSession(env, server.origin, owner);
   await seedConfig(env, { server: server.origin });

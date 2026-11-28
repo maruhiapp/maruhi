@@ -9,33 +9,33 @@ import {
   importEncryptionPublicKey,
   wrapLeaseDek,
 } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import {
   buildChain,
+  type BuiltChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   grantServerOp,
   headOf,
   hexBytes,
-  makeTestUser,
-  manifestFor,
   revokeServerOp,
   rotateEpochOp,
-  statementFor,
   testEnvironmentId,
   testProjectId,
-  type BuiltChain,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
 
@@ -65,7 +65,7 @@ interface PullEntry {
 }
 
 interface Fixture {
-  readonly owner: TestUser;
+  readonly owner: GeneratedIdentity;
   readonly built: BuiltChain;
   readonly extended: BuiltChain;
   readonly dek1: Uint8Array;
@@ -79,7 +79,7 @@ let fixture: Fixture;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  const owner = await makeTestUser("user-owner-1111");
+  const owner = await generateIdentity("user-owner-1111");
   const dek1 = crypto.getRandomValues(new Uint8Array(32));
   const dek2 = crypto.getRandomValues(new Uint8Array(32));
   const leasePolicy = [
@@ -101,7 +101,7 @@ beforeAll(async () => {
   ]);
   const built = chainPrefixOf(extended, GRANTED_SEQ);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
-  const valueAlpha = await encryptValueFor({
+  const valueAlpha = await distributedValue({
     dek: dek2,
     ...common,
     epoch: 2,
@@ -111,7 +111,7 @@ beforeAll(async () => {
     writer: owner,
     head: headOf(built, 3),
   });
-  const valueBeta = await encryptValueFor({
+  const valueBeta = await distributedValue({
     dek: dek1,
     ...common,
     epoch: 1,
@@ -122,7 +122,7 @@ beforeAll(async () => {
     head: headOf(built, 2),
   });
   const genesisHead = { seq: 1, hashHex: built.projectId };
-  const envStatement = await environmentStatementFor({
+  const envStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -131,7 +131,7 @@ beforeAll(async () => {
   });
   const entryAlpha = {
     variableId: "va",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "va",
@@ -143,7 +143,7 @@ beforeAll(async () => {
   };
   const entryBeta = {
     variableId: "vb",
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "vb",
@@ -303,7 +303,7 @@ async function leaseResponseFor(
     ...(resolved.declaredVariables.length === 0
       ? {}
       : { declaredVariables: resolved.declaredVariables }),
-    manifest: await manifestFor({
+    manifest: await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: resolved.currentEpoch,
@@ -439,7 +439,7 @@ describe("maruhi ci run (happy path)", () => {
   });
 
   it("does not spawn the child process when a required = true declared is in the lease response (presence fail-fast — §1-4)", async () => {
-    const declared = await statementFor({
+    const declared = await distributedVariableStatement({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       variableId: "v-required",
@@ -460,7 +460,7 @@ describe("maruhi ci run (happy path)", () => {
   });
 
   it("runs with only an informational display when a required = false declared is present", async () => {
-    const declared = await statementFor({
+    const declared = await distributedVariableStatement({
       projectId: fixture.built.projectId,
       environmentId: ENV_ID,
       variableId: "v-optional",
@@ -557,7 +557,7 @@ describe("maruhi ci run (verification-duty negative cases — CRYPTO_SPEC §9.1)
 
   it("(4) rejects immediately — without re-syncing — a value declaring a head beyond the bundled chain", async () => {
     const { built, owner, dek2 } = fixture;
-    const futureValue = await encryptValueFor({
+    const futureValue = await distributedValue({
       dek: dek2,
       projectId: built.projectId,
       environmentId: ENV_ID,

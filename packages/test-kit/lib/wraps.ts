@@ -99,7 +99,7 @@ export async function wrapDekTo(input: {
   });
 }
 
-export function distributedWrapOf(
+function distributedWrapOf(
   wrap: WireWrappedDek,
   signer: Pick<TestIdentity, "userId" | "fingerprintHex">,
 ): WireRecipientDek {
@@ -113,6 +113,17 @@ export function distributedWrapOf(
     signerUserId: signer.userId,
     signerKeyFingerprintHex: signer.fingerprintHex,
   };
+}
+
+export async function distributedWrap(input: {
+  readonly projectId: string;
+  readonly environmentId: string;
+  readonly epoch: number;
+  readonly dek: Uint8Array;
+  readonly recipient: WrapRecipient;
+  readonly signer: WrapSigner & Pick<TestIdentity, "fingerprintHex">;
+}): Promise<WireRecipientDek> {
+  return distributedWrapOf(await wrapDekTo(input), input.signer);
 }
 
 export async function verifyWrapSignature(input: {

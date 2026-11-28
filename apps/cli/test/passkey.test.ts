@@ -1,4 +1,11 @@
 import { decodeHex, derivePasskeyKek, unwrapMasterBlob, wrapMasterSecret } from "@maruhi/crypto";
+import {
+  addDeviceOp,
+  buildChain,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+} from "@maruhi/test-kit";
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -13,18 +20,11 @@ import { makeFileOwnDeviceStore, ownDevicesPathOf } from "../src/own-devices.ts"
 import type { PrfPagePost } from "../src/passkey.package/passkey-page.ts";
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
-import {
-  addOwnerDeviceOp,
-  buildChain,
-  genesisOp,
-  makeTestUser,
-  type TestUser,
-} from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
 
-let owner: TestUser;
-let reserve: TestUser;
+let owner: GeneratedIdentity;
+let reserve: GeneratedIdentity;
 let ledger: Ledger;
 const servers: MockServer[] = [];
 
@@ -42,8 +42,8 @@ const DEVICE_KEY_EXISTS_REFUSAL =
 const NO_DEVICE_KEY_REFUSAL =
   "No device key on this machine. If you still have a device of yours, add this machine as a device: `maruhi device add` here, then `maruhi device approve` there. If no device is left, open the reserve key with `maruhi key recover` (recovery code), `maruhi key recover --passkey` (a registered passkey), or `maruhi key recover --handoff` (approvals from your guardians). If this is your first key, generate one with `maruhi key generate`";
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-0001");
-  reserve = await makeTestUser("user-owner-0001");
+  owner = await generateIdentity("user-owner-0001");
+  reserve = await generateIdentity("user-owner-0001");
   ledger = await ledgerFor(reserve);
 });
 
@@ -164,7 +164,7 @@ const hex = (value: string): Uint8Array => {
   return bytes;
 };
 
-function serializedRecordOf(user: TestUser): string {
+function serializedRecordOf(user: GeneratedIdentity): string {
   return serializeStoredMasterKey({
     suite: "maruhi/v1",
     encPubHex: user.encPubHex,
@@ -184,7 +184,7 @@ interface Ledger {
   readonly code: string;
 }
 
-async function ledgerFor(user: TestUser): Promise<Ledger> {
+async function ledgerFor(user: GeneratedIdentity): Promise<Ledger> {
   const secret = crypto.getRandomValues(new Uint8Array(32));
   const wrapped = await wrapMasterSecret({
     recoverySecret: secret,
@@ -526,7 +526,7 @@ describe("maruhi key recover --passkey (recovery)", () => {
     };
     const chain = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
-      { actor: owner, operation: addOwnerDeviceOp(reserve) },
+      { actor: owner, operation: addDeviceOp(reserve, "owner") },
     ]);
     const { env, server } = await start([
       statusHandler([rowOf(other, "YubiKey"), rowOf(registration, "Touch ID")]),

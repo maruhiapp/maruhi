@@ -1,7 +1,7 @@
+import { distributedVariableStatement } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { statementFor } from "./support/crypto.ts";
 import {
   chainHandler,
   ENV_ID,
@@ -46,7 +46,7 @@ describe("the max-age note at the point of use (PF7a S-E)", () => {
     const { built, owner, entryAlpha } = fixture;
     return {
       ...entryAlpha,
-      statement: await statementFor({
+      statement: await distributedVariableStatement({
         projectId: built.projectId,
         environmentId: ENV_ID,
         variableId: "va",

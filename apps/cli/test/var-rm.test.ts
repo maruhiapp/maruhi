@@ -1,26 +1,26 @@
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedStatementHashOf,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  testProjectId,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
-  statementFor,
-  statementHashOf,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
 import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
@@ -28,7 +28,7 @@ import { type MockHandler, type MockRequest, MockServer, onRequest } from "./sup
 const ENV_ID = "dev";
 const DESCRIPTION = "Primary endpoint of the shop";
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let envStatement: WireDistributedEnvironmentStatement;
 let declaredV3: WireDistributedVariableStatement;
@@ -37,7 +37,7 @@ let activeV1: WireDistributedVariableStatement;
 let servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
     {
@@ -47,8 +47,13 @@ beforeAll(async () => {
   ]);
   const common = { projectId: built.projectId, environmentId: ENV_ID };
   const head = { seq: 1, hashHex: built.projectId };
-  envStatement = await environmentStatementFor({ ...common, name: ENV_ID, author: owner, head });
-  declaredV3 = await statementFor({
+  envStatement = await distributedEnvironmentStatement({
+    ...common,
+    name: ENV_ID,
+    author: owner,
+    head,
+  });
+  declaredV3 = await distributedVariableStatement({
     ...common,
     variableId: "v-declared",
     name: "SHOP_URL",
@@ -57,7 +62,7 @@ beforeAll(async () => {
     status: "declared",
     schema: { varType: "url", required: true, description: DESCRIPTION },
   });
-  activeV3 = await statementFor({
+  activeV3 = await distributedVariableStatement({
     ...common,
     variableId: "v-port",
     name: "PORT",
@@ -65,7 +70,7 @@ beforeAll(async () => {
     head,
     schema: { varType: "number", required: true, description: "listen port" },
   });
-  activeV1 = await statementFor({
+  activeV1 = await distributedVariableStatement({
     ...common,
     variableId: "v-legacy",
     name: "LEGACY_KEY",
@@ -206,7 +211,7 @@ describe("explicit confirmation of removal (fail-closed)", () => {
 
 describe("target resolution (typed errors before signing / sending)", () => {
   it("an already-removed name is refused with 'already deleted (terminal)'", async () => {
-    const tombstone = await statementFor({
+    const tombstone = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-gone",
@@ -235,7 +240,7 @@ describe("target resolution (typed errors before signing / sending)", () => {
 
 describe("the CAS retry and the binding to the confirmed target", () => {
   it("a retry re-resolves the confirmed variableId, never another variable that took the name", async () => {
-    const tombstone = await statementFor({
+    const tombstone = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-declared",
@@ -244,10 +249,10 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       head: { seq: 1, hashHex: built.projectId },
       status: "deleted",
       metaVersion: 2,
-      prevMetaSigHashHex: await statementHashOf(built.projectId, declaredV3),
+      prevMetaSigHashHex: await distributedStatementHashOf(built.projectId, declaredV3),
       schema: { varType: "url", required: true, description: DESCRIPTION },
     });
-    const replacement = await statementFor({
+    const replacement = await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId: "v-replacement",
@@ -257,7 +262,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       status: "declared",
       schema: { varType: "url", required: true, description: "" },
     });
-    const firstManifest = await manifestFor({
+    const firstManifest = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -266,7 +271,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       envStatement,
       statements: [declaredV3],
     });
-    const secondManifest = await manifestFor({
+    const secondManifest = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -275,7 +280,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
       envStatement,
       statements: [replacement, tombstone],
       manifestVersion: 2,
-      prevManifestSigHashHex: await manifestHashOf(built.projectId, firstManifest),
+      prevManifestSigHashHex: await distributedManifestHashOf(built.projectId, firstManifest),
     });
     let metadataCalls = 0;
     const deleteCalls: MockRequest[] = [];
@@ -334,7 +339,7 @@ describe("the CAS retry and the binding to the confirmed target", () => {
 describe("the CAS retry after a concurrent rename", () => {
   it("deletes the confirmed variable under its new name and says so in one line (no re-prompt)", async () => {
     const head = headOf(built, built.entries.length);
-    const manifestV1 = await manifestFor({
+    const manifestV1 = await distributedManifest({
       projectId: built.projectId,
       environmentId: ENV_ID,
       epoch: 1,
@@ -354,7 +359,7 @@ describe("the CAS retry after a concurrent rename", () => {
               return null;
             }
             conflicted = true;
-            const renamed = await statementFor({
+            const renamed = await distributedVariableStatement({
               projectId: built.projectId,
               environmentId: ENV_ID,
               variableId: "v-legacy",
@@ -362,10 +367,10 @@ describe("the CAS retry after a concurrent rename", () => {
               author: owner,
               head,
               metaVersion: 2,
-              prevMetaSigHashHex: await statementHashOf(built.projectId, activeV1),
+              prevMetaSigHashHex: await distributedStatementHashOf(built.projectId, activeV1),
             });
             current.variables = [renamed];
-            current.manifest = await manifestFor({
+            current.manifest = await distributedManifest({
               projectId: built.projectId,
               environmentId: ENV_ID,
               epoch: 1,
@@ -374,7 +379,7 @@ describe("the CAS retry after a concurrent rename", () => {
               envStatement,
               statements: [renamed],
               manifestVersion: 2,
-              prevManifestSigHashHex: await manifestHashOf(built.projectId, manifestV1),
+              prevManifestSigHashHex: await distributedManifestHashOf(built.projectId, manifestV1),
             });
             return { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } };
           },

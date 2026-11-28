@@ -1,52 +1,51 @@
 import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
-import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
 import {
   addMemberOp,
-  addScopedMemberOp,
   buildChain,
   type BuiltChain,
   changeRoleOp,
   createEnvironmentOp,
   deleteEnvironmentOp,
-  environmentStatementFor,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedManifestHashOf,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
   genesisOp,
   headOf,
-  makeTestUser,
-  manifestFor,
-  manifestHashOf,
   removeMemberOp,
   rotateEpochOp,
-  statementFor,
-  type TestUser,
   type WireCheckpointSnapshot,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-  wrapDekFor,
-  type WireRotateBody,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
+import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
+import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
-let owner: TestUser;
-let target: TestUser;
-let admin2: TestUser;
+let owner: GeneratedIdentity;
+let target: GeneratedIdentity;
+let admin2: GeneratedIdentity;
 let dek1: Uint8Array;
 let dek2: Uint8Array;
 
 const servers: MockServer[] = [];
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  target = await makeTestUser("user-target-2222");
-  admin2 = await makeTestUser("user-admin2-3333");
+  owner = await generateIdentity("user-owner-1111");
+  target = await generateIdentity("user-target-2222");
+  admin2 = await generateIdentity("user-admin2-3333");
   dek1 = crypto.getRandomValues(new Uint8Array(32));
   dek2 = crypto.getRandomValues(new Uint8Array(32));
 });
@@ -80,7 +79,7 @@ async function makeRemoveServer(input: {
   >;
   readonly onAppend?: (call: number) => MockResponse | undefined;
   readonly chainAfterConflict?: BuiltChain;
-  readonly rotator?: TestUser;
+  readonly rotator?: GeneratedIdentity;
   readonly flags?: readonly WireFlag[];
   readonly variableStatements?: Readonly<
     Record<string, readonly WireDistributedVariableStatement[]>
@@ -99,7 +98,7 @@ async function makeRemoveServer(input: {
   const checkpointSnapshots = new Map<string, WireCheckpointSnapshot>();
   const listedStatements = await Promise.all(
     Object.keys(environments).map((environmentId) =>
-      environmentStatementFor({
+      distributedEnvironmentStatement({
         projectId,
         environmentId,
         name: environmentId,
@@ -123,9 +122,9 @@ async function makeRemoveServer(input: {
         ? { manifestVersion: 1 }
         : {
             manifestVersion: stored.manifestVersion + 1,
-            prevManifestSigHashHex: await manifestHashOf(projectId, stored),
+            prevManifestSigHashHex: await distributedManifestHashOf(projectId, stored),
           };
-    const manifest = await manifestFor({
+    const manifest = await distributedManifest({
       projectId,
       environmentId,
       epoch,
@@ -212,7 +211,7 @@ async function makeRemoveServer(input: {
       const statement = listedStatements.find((item) => item.environmentId === match[1]);
       let manifest = manifests.get(environmentId);
       if (manifest === undefined && statement !== undefined) {
-        manifest = await manifestFor({
+        manifest = await distributedManifest({
           projectId,
           environmentId,
           epoch: environment.currentEpoch,
@@ -322,7 +321,7 @@ async function makeRemoveServer(input: {
 async function startEnv(
   state: RemoveServerState,
   projectId: string,
-  user: TestUser,
+  user: GeneratedIdentity,
 ): Promise<TestEnv> {
   const server = await MockServer.start([...state.handlers]);
   servers.push(server);
@@ -338,7 +337,7 @@ async function ownerWrap(
   epoch: number,
   dek: Uint8Array,
 ): Promise<WireRecipientDek> {
-  return wrapDekFor({ projectId, environmentId, epoch, dek, recipient: owner, signer: owner });
+  return distributedWrap({ projectId, environmentId, epoch, dek, recipient: owner, signer: owner });
 }
 
 describe("maruhi member remove", () => {
@@ -392,7 +391,7 @@ describe("maruhi member remove", () => {
         ["v-db", "DATABASE_URL"],
         ["v-stripe", "STRIPE_SECRET_KEY"],
       ].map(([variableId, name]) =>
-        statementFor({
+        distributedVariableStatement({
           projectId: built.projectId,
           environmentId: ENV_ID,
           variableId: variableId ?? "",
@@ -769,7 +768,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV]) },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -826,7 +825,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV]) },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -887,7 +886,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
       { actor: owner, operation: addMemberOp(target, "reader") },
-      { actor: owner, operation: changeRoleOp(target, "member", null) },
+      { actor: owner, operation: changeRoleOp(target, "member") },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -952,7 +951,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV]) },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -986,9 +985,9 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
-      { actor: owner, operation: changeRoleOp(target, "member", null) },
-      { actor: owner, operation: changeRoleOp(target, "admin", null) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: changeRoleOp(target, "member") },
+      { actor: owner, operation: changeRoleOp(target, "admin") },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -1007,7 +1006,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(admin2, "admin", [ENV_DEV, ENV_PROD]) },
+      { actor: owner, operation: addMemberOp(admin2, "admin", [ENV_DEV, ENV_PROD]) },
     ]);
     const state = await makeRemoveServer({ built, environments: {} });
     const env = await startEnv(state, built.projectId, admin2);
@@ -1023,7 +1022,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "admin", [ENV_DEV]) },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -1044,7 +1043,7 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(target, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "admin", [ENV_DEV]) },
     ]);
     const state = await makeRemoveServer({
       built,
@@ -1082,20 +1081,20 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
   });
 
   it("someone-else's mandate environments outside the caller's scope aren't rotated but are noted, while one's own mandate is fulfilled (§7 — independent review S2)", async () => {
-    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const devAdmin = await generateIdentity("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV, ENV_PROD]) },
+      { actor: owner, operation: addMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV, ENV_PROD]) },
       { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV]) },
     ]);
     const environments = {
       [ENV_DEV]: {
         currentEpoch: 1,
         deks: [
-          await wrapDekFor({
+          await distributedWrap({
             projectId: built.projectId,
             environmentId: ENV_DEV,
             epoch: 1,
@@ -1120,13 +1119,13 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
   });
 
   it("when the unconverged portion of someone else's widening lies only outside your scope, it notes it and exits 0 with no backfill (Cursor Bugbot)", async () => {
-    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const devAdmin = await generateIdentity("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV]) },
       { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
     ]);
     const state = await makeRemoveServer({ built, environments: {} });
@@ -1145,13 +1144,13 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
   });
 
   it("a chain-deleted environment leaves the widened portion and doesn't appear in the out-of-scope note (pullfrog)", async () => {
-    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const devAdmin = await generateIdentity("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
-      { actor: owner, operation: addScopedMemberOp(target, "member", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "member", [ENV_DEV]) },
       { actor: owner, operation: changeRoleOp(target, "member", [ENV_DEV, ENV_PROD]) },
       { actor: owner, operation: deleteEnvironmentOp(ENV_PROD) },
     ]);
@@ -1176,13 +1175,13 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
   });
 
   it("a listed admin cannot remove a target outside their scope (principle 1's pre-judgement — pullfrog)", async () => {
-    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const devAdmin = await generateIdentity("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
-      { actor: owner, operation: addScopedMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
+      { actor: owner, operation: addMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
     ]);
     const state = await makeRemoveServer({ built, environments: {} });
     const env = await startEnv(state, built.projectId, devAdmin);
@@ -1192,13 +1191,13 @@ describe("environment scope (ES K4): the mandate's environment set and change-ro
   });
 
   it("a listed admin cannot append a change_role touching outside their scope (principle 1's pre-judgement)", async () => {
-    const devAdmin = await makeTestUser("user-devadmin-4444");
+    const devAdmin = await generateIdentity("user-devadmin-4444");
     const built = await buildChain([
       { actor: owner, operation: genesisOp(owner) },
       { actor: owner, operation: createEnvironmentOp(ENV_DEV, dek1) },
       { actor: owner, operation: createEnvironmentOp(ENV_PROD, dek2) },
-      { actor: owner, operation: addScopedMemberOp(devAdmin, "admin", [ENV_DEV]) },
-      { actor: owner, operation: addScopedMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
+      { actor: owner, operation: addMemberOp(devAdmin, "admin", [ENV_DEV]) },
+      { actor: owner, operation: addMemberOp(target, "reader", [ENV_DEV, ENV_PROD]) },
     ]);
     const narrow = await makeRemoveServer({ built, environments: {} });
     const narrowEnv = await startEnv(narrow, built.projectId, devAdmin);

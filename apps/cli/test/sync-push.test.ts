@@ -3,30 +3,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { decryptVariable } from "@maruhi/crypto";
+import {
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedValue,
+  distributedVariableStatement,
+  distributedWrap,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  headOf,
+  hexBytes,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  type WireDistributedEnvironmentStatement,
+  type WireEncryptedPayload,
+  type WireRecipientDek,
+} from "@maruhi/test-kit";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { cliError } from "../src/errors.ts";
 import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
-import {
-  buildChain,
-  type BuiltChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  headOf,
-  hexBytes,
-  makeTestUser,
-  statementFor,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireEncryptedPayload,
-  type WireRecipientDek,
-  wrapDekFor,
-} from "./support/crypto.ts";
-import { testProjectId } from "./support/crypto.ts";
-import { testEnvironmentId, testVariableId } from "./support/crypto.ts";
 import {
   type ExecCall,
   makeTestEnv,
@@ -49,7 +50,7 @@ const NEW_VALUE = "alpha-value-4-pushed";
 const SECRETS = [ALPHA_VALUE, BETA_VALUE, NEW_VALUE];
 const OTHER_PROJECT = "f".repeat(64);
 
-let owner: TestUser;
+let owner: GeneratedIdentity;
 let built: BuiltChain;
 let dekSource: Uint8Array;
 let dekReceipts: Uint8Array;
@@ -61,7 +62,7 @@ let servers: MockServer[] = [];
 const originalCwd = process.cwd();
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
+  owner = await generateIdentity("user-owner-1111");
   dekSource = crypto.getRandomValues(new Uint8Array(32));
   dekReceipts = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
@@ -70,17 +71,21 @@ beforeAll(async () => {
     { actor: owner, operation: createEnvironmentOp(RECEIPTS_ENV, dekReceipts) },
   ]);
   const common = { projectId: built.projectId, recipient: owner, signer: owner, epoch: 1 };
-  wrapSource = await wrapDekFor({ ...common, environmentId: SOURCE_ENV, dek: dekSource });
-  wrapReceipts = await wrapDekFor({ ...common, environmentId: RECEIPTS_ENV, dek: dekReceipts });
+  wrapSource = await distributedWrap({ ...common, environmentId: SOURCE_ENV, dek: dekSource });
+  wrapReceipts = await distributedWrap({
+    ...common,
+    environmentId: RECEIPTS_ENV,
+    dek: dekReceipts,
+  });
   const head = { seq: 1, hashHex: built.projectId };
-  sourceStatement = await environmentStatementFor({
+  sourceStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: SOURCE_ENV,
     name: SOURCE_ENV,
     author: owner,
     head,
   });
-  receiptsStatement = await environmentStatementFor({
+  receiptsStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: RECEIPTS_ENV,
     name: RECEIPTS_ENV,
@@ -101,7 +106,7 @@ async function sourceVariable(input: {
   readonly version: number;
   readonly plaintext: string;
 }): Promise<StoredVariable> {
-  const statement = await statementFor({
+  const statement = await distributedVariableStatement({
     projectId: built.projectId,
     environmentId: SOURCE_ENV,
     variableId: input.variableId,
@@ -109,7 +114,7 @@ async function sourceVariable(input: {
     author: owner,
     head: { seq: 1, hashHex: built.projectId },
   });
-  const value = await encryptValueFor({
+  const value = await distributedValue({
     dek: dekSource,
     projectId: built.projectId,
     environmentId: SOURCE_ENV,
@@ -129,7 +134,7 @@ async function storedReceipt(input: {
   readonly version?: number;
 }): Promise<StoredVariable> {
   const variableId = `receipt-${input.target}`;
-  const statement = await statementFor({
+  const statement = await distributedVariableStatement({
     projectId: built.projectId,
     environmentId: RECEIPTS_ENV,
     variableId,
@@ -137,7 +142,7 @@ async function storedReceipt(input: {
     author: owner,
     head: { seq: 1, hashHex: built.projectId },
   });
-  const value = await encryptValueFor({
+  const value = await distributedValue({
     dek: dekReceipts,
     projectId: built.projectId,
     environmentId: RECEIPTS_ENV,

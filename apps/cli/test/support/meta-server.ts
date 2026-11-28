@@ -1,16 +1,16 @@
 import type { ChainEntry } from "@maruhi/crypto";
-
-import { acceptAppendedEntry, deksHandlerOf, servedChainResponse } from "./chain-handler.ts";
 import {
   type BuiltChain,
+  distributedManifest,
+  type GeneratedIdentity,
   headOf,
-  manifestFor,
-  type TestUser,
   type WireDistributedEnvironmentStatement,
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
-} from "./crypto.ts";
+} from "@maruhi/test-kit";
+
+import { acceptAppendedEntry, deksHandlerOf, servedChainResponse } from "./chain-handler.ts";
 import type { MockHandler, MockRequest } from "./server.ts";
 
 export interface MetaEnvironmentState {
@@ -29,7 +29,7 @@ export interface MetaEnvironmentState {
 
 export interface MetaEnvironmentServerInput {
   readonly chain: BuiltChain;
-  readonly owner: TestUser;
+  readonly owner: GeneratedIdentity;
   readonly environmentId: string;
   readonly envStatement: WireDistributedEnvironmentStatement;
   readonly initialVariables?: readonly WireDistributedVariableStatement[];
@@ -46,7 +46,7 @@ interface MutationBody {
   readonly manifest: WireDistributedManifest;
 }
 
-function distributed<T>(record: T, owner: TestUser, kind: "author" | "issuer"): T {
+function distributed<T>(record: T, owner: GeneratedIdentity, kind: "author" | "issuer"): T {
   return {
     ...record,
     [`${kind}UserId`]: owner.userId,
@@ -104,7 +104,7 @@ export function makeMetaEnvironmentServer(input: MetaEnvironmentServerInput): {
       }
       const manifest =
         state.manifest ??
-        (await manifestFor({
+        (await distributedManifest({
           projectId: input.chain.projectId,
           environmentId: input.environmentId,
           epoch: 1,

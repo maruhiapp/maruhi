@@ -1,25 +1,25 @@
-import { describe, expect, it } from "vite-plus/test";
-
-import { runCli } from "../src/cli.ts";
 import {
-  addScopedMemberOp,
+  addMemberOp,
   buildChain,
   createEnvironmentOp,
   deleteEnvironmentOp,
+  distributedWrap,
+  generateIdentity,
   genesisOp,
-  makeTestUser,
-  wrapDekFor,
-} from "./support/crypto.ts";
+} from "@maruhi/test-kit";
+import { describe, expect, it } from "vite-plus/test";
+
+import { runCli } from "../src/cli.ts";
 import { dek1, ENV_ID, makeServer, owner, startEnv } from "./support/env-rotate.ts";
 
 describe("env rotate racing a delete_environment", () => {
   for (const listed of [false, true]) {
     it(`refuses with the deletion, not the scope (${listed ? "listed member" : "all-scope owner"})`, async () => {
-      const dev = await makeTestUser("user-dev-3333");
+      const dev = await generateIdentity("user-dev-3333");
       const prefix = [
         { actor: owner, operation: genesisOp(owner) },
         { actor: owner, operation: createEnvironmentOp(ENV_ID, dek1) },
-        { actor: owner, operation: addScopedMemberOp(dev, "member", [ENV_ID]) },
+        { actor: owner, operation: addMemberOp(dev, "member", [ENV_ID]) },
       ];
       const pre = await buildChain(prefix);
       const post = await buildChain([
@@ -29,7 +29,7 @@ describe("env rotate racing a delete_environment", () => {
       const deks = [];
       for (const recipient of [owner, dev]) {
         deks.push(
-          await wrapDekFor({
+          await distributedWrap({
             projectId: pre.projectId,
             environmentId: ENV_ID,
             epoch: 1,

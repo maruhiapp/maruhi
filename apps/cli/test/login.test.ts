@@ -1,8 +1,8 @@
+import { testUserId } from "@maruhi/test-kit";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
-import { testUserId } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import {
   type MockHandler,

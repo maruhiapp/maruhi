@@ -1,3 +1,4 @@
+import { testVariableId } from "@maruhi/test-kit";
 import { Effect, Exit, Redacted } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -19,7 +20,6 @@ import {
   encodeReceipt,
   receiptVariableName,
 } from "../src/sync.package/sync-receipt.ts";
-import { testVariableId } from "./support/crypto.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

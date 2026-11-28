@@ -10,6 +10,29 @@ import {
   openProposedValue,
   wrapLeaseDek,
 } from "@maruhi/crypto";
+import {
+  addMemberOp,
+  buildChain,
+  type BuiltChain,
+  createEnvironmentOp,
+  distributedEnvironmentStatement,
+  distributedManifest,
+  distributedValue,
+  distributedVariableStatement,
+  type GeneratedIdentity,
+  generateIdentity,
+  genesisOp,
+  grantServerOp,
+  headOf,
+  hexBytes as toBytes,
+  testEnvironmentId,
+  testProjectId,
+  testUserId,
+  testVariableId,
+  type WireDistributedEnvironmentStatement,
+  type WireDistributedValue,
+  type WireDistributedVariableStatement,
+} from "@maruhi/test-kit";
 import { Clock, Duration, Effect, Layer, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -20,29 +43,6 @@ import {
   OIDC_REQUEST_TOKEN_ENV,
   OIDC_REQUEST_URL_ENV,
 } from "../src/oidc-github.ts";
-import {
-  addMemberOp,
-  buildChain,
-  createEnvironmentOp,
-  encryptValueFor,
-  environmentStatementFor,
-  genesisOp,
-  grantServerOp,
-  headOf,
-  hexBytes as toBytes,
-  makeTestUser,
-  manifestFor,
-  statementFor,
-  testEnvironmentId,
-  testProjectId,
-  testUserId,
-  testVariableId,
-  type BuiltChain,
-  type TestUser,
-  type WireDistributedEnvironmentStatement,
-  type WireDistributedValue,
-  type WireDistributedVariableStatement,
-} from "./support/crypto.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import {
   type MockHandler,
@@ -66,11 +66,11 @@ interface PullEntry {
   value: WireDistributedValue;
 }
 
-let owner: TestUser;
-let ownerPhone: TestUser;
-let ownerReaderCap: TestUser;
-let member: TestUser;
-let reader: TestUser;
+let owner: GeneratedIdentity;
+let ownerPhone: GeneratedIdentity;
+let ownerReaderCap: GeneratedIdentity;
+let member: GeneratedIdentity;
+let reader: GeneratedIdentity;
 let built: BuiltChain;
 let dek: Uint8Array;
 let envStatement: WireDistributedEnvironmentStatement;
@@ -78,7 +78,7 @@ let entries: PullEntry[];
 let servers: MockServer[] = [];
 
 function addDeviceOp(
-  device: TestUser,
+  device: GeneratedIdentity,
   roleCap: "owner" | "admin" | "member" | "reader",
 ): ChainOperation {
   return {
@@ -94,11 +94,11 @@ function addDeviceOp(
 }
 
 beforeAll(async () => {
-  owner = await makeTestUser("user-owner-1111");
-  ownerPhone = await makeTestUser("user-owner-1111");
-  ownerReaderCap = await makeTestUser("user-owner-1111");
-  member = await makeTestUser("user-member-2222");
-  reader = await makeTestUser("user-reader-3333");
+  owner = await generateIdentity("user-owner-1111");
+  ownerPhone = await generateIdentity("user-owner-1111");
+  ownerReaderCap = await generateIdentity("user-owner-1111");
+  member = await generateIdentity("user-member-2222");
+  reader = await generateIdentity("user-reader-3333");
   dek = crypto.getRandomValues(new Uint8Array(32));
   built = await buildChain([
     { actor: owner, operation: genesisOp(owner) },
@@ -117,7 +117,7 @@ beforeAll(async () => {
   ]);
   const genesisHead = { seq: 1, hashHex: built.projectId };
   const head = headOf(built, built.entries.length);
-  envStatement = await environmentStatementFor({
+  envStatement = await distributedEnvironmentStatement({
     projectId: built.projectId,
     environmentId: ENV_ID,
     name: ENV_ID,
@@ -126,7 +126,7 @@ beforeAll(async () => {
   });
   const entry = async (variableId: string, name: string, plaintext: string, version: number) => ({
     variableId,
-    statement: await statementFor({
+    statement: await distributedVariableStatement({
       projectId: built.projectId,
       environmentId: ENV_ID,
       variableId,
@@ -134,7 +134,7 @@ beforeAll(async () => {
       author: owner,
       head: genesisHead,
     }),
-    value: await encryptValueFor({
+    value: await distributedValue({
       dek,
       projectId: built.projectId,
       environmentId: ENV_ID,
@@ -297,7 +297,7 @@ function leaseHandler(leased: Leased): MockHandler {
         statement: envStatement,
         variables: entries,
         deletedVariables: [],
-        manifest: await manifestFor({
+        manifest: await distributedManifest({
           projectId: built.projectId,
           environmentId: ENV_ID,
           epoch: 1,
@@ -544,7 +544,7 @@ async function openWith(
   return opened.ok ? new TextDecoder().decode(opened.value) : null;
 }
 
-function ownerDevicesInOrder(): readonly TestUser[] {
+function ownerDevicesInOrder(): readonly GeneratedIdentity[] {
   return [owner, ownerPhone].toSorted((a, b) =>
     a.fingerprintHex < b.fingerprintHex ? -1 : a.fingerprintHex > b.fingerprintHex ? 1 : 0,
   );
