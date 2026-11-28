@@ -140,10 +140,10 @@ apps/
 
 ### CLI source layout (`apps/cli/src`)
 
-- A command group lives with its domain. When the group's domain is a `*.package/` directory (for example `sync` or `audit`), the group is in `<domain>.package/command.ts`; otherwise it is in `commands/<group>.ts` (for example, the `device` group stays in `commands/device.ts`, as the device domain stays at the src root). `commands/index.ts` composes the root command and `COMMAND_SPECS`.
+- A command group lives with its domain. When the group's domain is a `*.package/` directory (for example `sync` or `audit`), the group is in `<domain>.package/command.ts`; otherwise it is in `commands/<group>.ts` (for example, the `token` group stays in `commands/token.ts`, as the token domain stays at the src root). `commands/index.ts` composes the root command and `COMMAND_SPECS`.
 - A `*.package/` directory has at most two entries. `index.ts` re-exports only what other `src` files use. `command.ts` tags with `@public` only the command pieces (`make*Commands`, `*Config`) that `commands/index.ts` imports; nothing else imports `command.ts` (pinned by `apps/cli/test/package-entries.test.ts`). `@public` is not used anywhere else.
 - Tests may import package internals directly (`apps/cli/test/**` is excluded from ImportLint).
-- When files move, update file references in live docs and source comments (checked by `apps/site/test/unit/doc-paths.test.ts`). Dated records — `docs/adr/`, `docs/notes/`, `docs/DEEPSEC_FINDINGS_*`, `docs/*_REVIEW_*`, and the dated implementation notes in `ROADMAP.md` — keep the paths they were written with.
+- When files move, update file references in live docs and source comments (checked by `apps/site/test/unit/doc-paths.test.ts`). Dated records — `docs/adr/`, `docs/notes/`, `docs/DEEPSEC_FINDINGS_*`, `docs/*_REVIEW_*`, and the dated implementation notes in `ROADMAP.md` — keep the paths they were written with. The one exception is the file-path headings of the record ADRs (`docs/adr/0021` to `0030`): a heading follows its file, and the first line under it keeps the path the file had at the audit (`Moved <date> from`). `apps/site/test/unit/adr-record-headings.test.ts` checks that every heading names a tracked file; the `Moved` line is a review item.
 
 ### Layers (enforced by fallow `boundaries` in `.fallowrc.json`)
 

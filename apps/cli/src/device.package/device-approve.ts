@@ -3,23 +3,23 @@ import { type EnvironmentId, type KeyFingerprintHex, type ProjectId } from "@mar
 import type { DeviceCap } from "@maruhi/crypto";
 import { Clock, Effect, Result } from "effect";
 
-import { ensureDeviceApproveAllowed } from "./agent-gate.ts";
-import type { MaruhiClient } from "./api.ts";
-import type { CliServices } from "./cli.ts";
-import { openProject, type ProjectContext } from "./context.ts";
-import { describeGapFillRoute } from "./device-gaps.ts";
-import { capWithinSignerCap, describeCap, findOwnDevice, reAddDeviceRoute } from "./device-key.ts";
-import { appendAddDevice, backfillToDevice, type DeviceBackfillOutcome } from "./device-ops.ts";
+import { ensureDeviceApproveAllowed } from "../agent-gate.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { CliServices } from "../cli.ts";
+import { openProject, type ProjectContext } from "../context.ts";
+import { describeGapFillRoute } from "../device-gaps.ts";
+import { capWithinSignerCap, describeCap, findOwnDevice, reAddDeviceRoute } from "../device-key.ts";
+import { appendAddDevice, backfillToDevice, type DeviceBackfillOutcome } from "../device-ops.ts";
+import { countNoun, displayText, formatUtcMinutes } from "../display.ts";
+import { cliError, type CliError, usageError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { fingerprintWords, formatWordList } from "../fp-words.ts";
+import { CliIo } from "../io.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { type OwnDeviceEntry, OwnDeviceStore } from "../own-devices.ts";
+import { requireScopeEnvironmentsExist, sameScope } from "../scope.ts";
+import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 import { FULL_FINGERPRINT, recomputeFingerprint, resolveProjectIds, WORD_COUNT } from "./device.ts";
-import { countNoun, displayText, formatUtcMinutes } from "./display.ts";
-import { cliError, type CliError, usageError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { fingerprintWords, formatWordList } from "./fp-words.ts";
-import { CliIo } from "./io.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
-import { requireScopeEnvironmentsExist, sameScope } from "./scope.ts";
-import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 
 export type ApproveRef =
   | { readonly kind: "hex"; readonly fingerprintHex: string }

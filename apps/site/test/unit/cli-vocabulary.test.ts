@@ -240,13 +240,19 @@ describe("the docs keep the device-key vocabulary and coverage", () => {
   );
 
   it("states who can place a device-add request with the same words as `device approve`", () => {
-    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device-approve.ts"), "utf8");
+    const source = readFileSync(
+      join(repoRoot, "apps", "cli", "src", "device.package", "device-approve.ts"),
+      "utf8",
+    );
     expect(source).toContain("account-wide admin API token");
     expect(devices).toContain("account-wide admin API token");
   });
 
   it("quotes the note that a failed registry write leaves the request in place", () => {
-    const source = readFileSync(join(repoRoot, "apps", "cli", "src", "device-approve.ts"), "utf8");
+    const source = readFileSync(
+      join(repoRoot, "apps", "cli", "src", "device.package", "device-approve.ts"),
+      "utf8",
+    );
     expect(source).toContain("The request is left in place until");
     expect(source).toContain("will not see the completion signal");
     expect(devices).toContain(
@@ -345,7 +351,7 @@ interface Limit {
 }
 
 const DEVICES_API = "packages/api-schema/src/devices-api.ts";
-const DEVICE_CLI = "apps/cli/src/device-add.ts";
+const DEVICE_CLI = "apps/cli/src/device.package/device-add.ts";
 const KEY_WRAPS = "apps/server/src/db.package/key-wraps.ts";
 const FIFTEEN_MINUTES = "15 * 60 * 1000";
 

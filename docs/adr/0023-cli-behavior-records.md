@@ -277,10 +277,6 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L73: A config key holding a closed-set value is validated at declaration so a typo is never silently stored.
 - L79: A broken config is recreatable via set (it holds only non-secrets), but never swallowed silently — a warning is emitted; recreatable is content corruption only, while a read failure (EACCES/EISDIR/EIO) fails as-is so an unreadable existing config is not silently replaced.
 
-### `apps/cli/src/commands/device.ts`
-
-- L123: The revocation is already on the chain; what remains after a failed sweep is only fulfilling the duty, and the always-on warning keeps displaying it.
-
 ### `apps/cli/src/commands/flags.ts`
 
 - L14: NonBlank blocks the accident of an unset $ENV silently writing a secret into the default environment.
@@ -539,8 +535,36 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L60: A leading 0x00 keeps a DER INTEGER positive when the high bit is set (X.690 minimal encoding)
 - L119: A PKCS#1 private key is wrapped as PKCS#8 PrivateKeyInfo because that is the one form WebCrypto's importKey accepts (RFC 5208)
 
-### `apps/cli/src/device-add.ts`
+### `apps/cli/src/device-gaps.ts`
 
+- L174: The gap-fill command always spells --env and --project explicitly: relying on the default environment would pull a different one (K11-5)
+- L189: The missing-epochs warning is shared by value pulls and device add's reachability check, and its causes list both the member-side and device backfills (K12-3)
+- L216: Failure and success messages name only the epochs this device attempted: naming all gaps would include epochs this device can never fill (pullfrog finding)
+- L226: A retry is suggested only where it helps — after the cause is removed (e.g. a read-scope token's 403, K11-7 limit (3))
+
+### `apps/cli/src/device-key.ts`
+
+- L61: Unregistered-key wording routes via device approve only when a pending request exists (a registered key cannot recreate one); a device listed elsewhere is added by syncing from a device listed here (K10-5)
+- L72: Revoked-key wording (K13-5): a revoked key never returns, so re-adding uses a new key; cleanup on other projects is stated conditionally because this body sees only this project's chain
+- L260: revokedFingerprintsOf is one predicate shared by device-sync's registration exclusion and device add's 'revoked on this project' (K12-6)
+- L285: The re-add route always uses a new key: a revoked key is never registered again as the same key (K12-7)
+
+### `apps/cli/src/device-sync.ts`
+
+- L205: Only re-approval clears a record's revocation mark, and a registered key cannot recreate a request (K10-5) — so the note never says 'approve it again', a procedure the user cannot follow
+- L308: The registration note reports the added cap from the chain, because this is the only point where the record's cap takes effect (K10-3)
+- L324: A registered device's failed backfill is not retried by the next sync (candidates are only records not on the chain); filling is done by a pull from a device whose cap covers it (K11-5)
+- L338: Failed-backfill guidance emits copyable commands per environment with the real id; the '<environment>' placeholder is only for when the environment is unknown (Bugbot finding)
+- L349: The append path already mapped the typed error onto failure.ts's wording in one place, so here only K4-14's carry-over (the local record is kept) is appended to that wording
+
+### `apps/cli/src/device.package/command.ts`
+
+- Moved 2026-11-28 from `apps/cli/src/commands/device.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
+- L123: The revocation is already on the chain; what remains after a failed sweep is only fulfilling the duty, and the always-on warning keeps displaying it.
+
+### `apps/cli/src/device.package/device-add.ts`
+
+- Moved 2026-11-28 from `apps/cli/src/device-add.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L47: The mid-wait hint fires at TTL/3 from request creation; because docs transcribe it as 'five minutes', the value is pinned by cli-vocabulary.test.ts
 - L70: Existing-key branch (DK K13-2/K13-9): a live request resumes the wait, otherwise the chain standing decides; neither path creates a request (the server consumes the 1h/5-attempt window first)
 - L87: A registry row for the new key's FP means an FP collision: there is no awaited request, so it is reported by chain standing, never as 'Approved' (K13-3)
@@ -563,8 +587,9 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L568: A live request for the same key means resume the wait (K4-5); a lookup failure is reported, never swallowed — a 409 is proof of life, never grounds for 'it was revoked' guidance
 - L591: The registry wait polls to the TTL; the one-time hint (elapsed derived as expiry − TTL) states only the missing signal and leaves the cause to the approver's screen (K7-3)
 
-### `apps/cli/src/device-approve.ts`
+### `apps/cli/src/device.package/device-approve.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/device-approve.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L31: Approve references accept only the full 32 hex chars or 12 words (K4-6) — prefixes are not accepted
 - L61: The matching request row is picked by recomputed FP: the response's claimed FP is never used (K4-6)
 - L104: Multiple requests for the same key stop the approval with them shown: silently picking one would grant chain authority on a guess (server is supposed to dedupe by FP)
@@ -581,29 +606,17 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L448: Landing nowhere (all skipped/failed, with no record or cancellation) ends the approval as a failure — not exit 0 even when everything was only skipped
 - L482: 'already' does not backfill, so re-running approval fills no gap (K11): a sibling device's pull fills it — and this route also avoids K10-12's cap refusal
 
-### `apps/cli/src/device-gaps.ts`
+### `apps/cli/src/device.package/device-list.ts`
 
-- L174: The gap-fill command always spells --env and --project explicitly: relying on the default environment would pull a different one (K11-5)
-- L189: The missing-epochs warning is shared by value pulls and device add's reachability check, and its causes list both the member-side and device backfills (K12-3)
-- L216: Failure and success messages name only the epochs this device attempted: naming all gaps would include epochs this device can never fill (pullfrog finding)
-- L226: A retry is suggested only where it helps — after the cause is removed (e.g. a read-scope token's 403, K11-7 limit (3))
-
-### `apps/cli/src/device-key.ts`
-
-- L61: Unregistered-key wording routes via device approve only when a pending request exists (a registered key cannot recreate one); a device listed elsewhere is added by syncing from a device listed here (K10-5)
-- L72: Revoked-key wording (K13-5): a revoked key never returns, so re-adding uses a new key; cleanup on other projects is stated conditionally because this body sees only this project's chain
-- L260: revokedFingerprintsOf is one predicate shared by device-sync's registration exclusion and device add's 'revoked on this project' (K12-6)
-- L285: The re-add route always uses a new key: a revoked key is never registered again as the same key (K12-7)
-
-### `apps/cli/src/device-list.ts`
-
+- Moved 2026-11-28 from `apps/cli/src/device-list.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L69: On-chain appearance lines judge standing with keyStandingIn — the same predicate as device add (K13-6)
 - L130: Even when the project list cannot be fetched, the registry and local records are still shown rather than dropping the whole list (K13-6)
 - L144: This device's own key is printed even when absent from every chain, registry, and valid record — it is the place a revoked device's error defers to (K13-6)
 - L183: On-chain appearance reporting never says 'none' about a project that could not be synced (K13-6/K13-16)
 
-### `apps/cli/src/device-revoke.ts`
+### `apps/cli/src/device.package/device-revoke.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/device-revoke.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L48: Revoke references are an FP prefix of 8+ chars or the registry's display name, your own devices only (K4-7)
 - L144: Marking the revoked device in the local record prevents re-registering it (K4-3 counterexample 1)
 - L300: Revocation confirmation is skipped by --yes: a revocation is not a ceremony (K4-7)
@@ -612,19 +625,16 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L527: When this device revoked itself, the sweep cannot be fulfilled from this device (K4-7 counterexample 5)
 - L541: Token-revocation proposal (K4-13): candidate is the registry tokenId else 'cli:<label>'; --revoke-token revokes, interactive asks, --yes only proposes; a 403 on the list reports only the fact
 
-### `apps/cli/src/device-sync.ts`
+### `apps/cli/src/device.package/device.ts`
 
-- L205: Only re-approval clears a record's revocation mark, and a registered key cannot recreate a request (K10-5) — so the note never says 'approve it again', a procedure the user cannot follow
-- L308: The registration note reports the added cap from the chain, because this is the only point where the record's cap takes effect (K10-3)
-- L324: A registered device's failed backfill is not retried by the next sync (candidates are only records not on the chain); filling is done by a pull from a device whose cap covers it (K11-5)
-- L338: Failed-backfill guidance emits copyable commands per environment with the real id; the '<environment>' placeholder is only for when the environment is unknown (Bugbot finding)
-- L349: The append path already mapped the typed error onto failure.ts's wording in one place, so here only K4-14's carry-over (the local record is kept) is appended to that wording
-
-### `apps/cli/src/device.ts`
-
+- Moved 2026-11-28 from `apps/cli/src/device.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L1: Device group overview: per-command design — add branches on chain standing without a gate, approve recomputes the FP and stops on cap mismatch, the registry PUT precedes request cancellation (K9-1)
 - L76: A malformed stored key materializes as a non-matching fingerprint (null, treated as 'no such key'); any other failure is an invariant break and dies
 - L85: The registry is used only for display and the approval signal, so an unreadable registry yields null and never fails the command
+
+### `apps/cli/src/device.package/index.ts`
+
+- Added 2026-11-28 (after the audit; no base line): `device.package` holds the `device` command group (`command.ts`, which was `commands/device.ts`) and five files of the group: `device-add.ts`, `device-approve.ts`, `device-list.ts`, `device-revoke.ts` and `device.ts`. The index re-exports `describeBackfill` and `reportRegisteredDevice` of `device-approve.ts`, with which `key recover` reports the device it registers. `device-standing.ts` stays at the src root: `ledger-open.ts` reads a ledger key's standing from it, and through this index `ledger-open.ts` would also load `device-approve.ts` and `device.ts`, which `guardian add` and `key seal passkey` do not load. `device-gaps.ts`, `device-ops.ts` and `device-sync.ts` (the open pipeline) and `device-key.ts` (the trust core) stay at the src root too, where their zones in `.fallowrc.json` name them.
 
 ### `apps/cli/src/display.ts`
 

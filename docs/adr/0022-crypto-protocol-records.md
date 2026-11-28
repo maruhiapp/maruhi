@@ -367,8 +367,9 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L93: Registration signs, so it runs only in a human session passing the device-approve ceremony gate: the local record is an unsigned file, and a planted row would otherwise add a signer without the gate (K4-37)
 - L113: Registration's ceremony gate emits a Note and returns false instead of stopping the command body — registration is an adjunct of a SHOULD (K4-37)
 
-### `apps/cli/src/device.ts`
+### `apps/cli/src/device.package/device.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/device.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L66: A registry/request row's claimed FP is never trusted: the FP is recomputed from the public key (§13-11)
 
 ### `apps/cli/src/env.package/boundary-checkpoint.ts`

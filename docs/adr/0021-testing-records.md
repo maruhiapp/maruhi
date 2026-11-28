@@ -3698,6 +3698,10 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L373: Astro 7 compressHTML jsx drops line breaks between text and elements, so sources write {" "}; a missing one renders glued words like 'Docs ·License'.
 - L568: Page dates use the author date (%aI) as getLastUpdated reads it, and the check needs full git history (fetch-depth: 0) — a shallow clone would date every page at the boundary commit.
 
+### `apps/site/test/unit/adr-record-headings.test.ts`
+
+- Added 2026-11-28 (after the audit; no base line): a heading of the record ADRs (0021–0030) follows its file. When a file moves, its heading is rewritten to the new path and the first line under it keeps the path the file had at the audit base commit, which the L numbers refer to (`Moved <date> from`). A reader starts from the file in front of them, so the current path has to find the records, and every record of one file stays under one heading. The test fails on a heading that is not one path in backticks, on a heading that names no tracked file, on headings out of code-point order or repeated, and on a `Moved` line whose old path still exists. It does not know which headings were rewritten, so a missing `Moved` line is caught in review, not here
+
 ### `apps/site/test/unit/cli-vocabulary.test.ts`
 
 - L1: Docs must copy CLI vocabulary from the help golden (K7-A/K6-O); rulings a machine can decide become checks (K6-T), covering command paths, flags and required positionals in sh blocks.

@@ -3,36 +3,36 @@ import { type EnvironmentId, type KeyFingerprintHex, type ProjectId } from "@mar
 import type { ChainDevice, ChainMember } from "@maruhi/crypto";
 import { Clock, Duration, Effect, Result, Schedule } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { CliServices } from "./cli.ts";
-import type { ProjectContextBase } from "./context.ts";
-import { type DekRecipient, environmentKeysFor, missingEpochsOf } from "./deks.ts";
-import { describeMissingOwnEpochs, gapFillCommandOf } from "./device-gaps.ts";
-import { reAddDeviceRoute } from "./device-key.ts";
-import { deviceEnvironmentsOf } from "./device-ops.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { CliServices } from "../cli.ts";
+import type { ProjectContextBase } from "../context.ts";
+import { type DekRecipient, environmentKeysFor, missingEpochsOf } from "../deks.ts";
+import { describeMissingOwnEpochs, gapFillCommandOf } from "../device-gaps.ts";
+import { reAddDeviceRoute } from "../device-key.ts";
+import { deviceEnvironmentsOf } from "../device-ops.ts";
 import {
   groupStandings,
   type KeyStandings,
   keyStandingsOf,
   type StandingGroups,
-} from "./device-standing.ts";
-import { fetchRegistry } from "./device.ts";
-import { countNoun, describeListed, displayText, formatUtcMinutes } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { FloorStore } from "./floor.ts";
-import { fingerprintWords, formatWordList } from "./fp-words.ts";
-import { CliIo } from "./io.ts";
-import { generateKeyRecord } from "./key-record.ts";
-import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "./keychain.ts";
-import { logNote, logWarning } from "./notice.ts";
+} from "../device-standing.ts";
+import { countNoun, describeListed, displayText, formatUtcMinutes } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { FloorStore } from "../floor.ts";
+import { fingerprintWords, formatWordList } from "../fp-words.ts";
+import { CliIo } from "../io.ts";
+import { generateKeyRecord } from "../key-record.ts";
+import { Keychain, masterKeyEntryName, serializeStoredMasterKey } from "../keychain.ts";
+import { logNote, logWarning } from "../notice.ts";
 import {
   type CliSession,
   importMasterKeys,
   loadMasterKeys,
   type MasterKeys,
   storeMasterKeyAndReport,
-} from "./session.ts";
+} from "../session.ts";
+import { fetchRegistry } from "./device.ts";
 
 const DEVICE_ADD_POLL_INTERVAL_MS = 3_000;
 

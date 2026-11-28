@@ -1,20 +1,20 @@
 import { type ProjectId, type UserId } from "@maruhi/core";
 import { Effect } from "effect";
 
-import type { MaruhiClient } from "./api.ts";
-import type { VerifiedProject } from "./chain-sync.ts";
-import type { CliServices } from "./cli.ts";
-import { openMetadataProject, type ProjectContextBase } from "./context.ts";
-import { describeCap, deviceProvenanceOf, devicesOf } from "./device-key.ts";
-import { keyStandingIn } from "./device-standing.ts";
+import type { MaruhiClient } from "../api.ts";
+import type { VerifiedProject } from "../chain-sync.ts";
+import type { CliServices } from "../cli.ts";
+import { openMetadataProject, type ProjectContextBase } from "../context.ts";
+import { describeCap, deviceProvenanceOf, devicesOf } from "../device-key.ts";
+import { keyStandingIn } from "../device-standing.ts";
+import { countNoun, displayText } from "../display.ts";
+import type { CliError } from "../errors.ts";
+import { CliIo } from "../io.ts";
+import { logNote } from "../notice.ts";
+import { type OwnDeviceEntry, OwnDeviceStore } from "../own-devices.ts";
+import { compareCodePoints } from "../scope.ts";
+import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 import { fetchRegistry, type RegistryRow, resolveProjectIds } from "./device.ts";
-import { countNoun, displayText } from "./display.ts";
-import type { CliError } from "./errors.ts";
-import { CliIo } from "./io.ts";
-import { logNote } from "./notice.ts";
-import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
-import { compareCodePoints } from "./scope.ts";
-import { type CliSession, loadMasterKeys, type MasterKeys } from "./session.ts";
 
 interface ListRows {
   readonly rows: Map<string, { readonly projectId: ProjectId; readonly line: string }[]>;
