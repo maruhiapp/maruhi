@@ -1281,6 +1281,10 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L80: One trailing newline (LF/CRLF) is dropped from the stdin value, guarding against echo-sourced contamination.
 - L677: An existing variable's variableId comes from a server-distributed meta-statement (no character-set check beyond non-empty), so the local side is neutralized for display too.
 
+### `apps/cli/src/reserve.package/index.ts`
+
+- Added 2026-11-28 (after the audit; no base line): `reserve.package` holds the reserve key's local record and its recovery code: `reserve.ts`, `recovery.ts` and `recovery-code.ts`. It has no command file, as the commands that use it belong to the `key` group. The index re-exports what `key.package` (`keygen.ts`, `key-recover.ts`) and `ledger-open.ts` take from `reserve.ts` and `recovery.ts`, and the `ReserveKeys` type for `guardian.package` and `passkey.package`. Each of those three files already loaded both, so the index adds no module to a command. Two files of the ledger stay at the src root. Through this index, `keygen.ts` would load `ledger-open.ts` and with it `device-standing.ts`, which `key generate` does not load. `master-ops.ts` is used by `guardian.package`, `passkey.package` and `key.package/handoff.ts` without the recovery code, and through this index they would load `recovery.ts`
+
 ### `apps/cli/src/retry.ts`
 
 - L1: Shared combinator for CAS-conflict retries (the retry procedure of AUTH_SPEC §12-4 / §12-5). The skeleton "attempt → classify conflict →

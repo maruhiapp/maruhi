@@ -4,7 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { serializeStoredMasterKey } from "../src/keychain.ts";
-import { formatRecoveryCode } from "../src/recovery-code.ts";
+import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import {
   buildChain,
   type BuiltChain,

@@ -11,13 +11,14 @@ import type { StoredMasterKey } from "./keychain.ts";
 import { logNote } from "./notice.ts";
 import type { OwnDeviceStore } from "./own-devices.ts";
 import { openReserveWithPasskey } from "./passkey.package/index.ts";
-import { mapUnloadableRecoveryBlob, unwrapRecoveryBlobWithCode } from "./recovery.ts";
 import {
   isMarkedReserve,
+  mapUnloadableRecoveryBlob,
   markRevokedReserveRecord,
   recordReserveLocally,
   type ReserveKeys,
-} from "./reserve.ts";
+  unwrapRecoveryBlobWithCode,
+} from "./reserve.package/index.ts";
 import { type CliSession, importMasterKeys, loadMasterKeys } from "./session.ts";
 
 export type LedgerOpenVia = "code" | "passkey";

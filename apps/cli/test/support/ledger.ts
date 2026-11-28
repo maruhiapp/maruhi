@@ -2,7 +2,7 @@ import { wrapMasterSecret } from "@maruhi/crypto";
 import { Redacted } from "effect";
 
 import { serializeStoredMasterKey, type StoredMasterKey } from "../../src/keychain.ts";
-import { formatRecoveryCode } from "../../src/recovery-code.ts";
+import { formatRecoveryCode } from "../../src/reserve.package/recovery-code.ts";
 import type { TestUser } from "./crypto.ts";
 import { testUserId } from "./crypto.ts";
 import { type MockHandler, onRequest } from "./server.ts";

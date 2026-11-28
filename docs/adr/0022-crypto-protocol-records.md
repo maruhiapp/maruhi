@@ -1323,15 +1323,17 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L643: The floor key is the variable ID I signed — the server echo is not trusted.
 - L652: The coordinates reported as success are the locally signed values; the server echo is used only for cross-checking, and a disagreement surfaces as a typed error (promoting the echo into the display would let the user cite server-claimed coordinates as fact).
 
-### `apps/cli/src/recovery-code.ts`
+### `apps/cli/src/reserve.package/recovery-code.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/recovery-code.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L1: The human-readable representation of the recovery code (CRYPTO_SPEC §8: a 256-bit random value as a grouped Base32 (RFC 4648) string). This
 - L25: Formats a 256-bit recovery secret as grouped Base32 (`XXXX-XXXX-…`). Why it is unwrapped: input for Base32 encoding. The formatted code is
 - L63: Parses a recovery code back into its 32-byte secret. Case-insensitive; hyphens and whitespace are ignored. Returns null for anything that
 - L91: Zero-padding check of the last 4 bits: non-zero is a transcription error (not identified with another code one symbol away)
 
-### `apps/cli/src/recovery.ts`
+### `apps/cli/src/reserve.package/recovery.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/recovery.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L1: Issuing / reissuing / opening a recovery code (CRYPTO_SPEC §8 / AUTH_SPEC §13). - The recovery code (256-bit) exists only in process memory
 - L63: The retry count for save confirmation / code entry (forgiving typos. Exceeding it is an explicit error).
 - L84: Issues (or reissues) the recovery code for the reserve key `record`: generate → wrap → register → display → save confirmation. The shared
@@ -1364,8 +1366,9 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L429: `maruhi key generate`'s tail: generating the reserve key and its first sealing (K4-2 — a reserve key is born at the first ledger sealing).
 - L464: Generates a reserve key, seals it with a fresh recovery code and records its public side locally (K4-1's order: seal → record. Chain
 
-### `apps/cli/src/reserve.ts`
+### `apps/cli/src/reserve.package/reserve.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/reserve.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L1: The reserve key (CRYPTO_SPEC §3 / §8 — 2026-09-19 DK; design record dk-design.md §9 K4-1 / K4-2). Of the key pairs shaped like a device
 - L35: The reserve key, imported and ready to use, held in memory only. The brand keeps it out of every keychain-storing function (those take
 - L47: Loads a record decrypted from the ledger (or a generated record) as the reserve key.

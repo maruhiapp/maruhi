@@ -47,14 +47,16 @@ import {
 import { logNote, logWarning } from "../notice.ts";
 import { OwnDeviceStore } from "../own-devices.ts";
 import { fetchProjectMemberships } from "../project.package/index.ts";
-import { issueRecoveryCodeOp, mapUnloadableRecoveryBlob, sealNewReserve } from "../recovery.ts";
 import {
   generateReserveKeys,
   isMarkedReserve,
+  issueRecoveryCodeOp,
+  mapUnloadableRecoveryBlob,
   markRevokedReserveRecord,
   recordReserveLocally,
   type ReserveKeys,
-} from "../reserve.ts";
+  sealNewReserve,
+} from "../reserve.package/index.ts";
 import {
   type CliSession,
   ensureNoStoredMasterKey,

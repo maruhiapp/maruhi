@@ -10,12 +10,12 @@ import {
 import { Effect, Redacted, Stdio } from "effect";
 import type { HttpClient } from "effect/http";
 
-import { ensureSensitiveTerminalAllowed } from "./agent-gate.ts";
-import type { MaruhiClient } from "./api.ts";
-import { escapeText } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo, type CliIoShape } from "./io.ts";
+import { ensureSensitiveTerminalAllowed } from "../agent-gate.ts";
+import type { MaruhiClient } from "../api.ts";
+import { escapeText } from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo, type CliIoShape } from "../io.ts";
 import {
   classifyUnreadableMasterKey,
   declaredSuiteOf,
@@ -24,18 +24,18 @@ import {
   placeholderCause,
   serializeStoredMasterKey,
   type StoredMasterKey,
-} from "./keychain.ts";
-import { logNote } from "./notice.ts";
-import { OwnDeviceStore } from "./own-devices.ts";
-import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
-import { generateReserveKeys, recordReserveLocally } from "./reserve.ts";
+} from "../keychain.ts";
+import { logNote } from "../notice.ts";
+import { OwnDeviceStore } from "../own-devices.ts";
 import {
   type CliSession,
   cryptoBackendUsable,
   type MasterKeyImportError,
   retryOnSupportedRuntime,
   unsupportedCryptoCause,
-} from "./session.ts";
+} from "../session.ts";
+import { formatRecoveryCode, parseRecoveryCode } from "./recovery-code.ts";
+import { generateReserveKeys, recordReserveLocally } from "./reserve.ts";
 
 const PROMPT_ATTEMPTS = 3;
 
