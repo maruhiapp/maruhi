@@ -19,6 +19,27 @@ effectTsgoRules["effecttsgo/flat-map-map-to-zip-with"] = "off";
 effectTsgoRules["effecttsgo/promise-all-in-effect"] = "error";
 effectTsgoRules["effecttsgo/promise-race-in-effect"] = "error";
 
+const requireMessage =
+  "Shipped source loads modules with import only. require(), node:module (createRequire) and import.meta.require take a specifier that no-restricted-imports never reads, so they would pass the egress, identity-mint and Effect-fence bans";
+
+const moduleLoadRestrictions = [
+  {
+    selector: "ImportExpression:not([source.value=/^\\.\\.?\\//])",
+    message:
+      "A dynamic import() names a relative path literal. The importNames bans of no-restricted-imports (FetchHttpClient, the identity mints) cannot see which names a dynamic import takes, so a package or computed specifier is refused here. Import the package statically, or load a local module that does",
+  },
+  { selector: "CallExpression[callee.name='require']", message: requireMessage },
+  {
+    selector:
+      ":matches(ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^(node:)?module$/]",
+    message: requireMessage,
+  },
+  {
+    selector: "MemberExpression[object.type='MetaProperty'][property.name='require']",
+    message: requireMessage,
+  },
+];
+
 export default defineConfig({
   fmt: {
     sortImports: true,
@@ -232,10 +253,21 @@ export default defineConfig({
         },
       },
       {
+        files: ["apps/cli/src/**", "apps/server/src/**", "apps/site/src/**", "packages/*/src/**"],
+        rules: {
+          "eslint-js/no-restricted-syntax": ["error", ...moduleLoadRestrictions],
+        },
+      },
+      {
+        files: ["apps/site/src/components/ui/search/providers/pagefind.ts"],
+        rules: { "eslint-js/no-restricted-syntax": "off" },
+      },
+      {
         files: ["apps/cli/src/**/*.ts"],
         rules: {
           "eslint-js/no-restricted-syntax": [
             "error",
+            ...moduleLoadRestrictions,
             {
               selector: "Literal[value=/master[ -]key|master private key/i]",
               message:
@@ -254,6 +286,7 @@ export default defineConfig({
         rules: {
           "eslint-js/no-restricted-syntax": [
             "error",
+            ...moduleLoadRestrictions,
             {
               selector:
                 "CallExpression[callee.object.name='HttpApiEndpoint'] > ObjectExpression > Property:matches([key.name='success'], [key.value='success']) CallExpression[callee.object.name='Schema'][callee.property.name='Struct']",
