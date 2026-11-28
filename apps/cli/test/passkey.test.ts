@@ -11,7 +11,7 @@ import {
 } from "../src/keychain.ts";
 import { makeFileOwnDeviceStore, ownDevicesPathOf } from "../src/own-devices.ts";
 import type { PrfPagePost } from "../src/passkey.package/passkey-page.ts";
-import { formatRecoveryCode } from "../src/recovery-code.ts";
+import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
 import {
   addOwnerDeviceOp,

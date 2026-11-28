@@ -28,7 +28,7 @@ import {
   type StoredMasterKey,
   tokenEntryName,
 } from "../src/keychain.ts";
-import { formatRecoveryCode } from "../src/recovery-code.ts";
+import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { buildChildEnvironment } from "../src/run.ts";
 import { makeTestUser, type TestUser } from "./support/crypto.ts";
 import { testUserId } from "./support/crypto.ts";

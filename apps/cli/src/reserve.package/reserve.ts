@@ -1,13 +1,13 @@
 import { ALL_SCOPE, type EncryptionKeyPair, type SigningKeyPair } from "@maruhi/crypto";
 import { Clock, Effect } from "effect";
 
-import { cliError, type CliError } from "./errors.ts";
-import type { CliIo } from "./io.ts";
-import { generateKeyRecord } from "./key-record.ts";
-import type { StoredMasterKey } from "./keychain.ts";
-import { logNote, logWarning } from "./notice.ts";
-import { type OwnDeviceEntry, OwnDeviceStore } from "./own-devices.ts";
-import { type CliSession, importMasterKeys } from "./session.ts";
+import { cliError, type CliError } from "../errors.ts";
+import type { CliIo } from "../io.ts";
+import { generateKeyRecord } from "../key-record.ts";
+import type { StoredMasterKey } from "../keychain.ts";
+import { logNote, logWarning } from "../notice.ts";
+import { type OwnDeviceEntry, OwnDeviceStore } from "../own-devices.ts";
+import { type CliSession, importMasterKeys } from "../session.ts";
 
 export interface ReserveKeys {
   readonly reserve: true;

@@ -14,7 +14,7 @@ import { CliIo, type CliIoShape } from "../io.ts";
 import { parseStoredMasterKey, type StoredMasterKey } from "../keychain.ts";
 import { newLedgerId, wrapReserveBlob } from "../master-ops.ts";
 import { logNote } from "../notice.ts";
-import type { ReserveKeys } from "../reserve.ts";
+import type { ReserveKeys } from "../reserve.package/index.ts";
 import type { CliSession } from "../session.ts";
 import { type PrfListener, type PrfListenerOutcome, startPrfListener } from "./passkey-listener.ts";
 import type { PrfPageConfig, PrfPageErrorCode } from "./passkey-page.ts";

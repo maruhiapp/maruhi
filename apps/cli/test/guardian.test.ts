@@ -15,7 +15,7 @@ import {
   serializeStoredMasterKey,
   type StoredMasterKey,
 } from "../src/keychain.ts";
-import { formatRecoveryCode } from "../src/recovery-code.ts";
+import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import {
   addMemberOp,

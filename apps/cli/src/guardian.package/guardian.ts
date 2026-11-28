@@ -48,7 +48,7 @@ import {
   sealForRequester,
 } from "../master-ops.ts";
 import { logNote, logWarning } from "../notice.ts";
-import type { ReserveKeys } from "../reserve.ts";
+import type { ReserveKeys } from "../reserve.package/index.ts";
 import { type CliSession, loadMasterKeys, type MasterKeys } from "../session.ts";
 
 const MAX_GUARDIANS = 5;

@@ -15,7 +15,7 @@ import {
   type OwnDeviceEntry,
   ownDevicesPathOf,
 } from "../src/own-devices.ts";
-import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
+import { formatRecoveryCode, parseRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { makeTestUser, testUserId, type TestUser } from "./support/crypto.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";

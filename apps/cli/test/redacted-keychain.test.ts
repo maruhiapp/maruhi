@@ -21,7 +21,7 @@ import {
   serializeStoredToken,
   tokenEntryName,
 } from "../src/keychain.ts";
-import { formatRecoveryCode, parseRecoveryCode } from "../src/recovery-code.ts";
+import { formatRecoveryCode, parseRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { ensureNoStoredMasterKey, loadMasterKeys, resolveSession } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import { type MockHandler, MockServer, onRequest } from "./support/server.ts";

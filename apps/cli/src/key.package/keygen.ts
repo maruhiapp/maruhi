@@ -12,8 +12,7 @@ import { generateKeyRecord } from "../key-record.ts";
 import { Keychain, serializeStoredMasterKey } from "../keychain.ts";
 import { logNote } from "../notice.ts";
 import { OwnDeviceStore } from "../own-devices.ts";
-import { issueRecoveryAfterKeygen } from "../recovery.ts";
-import { recordedReserves } from "../reserve.ts";
+import { issueRecoveryAfterKeygen, recordedReserves } from "../reserve.package/index.ts";
 import type { ProcessRunner } from "../run.ts";
 import {
   type CliSession,
