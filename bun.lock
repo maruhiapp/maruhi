@@ -35,6 +35,7 @@
         "std-env": "4.3.0",
       },
       "devDependencies": {
+        "@maruhi/test-kit": "workspace:*",
         "@types/bun": "1.4.4",
       },
     },
@@ -51,6 +52,7 @@
       "devDependencies": {
         "@cloudflare/vitest-plugin": "1.8.4",
         "@cloudflare/workers-types": "5.20261118.1",
+        "@maruhi/test-kit": "workspace:*",
         "@types/bun": "1.4.4",
         "cf": "1.0.0-rc.1",
         "drizzle-kit": "1.0.0-rc.5",
@@ -137,6 +139,14 @@
         "@cloudflare/vitest-plugin": "1.8.4",
         "@vitest/browser-playwright": "5.1.1",
         "vitest": "5.1.1",
+      },
+    },
+    "packages/test-kit": {
+      "name": "@maruhi/test-kit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@maruhi/api-schema": "workspace:*",
+        "@maruhi/crypto": "workspace:*",
       },
     },
   },
@@ -589,6 +599,8 @@
     "@maruhi/server": ["@maruhi/server@workspace:apps/server"],
 
     "@maruhi/site": ["@maruhi/site@workspace:apps/site"],
+
+    "@maruhi/test-kit": ["@maruhi/test-kit@workspace:packages/test-kit"],
 
     "@maruhi/web": ["@maruhi/web@workspace:apps/web"],
 

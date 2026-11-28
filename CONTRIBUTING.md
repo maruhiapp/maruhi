@@ -16,6 +16,7 @@ Thanks for your interest in contributing to maruhi. Issues and pull requests are
 - `packages/crypto` — the E2EE core (WebCrypto + HPKE); runs in browsers, Bun, and workerd
 - `packages/core` — domain types, Effect Schemas, and shared logic
 - `packages/api-schema` — the HttpApi definition shared by the server and the CLI client
+- `packages/test-kit` — test data builders shared by the CLI and server tests (never shipped)
 - `apps/server` — Cloudflare Workers + Durable Objects + D1
 - `apps/cli` — the `maruhi` / `mh` CLI
 - `apps/web` — the dashboard (`my.maruhi.app`)
@@ -46,7 +47,7 @@ For development rules, see [CLAUDE.md](CLAUDE.md) and [docs/adr/](docs/adr/). In
 This repository uses different licenses per area ([ADR-0003](docs/adr/0003-license-fsl-mit.md)):
 
 - Repository default (including `apps/server` and `apps/web`): [FSL-1.1-MIT](LICENSE.md)
-- `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema`: MIT (`LICENSE` in each directory)
+- `apps/cli`, `packages/crypto`, `packages/core`, `packages/api-schema`, `packages/test-kit`: MIT (`LICENSE` in each directory)
 
 By submitting a pull request, you agree that your contribution is offered under the license that applies to the directory you change.
 

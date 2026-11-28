@@ -24,6 +24,7 @@
     "std-env": "4.3.0"
   },
   "devDependencies": {
+    "@maruhi/test-kit": "workspace:*",
     "@types/bun": "1.4.4"
   }
 }

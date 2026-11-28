@@ -90,6 +90,7 @@
       { "name": "crypto", "patterns": ["packages/crypto/src/**"] },
       { "name": "core", "patterns": ["packages/core/src/**"] },
       { "name": "api-schema", "patterns": ["packages/api-schema/src/**"] },
+      { "name": "test-kit", "patterns": ["packages/test-kit/lib/**"] },
       {
         "name": "cli-entry",
         "patterns": [
@@ -238,6 +239,7 @@
       { "from": "crypto", "allow": [] },
       { "from": "core", "allow": ["crypto"] },
       { "from": "api-schema", "allow": ["core", "crypto"] },
+      { "from": "test-kit", "allow": ["api-schema", "crypto"] },
       {
         "from": "cli-entry",
         "allow": [

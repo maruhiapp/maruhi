@@ -20,6 +20,7 @@ apps/web/LICENSE.md
 packages/api-schema/LICENSE
 packages/core/LICENSE
 packages/crypto/LICENSE
+packages/test-kit/LICENSE
 
 # Brand mark assets — the comments name the kanji glyph the mark derives from.
 apps/site/public/favicon.svg
