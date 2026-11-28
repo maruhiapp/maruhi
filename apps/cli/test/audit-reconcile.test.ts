@@ -33,6 +33,8 @@ function idOf(seq: number): string {
   return seq.toString(16).padStart(32, "0");
 }
 
+type ServedEvents = ApiSuccess<"audit.events">["events"];
+
 function orderOf(row: Record<string, unknown>): number {
   return typeof row["seq"] === "number" ? row["seq"] : Number.parseInt(String(row["id"]), 16);
 }
@@ -139,10 +141,7 @@ function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState 
       }
       return { status: 200, json: { auditHeadHashHex: input.declaredHeadHex } };
     }),
-    (request) => {
-      if (request.method !== "GET" || request.path !== `/projects/${projectId}/audit/events`) {
-        return null;
-      }
+    onEndpoint("audit.events", { projectId }, (request) => {
       eventCalls += 1;
       const before = request.query["before"];
       const limit = Number(request.query["limit"] ?? "50");
@@ -158,8 +157,8 @@ function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState 
         .filter((row) => orderOf(row) < cursorSeq)
         .toSorted((a, b) => orderOf(b) - orderOf(a))
         .slice(0, limit);
-      return { status: 200, json: { events: page } };
-    },
+      return { status: 200, json: { events: page as unknown as ServedEvents } };
+    }),
   ];
   return { handlers, eventCalls: () => eventCalls, auditHeadCalls: () => auditHeadCalls };
 }

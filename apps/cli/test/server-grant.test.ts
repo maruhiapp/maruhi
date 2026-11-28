@@ -19,13 +19,13 @@ import {
   rotateEpochOp,
   testEnvironmentId,
 } from "@maruhi/test-kit";
-import type { ApiSuccess } from "@maruhi/test-kit/api";
+import type { ApiPayload, ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { servedChain } from "./support/chain-handler.ts";
+import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
+import { type EndpointAnswer, type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -60,11 +60,12 @@ afterEach(async () => {
 interface GrantServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
-  readonly registerBodies: { readonly environmentId: string; readonly deks: readonly unknown[] }[];
+  readonly registerBodies: {
+    readonly environmentId: string;
+    readonly deks: ApiPayload<"deks.register">["deks"];
+  }[];
   readonly registerResponder: {
-    respond:
-      | ((body: { readonly deks: readonly unknown[] }) => { status: number; json: unknown } | null)
-      | null;
+    respond: ((body: ApiPayload<"deks.register">) => EndpointAnswer<"deks.register"> | null) | null;
   };
 }
 
@@ -96,39 +97,25 @@ async function makeGrantServer(input: {
       status: 200,
       json: servedChain(projectId, entries, hashes),
     })),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
-      const body = request.body as { readonly entry: ChainEntry };
+    onEndpoint("membership.append", { projectId }, async (request) => {
+      const body = { entry: request.body.entry as ChainEntry };
       appendedEntries.push(body.entry);
       entries.push(body.entry);
       hashes.push(await computeChainEntryHash(body.entry));
       return {
         status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
+        json: { projectId, headSeq: entries.length, headHashHex: lastHashOf(hashes) },
       };
-    },
-    (request) => {
-      const match = /^\/projects\/[^/]+\/environments\/([^/]+)\/deks$/.exec(request.path);
-      if (match === null) {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
-      if (request.method === "GET") {
-        return {
-          status: 200,
-          json: { deks: input.deksByEnvironment[environmentId] ?? [] },
-        };
-      }
-      if (request.method === "POST") {
-        const body = request.body as { readonly deks: readonly unknown[] };
-        registerBodies.push({ environmentId, deks: body.deks });
-        const injected = registerResponder.respond?.(body);
-        return injected ?? { status: 204, json: undefined };
-      }
-      return null;
-    },
+    }),
+    onEndpoint("deks.listMine", (request) => ({
+      status: 200,
+      json: { deks: input.deksByEnvironment[request.params.environmentId] ?? [] },
+    })),
+    onEndpoint("deks.register", (request) => {
+      const body = request.body;
+      registerBodies.push({ environmentId: request.params.environmentId, deks: body.deks });
+      return registerResponder.respond?.(body) ?? { status: 204 };
+    }),
   ];
   return { handlers, appendedEntries, registerBodies, registerResponder };
 }
@@ -227,7 +214,7 @@ describe("maruhi server grant", () => {
       deksByEnvironment: { [ENV_ID]: await ownWraps(built.projectId) },
     });
     state.registerResponder.respond = (body) => {
-      const epochs = (body.deks as readonly { epoch: number }[]).map((wrap) => wrap.epoch);
+      const epochs = body.deks.map((wrap) => wrap.epoch);
       if (epochs.includes(1)) {
         return {
           status: 409,

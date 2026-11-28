@@ -25,7 +25,7 @@ import {
   start,
   wrap,
 } from "./support/mirror.ts";
-import { type MockHandler, type MockRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, onEndpoint } from "./support/server.ts";
 import { makeValueEnvironmentServer } from "./support/value-env.ts";
 
 function seedMirrorSession(env: TestEnv, mirrorOrigin: string): void {
@@ -317,13 +317,10 @@ describe("the read-only fallback to a mirror (PF2)", () => {
         ).toString("base64url");
         return { status: 200, json: { value: `eyJhbGciOiJSUzI1NiJ9.${payload}.c2ln` } };
       },
-      (request: MockRequest) => {
-        if (request.method !== "POST" || !request.path.endsWith("/lease")) {
-          return null;
-        }
+      onEndpoint("lease.issue", (request) => {
         leased.push(request.path);
         return { status: 404, json: { _tag: "ProjectNotFound", projectId: built.projectId } };
-      },
+      }),
     ]);
     const dead = await deadOrigin();
     const env = await makeTestEnv();

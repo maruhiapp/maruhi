@@ -28,7 +28,14 @@ import type { ProjectFloor } from "../src/floor.ts";
 import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
-import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  type MockRequest,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
 const ENV_ID = "dev";
 const ENV_NAME = "Development";
@@ -141,7 +148,7 @@ function deletionBodyOf(request: MockRequest | undefined): {
   return request?.body as { parentHeadHashHex: string; entry: Record<string, unknown> };
 }
 
-function headConflict(): { readonly status: number; readonly json: unknown } {
+function headConflict(): EndpointAnswer<"environments.remove"> {
   return {
     status: 409,
     json: {
@@ -184,24 +191,41 @@ async function concurrentRename(state: MetaEnvironmentState, name: string): Prom
   });
 }
 
-function conflictOnce(
-  method: string,
-  response: { readonly status: number; readonly json: unknown },
+function once<Answer>(
+  response: Answer,
   sideEffect?: () => Promise<void>,
-): MockHandler {
+): () => Promise<Answer | null> {
   let answered = false;
-  return async (request) => {
-    if (
-      answered ||
-      request.method !== method ||
-      request.path !== `/projects/${built.projectId}/environments/${ENV_ID}`
-    ) {
+  return async () => {
+    if (answered) {
       return null;
     }
     answered = true;
     await sideEffect?.();
     return response;
   };
+}
+
+function renameConflictOnce(
+  response: EndpointAnswer<"environments.rename">,
+  sideEffect?: () => Promise<void>,
+): MockHandler {
+  return onEndpoint(
+    "environments.rename",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    once(response, sideEffect),
+  );
+}
+
+function removeConflictOnce(
+  response: EndpointAnswer<"environments.remove">,
+  sideEffect?: () => Promise<void>,
+): MockHandler {
+  return onEndpoint(
+    "environments.remove",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    once(response, sideEffect),
+  );
 }
 
 describe("maruhi env rename", () => {
@@ -275,8 +299,7 @@ describe("maruhi env rename", () => {
     const seen: { winner?: WireDistributedEnvironmentStatement } = {};
     const { env, requests } = await startEnv({
       before: (current) => [
-        conflictOnce(
-          "PATCH",
+        renameConflictOnce(
           { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } },
           async () => {
             await concurrentRename(current, "Concurrent");
@@ -304,7 +327,7 @@ describe("maruhi env rename", () => {
   it("retries a manifestVersion conflict with a re-signed composite", async () => {
     const { env, requests } = await startEnv({
       before: () => [
-        conflictOnce("PATCH", {
+        renameConflictOnce({
           status: 409,
           json: { _tag: "ManifestVersionConflict", currentManifestVersion: 1 },
         }),
@@ -317,7 +340,7 @@ describe("maruhi env rename", () => {
   it("renders a duplicate-name refusal precisely and does not retry it", async () => {
     const { env, requests } = await startEnv({
       before: () => [
-        conflictOnce("PATCH", {
+        renameConflictOnce({
           status: 409,
           json: { _tag: "EnvironmentConflict", environmentId: ENV_ID, reason: "duplicate-name" },
         }),
@@ -332,7 +355,7 @@ describe("maruhi env rename", () => {
 
   it("renders a NameNotNfc refusal (not as an unexpected error)", async () => {
     const { env } = await startEnv({
-      before: () => [conflictOnce("PATCH", { status: 422, json: { _tag: "NameNotNfc" } })],
+      before: () => [renameConflictOnce({ status: 422, json: { _tag: "NameNotNfc" } })],
     });
     expect(await runCli(["env", "rename", ENV_ID, "Staging"], env.layer)).toBe(1);
     expect(env.errors.join("\n")).toContain("not NFC-normalized");
@@ -481,7 +504,7 @@ describe("maruhi env rm", () => {
   it("retries a chain-head conflict over a re-synced view (the then-current name)", async () => {
     const { env, requests } = await startEnv({
       before: (current) => [
-        conflictOnce("DELETE", headConflict(), () => concurrentRename(current, "Renamed")),
+        removeConflictOnce(headConflict(), () => concurrentRename(current, "Renamed")),
       ],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
@@ -502,7 +525,7 @@ describe("maruhi env rm", () => {
 
   it("prints no rename notice when a conflict re-resolves the same name", async () => {
     const { env, requests } = await startEnv({
-      before: () => [conflictOnce("DELETE", headConflict())],
+      before: () => [removeConflictOnce(headConflict())],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(0);
     expect(environmentCalls(requests(), "DELETE")).toHaveLength(2);
@@ -512,7 +535,7 @@ describe("maruhi env rm", () => {
   it("reports a concurrent deletion seen after a chain-head conflict as already done, without resending", async () => {
     const { env, requests } = await startEnv({
       before: (current) => [
-        conflictOnce("DELETE", headConflict(), async () => {
+        removeConflictOnce(headConflict(), async () => {
           current.chainEntries.push(deletedChain.entries[built.entries.length] as ChainEntry);
           current.chainHashes.push(deletedChain.hashes[built.hashes.length] as string);
           current.environmentDeleted = true;
@@ -529,7 +552,7 @@ describe("maruhi env rm", () => {
   it("renders a ChainEntryInvalid refusal and does not retry it", async () => {
     const { env, requests } = await startEnv({
       before: () => [
-        conflictOnce("DELETE", {
+        removeConflictOnce({
           status: 422,
           json: { _tag: "ChainEntryInvalid", seq: 4, reason: "environment-out-of-scope" },
         }),
@@ -554,19 +577,17 @@ describe("maruhi env rm", () => {
   it("reconciles a deletion whose response was lost on the next run (journal-before-send — 3-F)", async () => {
     const { env } = await startEnv({
       before: (current) => [
-        async (request) => {
-          if (
-            request.method !== "DELETE" ||
-            request.path !== `/projects/${built.projectId}/environments/${ENV_ID}`
-          ) {
-            return null;
-          }
-          const body = request.body as { readonly entry: ChainEntry };
-          current.chainEntries.push(body.entry);
-          current.chainHashes.push(await computeChainEntryHash(body.entry));
-          current.environmentDeleted = true;
-          return { status: 502, bodyText: "bad gateway" };
-        },
+        onEndpoint(
+          "environments.remove",
+          { projectId: built.projectId, environmentId: ENV_ID },
+          async (request) => {
+            const body = { entry: request.body.entry as ChainEntry };
+            current.chainEntries.push(body.entry);
+            current.chainHashes.push(await computeChainEntryHash(body.entry));
+            current.environmentDeleted = true;
+            return offSpec({ status: 502, bodyText: "bad gateway" });
+          },
+        ),
       ],
     });
     expect(await runCli(["env", "rm", ENV_ID, "--force"], env.layer)).toBe(1);

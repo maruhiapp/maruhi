@@ -1,4 +1,3 @@
-import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { computeChainEntryHash } from "@maruhi/crypto";
 import {
@@ -23,19 +22,22 @@ import {
   type WireDistributedManifest,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
+  type WireWrappedDek,
 } from "@maruhi/test-kit";
+import type { ApiReply } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import {
   acceptAppendedEntry,
+  type AppendAnswer,
   injectedAppendResponse,
   lastHashOf,
   servedChain,
 } from "./support/chain-handler.ts";
 import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockResponse, MockServer, onEndpoint } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -73,7 +75,7 @@ interface RemoveServerState {
   readonly handlers: readonly MockHandler[];
   readonly appendedEntries: ChainEntry[];
   readonly rotateBodies: WireRotateBody[];
-  readonly registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[];
+  readonly registerBodies: { environmentId: string; deks: readonly WireWrappedDek[] }[];
   readonly counters: { appendAttempts: number };
 }
 
@@ -82,7 +84,7 @@ async function makeRemoveServer(input: {
   readonly environments: Readonly<
     Record<string, { currentEpoch: number; deks: WireRecipientDek[] }>
   >;
-  readonly onAppend?: (call: number) => MockResponse | undefined;
+  readonly onAppend?: (call: number) => AppendAnswer | undefined;
   readonly chainAfterConflict?: BuiltChain;
   readonly rotator?: GeneratedIdentity;
   readonly flags?: readonly WireFlag[];
@@ -96,7 +98,7 @@ async function makeRemoveServer(input: {
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
   const rotateBodies: WireRotateBody[] = [];
-  const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
+  const registerBodies: { environmentId: string; deks: readonly WireWrappedDek[] }[] = [];
   const counters = { appendAttempts: 0 };
   const environments = input.environments;
   const manifests = new Map<string, WireDistributedManifest>();
@@ -113,7 +115,9 @@ async function makeRemoveServer(input: {
     ),
   );
 
-  const metadataResponse = async (environmentId: string): Promise<MockResponse> => {
+  const metadataResponse = async (
+    environmentId: string,
+  ): Promise<ApiReply<"variables.pullMetadata">> => {
     const environment = environments[environmentId];
     const statement = listedStatements.find((item) => item.environmentId === environmentId);
     if (environment === undefined || statement === undefined) {
@@ -158,32 +162,23 @@ async function makeRemoveServer(input: {
       status: 200,
       json: { flags: input.flags ?? [] },
     })),
-    async (request) => {
-      const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/pull/metadata$`).exec(
-        request.path,
-      );
-      if (match === null || request.method !== "GET") {
-        return null;
-      }
-      return metadataResponse(match[1] ?? "");
-    },
+    onEndpoint("variables.pullMetadata", { projectId }, async (request) => {
+      return metadataResponse(request.params.environmentId);
+    }),
     onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
       json: servedChain(projectId, entries, hashes),
     })),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
+    onEndpoint("membership.append", { projectId }, async (request) => {
       const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as { readonly entry: ChainEntry };
+      const body = { entry: request.body.entry as ChainEntry };
       appendedEntries.push(body.entry);
       return acceptAppendedEntry(projectId, entries, hashes, body.entry);
-    },
+    }),
     onEndpoint("environments.list", { projectId }, () => ({
       status: 200,
       json: {
@@ -195,21 +190,15 @@ async function makeRemoveServer(input: {
         schemaPolicy: "enabled",
       },
     })),
-    async (request) => {
-      const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/pull$`).exec(
-        request.path,
-      );
-      if (match === null || request.method !== "GET") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    onEndpoint("variables.pull", { projectId }, async (request) => {
+      const environmentId = request.params.environmentId;
       const environment = environments[environmentId];
-      if (environment === undefined) {
-        return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: match[1] } };
+      const statement = listedStatements.find((item) => item.environmentId === environmentId);
+      if (environment === undefined || statement === undefined) {
+        return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
       }
-      const statement = listedStatements.find((item) => item.environmentId === match[1]);
       let manifest = manifests.get(environmentId);
-      if (manifest === undefined && statement !== undefined) {
+      if (manifest === undefined) {
         manifest = await distributedManifest({
           projectId,
           environmentId,
@@ -225,7 +214,7 @@ async function makeRemoveServer(input: {
       return {
         status: 200,
         json: {
-          environmentId: match[1],
+          environmentId,
           currentEpoch: environment.currentEpoch,
           statement,
           variables: [],
@@ -236,15 +225,9 @@ async function makeRemoveServer(input: {
           schemaPolicy: "enabled" as const,
         },
       };
-    },
-    async (request) => {
-      const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/rotate$`).exec(
-        request.path,
-      );
-      if (match === null || request.method !== "POST") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    }),
+    onEndpoint("environments.rotate", { projectId }, async (request) => {
+      const environmentId = request.params.environmentId;
       const environment = environments[environmentId];
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
@@ -291,29 +274,25 @@ async function makeRemoveServer(input: {
           headHashHex: lastHashOf(hashes),
         },
       };
-    },
+    }),
   ];
-  handlers.push((request) => {
-    const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/deks$`).exec(
-      request.path,
-    );
-    if (match === null) {
-      return null;
-    }
-    const environment = environments[match[1] ?? ""];
-    if (environment === undefined) {
-      return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: match[1] } };
-    }
-    if (request.method === "GET") {
-      return { status: 200, json: { deks: environment.deks } };
-    }
-    if (request.method === "POST") {
-      const body = request.body as { readonly deks: readonly WrappedDek[] };
-      registerBodies.push({ environmentId: match[1] ?? "", deks: body.deks });
+  handlers.push(
+    onEndpoint("deks.listMine", { projectId }, (request) => {
+      const environmentId = request.params.environmentId;
+      const environment = environments[environmentId];
+      return environment === undefined
+        ? { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } }
+        : { status: 200, json: { deks: environment.deks } };
+    }),
+    onEndpoint("deks.register", { projectId }, (request) => {
+      const environmentId = request.params.environmentId;
+      if (environments[environmentId] === undefined) {
+        return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
+      }
+      registerBodies.push({ environmentId, deks: request.body.deks });
       return { status: 204 };
-    }
-    return null;
-  });
+    }),
+  );
   return { handlers, appendedEntries, rotateBodies, registerBodies, counters };
 }
 

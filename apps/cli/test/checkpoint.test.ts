@@ -46,15 +46,9 @@ import { checkpointProposal, issueCheckpoint } from "../src/checkpoint.package/c
 import { runCli } from "../src/cli.ts";
 import { makeFloorHandle } from "../src/floor-check.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
-import { servedChain } from "./support/chain-handler.ts";
+import { type AppendAnswer, lastHashOf, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import {
-  type EndpointAnswer,
-  type MockHandler,
-  type MockResponse,
-  MockServer,
-  onEndpoint,
-} from "./support/server.ts";
+import { type EndpointAnswer, type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_A = "alpha";
 const ENV_B = "dev";
@@ -95,7 +89,7 @@ interface CheckpointServerOptions {
   };
   readonly auditHeadHashHex?: string;
   readonly onAuditHead?: (call: number) => EndpointAnswer<"audit.auditHead"> | undefined;
-  readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
+  readonly onAppend?: (call: number, body: AppendBody) => AppendAnswer | undefined;
   readonly acceptWithoutAppending?: boolean;
   readonly firstFetchEntries?: number;
 }
@@ -159,11 +153,11 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
       }
       return { status: 200, json: { auditHeadHashHex: options.auditHeadHashHex ?? "" } };
     }),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
-      const body = request.body as AppendBody;
+    onEndpoint("membership.append", { projectId }, async (request) => {
+      const body = {
+        parentHeadHashHex: request.body.parentHeadHashHex,
+        entry: request.body.entry as AppendBody["entry"],
+      };
       appends.push(body);
       const injected = options.onAppend?.(appendCalls, body);
       appendCalls += 1;
@@ -176,41 +170,37 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
       }
       return {
         status: 200,
-        json: { projectId, headSeq: entries.length, headHashHex: hashes[hashes.length - 1] },
-      };
-    },
-    ...options.environments.map((environment): MockHandler => (request) => {
-      if (
-        request.method !== "GET" ||
-        request.path !== `/projects/${projectId}/environments/${environment.environmentId}/pull`
-      ) {
-        return null;
-      }
-      const next = environment.nextValues?.shift();
-      if (next !== undefined && environment.variables[0] !== undefined) {
-        environment.variables[0].value = next;
-      }
-      return {
-        status: 200,
-        json: {
-          environmentId: environment.environmentId,
-          currentEpoch: 1,
-          statement: environment.statement,
-          variables: environment.variables.map((variable) => ({
-            variableId: variable.variableId,
-            statement: variable.statement,
-            value: variable.value,
-          })),
-          deletedVariables: [],
-          deks: [],
-          manifest: environment.manifest,
-          ...(environment.checkpointSnapshot === undefined
-            ? {}
-            : { checkpointSnapshot: environment.checkpointSnapshot }),
-          schemaPolicy: "enabled" as const,
-        },
+        json: { projectId, headSeq: entries.length, headHashHex: lastHashOf(hashes) },
       };
     }),
+    ...options.environments.map((environment): MockHandler =>
+      onEndpoint("variables.pull", { projectId, environmentId: environment.environmentId }, () => {
+        const next = environment.nextValues?.shift();
+        if (next !== undefined && environment.variables[0] !== undefined) {
+          environment.variables[0].value = next;
+        }
+        return {
+          status: 200,
+          json: {
+            environmentId: environment.environmentId,
+            currentEpoch: 1,
+            statement: environment.statement,
+            variables: environment.variables.map((variable) => ({
+              variableId: variable.variableId,
+              statement: variable.statement,
+              value: variable.value,
+            })),
+            deletedVariables: [],
+            deks: [],
+            manifest: environment.manifest,
+            ...(environment.checkpointSnapshot === undefined
+              ? {}
+              : { checkpointSnapshot: environment.checkpointSnapshot }),
+            schemaPolicy: "enabled" as const,
+          },
+        };
+      }),
+    ),
   ];
   return { handlers, appends, auditHeadCalls: () => auditHeadCalls, entries };
 }
@@ -549,7 +539,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
 
   async function makeNotReadyFixture(input: {
     readonly onAuditHead?: (call: number) => EndpointAnswer<"audit.auditHead"> | undefined;
-    readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
+    readonly onAppend?: (call: number, body: AppendBody) => AppendAnswer | undefined;
   }): Promise<{ state: CheckpointServerState; env: TestEnv }> {
     const dek = crypto.getRandomValues(new Uint8Array(32));
     const built = await buildChain([

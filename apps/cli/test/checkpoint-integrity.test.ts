@@ -338,17 +338,14 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
 
   it("resolves an enumeration attested at a seq beyond the own head via bounded resync (same shape as §6.3-2b — ruling S)", async () => {
     let chainCalls = 0;
-    const staleChain: MockHandler = (request) => {
-      if (request.method !== "GET" || request.path !== `/projects/${projectId}/chain`) {
-        return null;
-      }
+    const staleChain: MockHandler = onEndpoint("membership.get", { projectId }, () => {
       const built = chainCalls === 0 ? baseChain : chain;
       chainCalls += 1;
       return {
         status: 200,
         json: servedChain(projectId, built.entries, built.hashes),
       };
-    };
+    });
     const env = await startEnv([staleChain, pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(0);
     expect(chainCalls).toBeGreaterThan(1);
@@ -609,17 +606,14 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
     ]);
     expect(doubleChain.projectId).toBe(projectId);
     let chainCalls = 0;
-    const racingChain: MockHandler = (request) => {
-      if (request.method !== "GET" || request.path !== `/projects/${projectId}/chain`) {
-        return null;
-      }
+    const racingChain: MockHandler = onEndpoint("membership.get", { projectId }, () => {
       const built = chainCalls === 0 ? baseChain : doubleChain;
       chainCalls += 1;
       return {
         status: 200,
         json: servedChain(projectId, built.entries, built.hashes),
       };
-    };
+    });
     const env = await startEnv([racingChain, pullHandler()]);
     expect(await runCli(["pull"], env.layer)).toBe(1);
     const errors = env.errors.join("\n");

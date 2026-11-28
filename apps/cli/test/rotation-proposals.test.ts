@@ -28,7 +28,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
 
 const ENV_ID = "prod";
@@ -254,9 +254,6 @@ async function startEnv(
   const resolutions: { proposalId: string; body: unknown }[] = [];
   const pending = [...proposals];
   const fixture: { failResolutions: number } = { failResolutions: 0 };
-  const resolutionPattern = new RegExp(
-    `^/projects/${built.projectId}/rotation/proposals/([0-9a-f]{32})/resolution$`,
-  );
   const handlers: MockHandler[] = [
     onEndpoint("rotation.flags", { projectId: built.projectId }, () => ({
       status: 200,
@@ -266,24 +263,20 @@ async function startEnv(
       status: 200,
       json: { proposals: pending },
     })),
-    (request: MockRequest) => {
-      const match = request.method === "POST" ? resolutionPattern.exec(request.path) : null;
-      const id = match?.[1];
-      if (id === undefined) {
-        return null;
-      }
+    onEndpoint("rotation.resolveProposal", { projectId: built.projectId }, (request) => {
+      const id = request.params.proposalId;
       const index = pending.findIndex((proposal) => proposal.proposalId === id);
       if (index < 0) {
         return { status: 404, json: { _tag: "RotationProposalNotFound", proposalId: id } };
       }
       if (fixture.failResolutions > 0) {
         fixture.failResolutions -= 1;
-        return { status: 500, json: { message: "injected resolution failure" } };
+        return offSpec({ status: 500, json: { message: "injected resolution failure" } });
       }
       pending.splice(index, 1);
       resolutions.push({ proposalId: id, body: request.body });
       return { status: 204 };
-    },
+    }),
     ...valueEnv.handlers,
   ];
   const server = await MockServer.start(handlers);

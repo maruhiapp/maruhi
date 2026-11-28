@@ -8,7 +8,7 @@ import {
   grantServerOp,
   testProjectId,
 } from "@maruhi/test-kit";
-import type { ApiReply } from "@maruhi/test-kit/api";
+import type { ApiReply, ApiSuccess } from "@maruhi/test-kit/api";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -29,7 +29,7 @@ import {
   SOURCE_MUTATION_SEQ,
   start,
 } from "./support/mirror.ts";
-import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 let forked: BuiltChain;
 
@@ -74,7 +74,7 @@ interface SourceOptions {
   chainStatus?: number;
 }
 
-let sourceStatus: Record<string, unknown> | "refused" | null = null;
+let sourceStatus: ApiSuccess<"mirror.status"> | "refused" | null = null;
 
 function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
   const lines = snapshotLines();
@@ -82,32 +82,27 @@ function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
   const chain = options.chain ?? built;
   const entries = options.chainEntries ?? chain.entries.length;
   return [
-    (request: MockRequest) =>
-      request.method === "GET" && request.path === `/projects/${built.projectId}/chain`
-        ? options.chainStatus === undefined
-          ? servedChainResponse(
-              built.projectId,
-              chain.entries.slice(0, entries),
-              chain.hashes.slice(0, entries),
-            )
-          : { status: options.chainStatus, json: { message: "no chain" } }
-        : null,
-    (request: MockRequest) =>
-      request.method === "GET" && request.path === `/projects/${built.projectId}/mirror`
-        ? sourceStatus === "refused"
-          ? { status: 403, json: { _tag: "InsufficientScope" } }
-          : {
-              status: 200,
-              json: sourceStatus ?? {
-                mirror: false,
-                head: { chainHeadSeq: 2, chainHeadHashHex: built.hashes[1] ?? "" },
-              },
-            }
-        : null,
-    (request: MockRequest) => {
-      if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/export`) {
-        return null;
-      }
+    onEndpoint("membership.get", { projectId: built.projectId }, () =>
+      options.chainStatus === undefined
+        ? servedChainResponse(
+            built.projectId,
+            chain.entries.slice(0, entries),
+            chain.hashes.slice(0, entries),
+          )
+        : offSpec({ status: options.chainStatus, json: { message: "no chain" } }),
+    ),
+    onEndpoint("mirror.status", { projectId: built.projectId }, () =>
+      sourceStatus === "refused"
+        ? offSpec({ status: 403, json: { _tag: "InsufficientScope" } })
+        : {
+            status: 200,
+            json: sourceStatus ?? {
+              mirror: false,
+              head: { chainHeadSeq: 2, chainHeadHashHex: built.hashes[1] ?? "" },
+            },
+          },
+    ),
+    onEndpoint("export.page", { projectId: built.projectId }, (request) => {
       if (request.query["cursor"] === undefined) {
         return {
           status: 200,
@@ -119,7 +114,7 @@ function sourceHandlers(options: SourceOptions = {}): MockHandler[] {
         return { status: 409, json: { _tag: "ExportChanged", reason: "project-changed" } };
       }
       return { status: 200, json: { lines: lines.slice(3), head: exportHeadOfChain() } };
-    },
+    }),
   ];
 }
 
@@ -1018,10 +1013,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     failing.state.lastPage = past.state.lastPage;
     let chainServed = 0;
     const flaky = await start([
-      (request: MockRequest) => {
-        if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/chain`) {
-          return null;
-        }
+      onEndpoint("membership.get", { projectId: built.projectId }, () => {
         chainServed += 1;
         return chainServed === 1
           ? servedChainResponse(built.projectId, built.entries, built.hashes)
@@ -1030,7 +1022,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
               built.entries.slice(0, 1),
               built.hashes.slice(0, 1),
             );
-      },
+      }),
       ...sourceHandlers(),
     ]);
     seedSession(failing.env, flaky.origin, owner);
@@ -1049,15 +1041,12 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     gone.state.lastPage = past.state.lastPage;
     let chainAnswers = 0;
     const dying = await start([
-      (request: MockRequest) => {
-        if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/chain`) {
-          return null;
-        }
+      onEndpoint("membership.get", { projectId: built.projectId }, () => {
         chainAnswers += 1;
         return chainAnswers === 1
           ? servedChainResponse(built.projectId, built.entries, built.hashes)
-          : { status: 503, json: { message: "gateway" } };
-      },
+          : offSpec({ status: 503, json: { message: "gateway" } });
+      }),
       ...sourceHandlers(),
     ]);
     seedSession(gone.env, dying.origin, owner);
@@ -1077,15 +1066,12 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     refused.state.lastPage = past.state.lastPage;
     let chainAsked = 0;
     const expiring = await start([
-      (request: MockRequest) => {
-        if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/chain`) {
-          return null;
-        }
+      onEndpoint("membership.get", { projectId: built.projectId }, () => {
         chainAsked += 1;
         return chainAsked === 1
           ? servedChainResponse(built.projectId, built.entries, built.hashes)
           : { status: 401, json: { _tag: "Unauthorized" } };
-      },
+      }),
       ...sourceHandlers(),
     ]);
     seedSession(refused.env, expiring.origin, owner);

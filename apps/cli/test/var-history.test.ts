@@ -29,7 +29,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { MockServer } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
 
 const ENV_ID = "prod";
@@ -389,8 +389,8 @@ describe("maruhi var rollback under a concurrent push", () => {
       initialHistory: new Map([[VARIABLE_ID, [v1, v2, v3]]]),
     });
     let injected = false;
-    const concurrentPush = (request: { readonly path: string }) => {
-      if (!injected && request.path.endsWith("/versions/values")) {
+    const concurrentPush = onEndpoint("variables.versionValues", () => {
+      if (!injected) {
         injected = true;
         const stored = valueEnv.state.variables.find((entry) => entry.variableId === VARIABLE_ID);
         if (stored !== undefined) {
@@ -399,7 +399,7 @@ describe("maruhi var rollback under a concurrent push", () => {
         valueEnv.state.history.get(VARIABLE_ID)?.push({ value: v4 });
       }
       return null;
-    };
+    });
     const server = await MockServer.start([concurrentPush, ...valueEnv.handlers]);
     servers.push(server);
     const env = await makeTestEnv();

@@ -26,7 +26,13 @@ import { runCli } from "../src/cli.ts";
 import { describeDue } from "../src/max-age.ts";
 import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -80,7 +86,7 @@ async function makeRotationServer(input: {
   readonly built: BuiltChain;
   readonly flags: readonly WireFlag[];
   readonly currentEpoch?: number;
-  readonly onDismiss?: () => { status: number; json?: unknown } | undefined;
+  readonly onDismiss?: () => EndpointAnswer<"rotation.dismiss"> | undefined;
   readonly metadataAvailable?: boolean;
   readonly environmentsAvailable?: boolean;
   readonly expiringPushedAtMs?: number;
@@ -229,24 +235,14 @@ async function makeRotationServer(input: {
             },
           },
     ),
-    (request) => {
-      if (
-        request.method !== "POST" ||
-        request.path !== `/projects/${projectId}/rotation/dismissals`
-      ) {
-        return null;
-      }
+    onEndpoint("rotation.dismiss", { projectId }, (request) => {
       const injected = input.onDismiss?.();
       if (injected !== undefined) {
         return injected;
       }
-      dismissBodies.push(
-        request.body as {
-          readonly targets: readonly { environmentId: string; variableId: string }[];
-        },
-      );
+      dismissBodies.push(request.body);
       return { status: 204 };
-    },
+    }),
   ];
   return { handlers, dismissBodies };
 }

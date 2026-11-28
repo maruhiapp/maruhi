@@ -211,10 +211,10 @@ function createHandler(record: (body: { requestId: string }) => void): MockHandl
 }
 
 function approvalsHandler(build: () => Promise<readonly ApprovalWire[]>): MockHandler {
-  return (request) =>
-    request.method === "GET" && /^\/auth\/handoff\/[0-9a-f]{64}\/approvals$/.test(request.path)
-      ? build().then((approvals) => ({ status: 200, json: { approvals } }))
-      : null;
+  return onEndpoint("keyWraps.handoffApprovals", async () => ({
+    status: 200,
+    json: { approvals: await build() },
+  }));
 }
 
 function groupHandler(wrap: {
@@ -237,10 +237,7 @@ const noProjectsHandler: MockHandler = onEndpoint("membership.list", () => ({
   json: { projects: [] },
 }));
 
-const cancelHandler: MockHandler = (request) =>
-  request.method === "DELETE" && /^\/auth\/handoff\/[0-9a-f]{64}$/.test(request.path)
-    ? { status: 204 }
-    : null;
+const cancelHandler: MockHandler = onEndpoint("keyWraps.handoffCancel", () => ({ status: 204 }));
 
 describe("maruhi key recover --handoff (the requester)", () => {
   it("guardian (any): opens the ledger wrap with the share, never stores the reserve key, and issues a fresh device key", async () => {
@@ -578,10 +575,10 @@ describe("maruhi guardian approve <code> (the approver)", () => {
     const { env, server } = await start([
       lookupHandler(requester.requestId, lookupOf(ward, null)),
       approveHandler(requester.requestId, () => {}),
-      (request) =>
-        request.method === "GET" && /^\/auth\/handoff\/[0-9a-f]{64}$/.test(request.path)
-          ? { status: 404, json: { _tag: "HandoffNotFound" } }
-          : null,
+      onEndpoint("keyWraps.handoffLookup", () => ({
+        status: 404,
+        json: { _tag: "HandoffNotFound" },
+      })),
     ]);
     seedSession(env, server.origin, alice);
     env.setPromptResponses(["no"]);

@@ -15,6 +15,7 @@ import {
   genesisOp,
   headOf,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -50,6 +51,8 @@ async function baseChain(): Promise<BuiltChain> {
 }
 
 type WireRow = Record<string, unknown>;
+
+type ServedEvents = ApiSuccess<"audit.events">["events"];
 
 function idOf(seq: number): string {
   return seq.toString(16).padStart(32, "0");
@@ -113,10 +116,7 @@ async function mirrorRowsOf(built: BuiltChain): Promise<WireRow[]> {
 }
 
 function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): MockHandler {
-  return (request) => {
-    if (request.method !== "GET" || request.path !== `/projects/${projectId}/audit/events`) {
-      return null;
-    }
+  return onEndpoint("audit.events", { projectId }, (request) => {
     const eventFilter = request.query["event"];
     const prefixFilter = request.query["eventPrefix"];
     const chainSeqPresent = request.query["chainSeqPresent"];
@@ -139,8 +139,8 @@ function auditEventsHandler(projectId: string, rows: () => readonly WireRow[]): 
       .filter((row) => (row["seq"] as number) < cursorSeq)
       .toSorted((a, b) => (b["seq"] as number) - (a["seq"] as number))
       .slice(0, limit);
-    return { status: 200, json: { events: filtered } };
-  };
+    return { status: 200, json: { events: filtered as unknown as ServedEvents } };
+  });
 }
 
 interface AuditServerInput {

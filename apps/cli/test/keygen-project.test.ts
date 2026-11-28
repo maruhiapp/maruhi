@@ -175,15 +175,12 @@ function meHandler(userId: string, orgs: readonly { orgId: string; slug: string 
 }
 
 function initHandler(record: (body: { orgId: string; entry: ChainEntry }) => void): MockHandler {
-  return async (request) => {
-    if (request.method !== "POST" || request.path !== "/projects") {
-      return null;
-    }
+  return onEndpoint("membership.init", async (request) => {
     const body = request.body as { orgId: string; entry: ChainEntry };
     record(body);
     const hash = await computeChainEntryHash(body.entry);
     return { status: 200, json: { projectId: hash, headSeq: 1, headHashHex: hash } };
-  };
+  });
 }
 
 describe("maruhi project init", () => {

@@ -32,13 +32,21 @@ import {
   type WireDistributedValue,
   type WireDistributedVariableStatement,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  type MockRequest,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
 const ENV_ID = "prod";
 const ISSUER = "https://token.actions.githubusercontent.com";
@@ -242,7 +250,7 @@ async function leaseWrapFor(input: {
   readonly claimsDigestHex: string;
   readonly epoch: number;
   readonly dek: Uint8Array;
-}): Promise<unknown> {
+}): Promise<ApiSuccess<"lease.issue">["leases"][number]> {
   const publicKey = await importEncryptionPublicKey(hexBytes(input.ephemeralPubHex));
   if (!publicKey.ok) {
     throw new Error("ephemeral public key rejected");
@@ -271,7 +279,7 @@ async function leaseWrapFor(input: {
 async function leaseResponseFor(
   body: { readonly oidcToken: string; readonly ephemeralPubHex: string },
   overrides?: LeaseResponseOverrides,
-): Promise<unknown> {
+): Promise<ApiSuccess<"lease.issue">> {
   const { built, dek1, dek2, envStatement, entryAlpha, entryBeta } = fixture;
   const resolved = {
     declaredProjectId: built.projectId,
@@ -297,7 +305,7 @@ async function leaseResponseFor(
     currentEpoch: resolved.currentEpoch,
     chain: resolved.entries,
     headSeq: resolved.entries.length,
-    headHashHex: overrides?.headHashHex ?? built.hashes[built.hashes.length - 1],
+    headHashHex: overrides?.headHashHex ?? lastHashOf(built.hashes),
     statement: envStatement,
     variables: resolved.variables,
     deletedVariables: [],
@@ -331,7 +339,6 @@ async function leaseResponseFor(
               resolved.extraLeases.map((extra) => wrapFor(extra.epoch, extra.dek)),
             )),
           ],
-    schemaPolicy: "enabled" as const,
   };
 }
 
@@ -343,25 +350,25 @@ function leaseBody(request: MockRequest): { oidcToken: string; ephemeralPubHex: 
   return request.body as { oidcToken: string; ephemeralPubHex: string };
 }
 
+function leaseRouteOf(projectId?: string): {
+  readonly projectId: string;
+  readonly environmentId: string;
+} {
+  return { projectId: projectId ?? fixture.built.projectId, environmentId: ENV_ID };
+}
+
 function leaseHandler(overrides?: LeaseResponseOverrides, projectId?: string): MockHandler {
-  return async (request) => {
-    if (request.method !== "POST" || request.path !== leasePath(projectId)) {
-      return null;
-    }
-    return { status: 200, json: await leaseResponseFor(leaseBody(request), overrides) };
-  };
+  return onEndpoint("lease.issue", leaseRouteOf(projectId), async (request) => ({
+    status: 200,
+    json: await leaseResponseFor(request.body, overrides),
+  }));
 }
 
 function manifestlessLeaseHandler(): MockHandler {
-  return async (request) => {
-    if (request.method !== "POST" || request.path !== leasePath()) {
-      return null;
-    }
-    const { manifest: _suppressed, ...suppressingBody } = (await leaseResponseFor(
-      leaseBody(request),
-    )) as Record<string, unknown>;
-    return { status: 200, json: suppressingBody };
-  };
+  return onEndpoint("lease.issue", leaseRouteOf(), async (request) => {
+    const { manifest: _suppressed, ...suppressingBody } = await leaseResponseFor(request.body);
+    return offSpec({ status: 200, json: suppressingBody });
+  });
 }
 
 interface CiEnv {
@@ -732,24 +739,18 @@ describe("maruhi ci run (lease authorization — CRYPTO_SPEC §9.1 (6))", () => 
   });
 });
 
-function flakyLeaseHandler(
-  failures: number,
-  error: { readonly status: number; readonly json: unknown },
-): MockHandler {
+function flakyLeaseHandler(failures: number, error: EndpointAnswer<"lease.issue">): MockHandler {
   let calls = 0;
-  return async (request) => {
-    if (request.method !== "POST" || request.path !== leasePath()) {
-      return null;
-    }
+  return onEndpoint("lease.issue", leaseRouteOf(), async (request) => {
     calls += 1;
     if (calls <= failures) {
-      return { status: error.status, json: error.json };
+      return error;
     }
-    return { status: 200, json: await leaseResponseFor(leaseBody(request)) };
-  };
+    return { status: 200, json: await leaseResponseFor(request.body) };
+  });
 }
 
-const TOKEN_REPLAYED = {
+const TOKEN_REPLAYED: EndpointAnswer<"lease.issue"> = {
   status: 401,
   json: { _tag: "LeaseUnauthorized", reason: "token-replayed" },
 };

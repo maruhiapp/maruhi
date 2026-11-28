@@ -310,13 +310,10 @@ describe("the CAS retry and the binding to the confirmed target", () => {
           };
         },
       ),
-      (request) => {
-        if (request.method !== "DELETE") {
-          return null;
-        }
+      onEndpoint("variables.remove", (request) => {
         deleteCalls.push(request);
         return { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } };
-      },
+      }),
     ]);
     servers.push(server);
     const env = await makeTestEnv();
@@ -353,8 +350,8 @@ describe("the CAS retry after a concurrent rename", () => {
       before: (current) => {
         current.manifest = manifestV1;
         return [
-          async (request) => {
-            if (conflicted || request.method !== "DELETE") {
+          onEndpoint("variables.remove", async () => {
+            if (conflicted) {
               return null;
             }
             conflicted = true;
@@ -381,7 +378,7 @@ describe("the CAS retry after a concurrent rename", () => {
               prevManifestSigHashHex: await distributedManifestHashOf(built.projectId, manifestV1),
             });
             return { status: 409, json: { _tag: "MetaVersionConflict", currentMetaVersion: 2 } };
-          },
+          }),
         ];
       },
     });
