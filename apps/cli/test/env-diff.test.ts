@@ -22,8 +22,9 @@ import { reportEnvironmentDiff, reportEnvironmentWarnings } from "../src/env.pac
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 const DEV = "dev";
 const PROD = "prod";
@@ -98,18 +99,16 @@ function variableOf(
 
 function chainHandlerOf(heads: readonly number[]): MockHandler {
   let call = 0;
-  return onRequest("GET", `/projects/${chain.projectId}/chain`, () => {
+  return onEndpoint("membership.get", { projectId: chain.projectId }, () => {
     const headSeq = heads[Math.min(call, heads.length - 1)] ?? chain.entries.length;
     call += 1;
     return {
       status: 200,
-      json: {
-        projectId: chain.projectId,
-        entries: chain.entries.slice(0, headSeq),
-        headSeq,
-        headHashHex: chain.hashes[headSeq - 1],
-        attestations: [],
-      },
+      json: servedChain(
+        chain.projectId,
+        chain.entries.slice(0, headSeq),
+        chain.hashes.slice(0, headSeq),
+      ),
     };
   });
 }
@@ -125,9 +124,9 @@ function pullMetadataHandlerOf(
     CREATED_AT_SEQ[environmentId] ?? chain.entries.length,
     ...variables.map((variable) => variable.chainHeadSeq),
   );
-  return onRequest(
-    "GET",
-    `/projects/${chain.projectId}/environments/${environmentId}/pull/metadata`,
+  return onEndpoint(
+    "variables.pullMetadata",
+    { projectId: chain.projectId, environmentId },
     async () => ({
       status: 200,
       json: {
@@ -421,10 +420,11 @@ describe("maruhi env diff", () => {
     const env = await startEnv(
       [
         pullMetadataHandlerOf(DEV, devStatement, dev),
-        onRequest("GET", `/projects/${chain.projectId}/environments/${PROD}/pull/metadata`, () => ({
-          status: 503,
-          json: { error: "unavailable" },
-        })),
+        onEndpoint(
+          "variables.pullMetadata",
+          { projectId: chain.projectId, environmentId: PROD },
+          () => offSpec({ status: 503, json: { error: "unavailable" } }),
+        ),
       ],
       [2, 3],
     );
@@ -438,10 +438,11 @@ describe("maruhi env diff", () => {
     const dev = [await variableOf(DEV, "var-dev-0", "CAFE\u0301")];
     const env = await startEnv([
       pullMetadataHandlerOf(DEV, devStatement, dev),
-      onRequest("GET", `/projects/${chain.projectId}/environments/${PROD}/pull/metadata`, () => ({
-        status: 503,
-        json: { error: "unavailable" },
-      })),
+      onEndpoint(
+        "variables.pullMetadata",
+        { projectId: chain.projectId, environmentId: PROD },
+        () => offSpec({ status: 503, json: { error: "unavailable" } }),
+      ),
     ]);
 
     expect(await runCli(["env", "diff", DEV, PROD], env.layer)).toBe(1);

@@ -43,6 +43,7 @@ import {
   OIDC_REQUEST_TOKEN_ENV,
   OIDC_REQUEST_URL_ENV,
 } from "../src/oidc-github.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import {
   type MockHandler,
@@ -293,7 +294,7 @@ function leaseHandler(leased: Leased): MockHandler {
         currentEpoch: 1,
         chain: built.entries,
         headSeq: built.entries.length,
-        headHashHex: built.hashes[built.hashes.length - 1],
+        headHashHex: lastHashOf(built.hashes),
         statement: envStatement,
         variables: entries,
         deletedVariables: [],

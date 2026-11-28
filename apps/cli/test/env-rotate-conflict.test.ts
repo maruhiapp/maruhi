@@ -17,6 +17,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import {
   chainBase,
   chainRotated,
@@ -32,7 +33,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
-import { type MockHandler, MockServer, offSpec, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 describe("maruhi env rotate", () => {
   it("if the 409's winner chains into a diverged history, it aborts without re-pointing prev (§12-5)", async () => {
@@ -350,41 +351,43 @@ describe("maruhi env rotate", () => {
     let chainCalls = 0;
     const pushPaths: string[] = [];
     const handlers: MockHandler[] = [
-      onRequest("GET", `/projects/${granted.projectId}/chain`, () => {
+      onEndpoint("membership.get", { projectId: granted.projectId }, () => {
         const count = chainCalls === 0 ? 4 : 5;
         chainCalls += 1;
         return {
           status: 200,
-          json: {
-            projectId: granted.projectId,
-            entries: granted.entries.slice(0, count),
-            headSeq: count,
-            headHashHex: granted.hashes[count - 1],
-            attestations: [],
-          },
+          json: servedChain(
+            granted.projectId,
+            granted.entries.slice(0, count),
+            granted.hashes.slice(0, count),
+          ),
         };
       }),
-      onRequest("GET", `/projects/${granted.projectId}/environments/${ENV_ID}/pull`, async () => ({
-        status: 200,
-        json: {
-          environmentId: ENV_ID,
-          currentEpoch: 2,
-          statement: futureEnvStatement,
-          variables,
-          deletedVariables: [],
-          deks: [],
-          manifest: await distributedManifest({
-            projectId: granted.projectId,
+      onEndpoint(
+        "variables.pull",
+        { projectId: granted.projectId, environmentId: ENV_ID },
+        async () => ({
+          status: 200,
+          json: {
             environmentId: ENV_ID,
-            epoch: 2,
-            issuer: owner,
-            head: headOf(granted, 5),
-            envStatement: futureEnvStatement,
-            statements: variables.map((variable) => variable.statement),
-          }),
-          schemaPolicy: "enabled" as const,
-        },
-      })),
+            currentEpoch: 2,
+            statement: futureEnvStatement,
+            variables,
+            deletedVariables: [],
+            deks: [],
+            manifest: await distributedManifest({
+              projectId: granted.projectId,
+              environmentId: ENV_ID,
+              epoch: 2,
+              issuer: owner,
+              head: headOf(granted, 5),
+              envStatement: futureEnvStatement,
+              statements: variables.map((variable) => variable.statement),
+            }),
+            schemaPolicy: "enabled" as const,
+          },
+        }),
+      ),
       (request) => {
         if (request.method === "POST") {
           pushPaths.push(request.path);
@@ -570,23 +573,17 @@ describe("maruhi env rotate", () => {
     let chainCalls = 0;
     const pushPaths: string[] = [];
     const handlers: MockHandler[] = [
-      onRequest("GET", `/projects/${chainBase.projectId}/chain`, () => {
+      onEndpoint("membership.get", { projectId: chainBase.projectId }, () => {
         const built = chainCalls === 0 ? chainRotated : rotatedTwice;
         chainCalls += 1;
         return {
           status: 200,
-          json: {
-            projectId: chainBase.projectId,
-            entries: built.entries,
-            headSeq: built.entries.length,
-            headHashHex: built.hashes[built.hashes.length - 1],
-            attestations: [],
-          },
+          json: servedChain(chainBase.projectId, built.entries, built.hashes),
         };
       }),
-      onRequest(
-        "GET",
-        `/projects/${chainBase.projectId}/environments/${ENV_ID}/pull`,
+      onEndpoint(
+        "variables.pull",
+        { projectId: chainBase.projectId, environmentId: ENV_ID },
         async () => ({
           status: 200,
           json: {

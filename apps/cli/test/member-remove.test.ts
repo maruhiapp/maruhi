@@ -27,10 +27,15 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
+import {
+  acceptAppendedEntry,
+  injectedAppendResponse,
+  lastHashOf,
+  servedChain,
+} from "./support/chain-handler.ts";
 import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockResponse, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -149,7 +154,7 @@ async function makeRemoveServer(input: {
   };
 
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/rotation/flags`, () => ({
+    onEndpoint("rotation.flags", { projectId }, () => ({
       status: 200,
       json: { flags: input.flags ?? [] },
     })),
@@ -162,15 +167,9 @@ async function makeRemoveServer(input: {
       }
       return metadataResponse(match[1] ?? "");
     },
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, entries, hashes),
     })),
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
@@ -185,7 +184,7 @@ async function makeRemoveServer(input: {
       appendedEntries.push(body.entry);
       return acceptAppendedEntry(projectId, entries, hashes, body.entry);
     },
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
+    onEndpoint("environments.list", { projectId }, () => ({
       status: 200,
       json: {
         environments: listedStatements.map((statement) => ({
@@ -289,7 +288,7 @@ async function makeRemoveServer(input: {
           environmentId,
           currentEpoch: environment.currentEpoch,
           headSeq: entries.length,
-          headHashHex: hashes[hashes.length - 1],
+          headHashHex: lastHashOf(hashes),
         },
       };
     },

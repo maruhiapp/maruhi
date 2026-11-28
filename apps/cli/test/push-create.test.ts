@@ -28,7 +28,7 @@ import {
   servers,
   wrap1,
 } from "./support/push.ts";
-import { type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 describe("maruhi push", () => {
   it("a new variable is a create (version 1); the stdin value is encrypted under the current epoch", async () => {
@@ -38,10 +38,10 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]], 1, echo),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
-        (request: MockRequest) => {
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        (request) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
           echo.body = body;
@@ -119,10 +119,10 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]], 1, echo),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
-        (request: MockRequest) => {
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        (request) => {
           const body = request.body as CreateBody;
           echo.body = body;
           return {
@@ -164,10 +164,14 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]]),
-      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => {
-        createCalls += 1;
-        return { status: 200, json: { variableId: "vx", version: 1, epoch: 1 } };
-      }),
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        () => {
+          createCalls += 1;
+          return { status: 200, json: { variableId: "vx", version: 1, epoch: 1 } };
+        },
+      ),
     ]);
     servers.push(server);
     const env = await makeTestEnv();
@@ -191,9 +195,9 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
-      onRequest(
-        "GET",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+      onEndpoint(
+        "variables.pullMetadata",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
         async () => {
           metadataCalls += 1;
           return {
@@ -210,9 +214,9 @@ describe("maruhi push", () => {
           };
         },
       ),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
         (request) => {
           created = request.body as CreateBody;
           return {
@@ -264,9 +268,9 @@ describe("maruhi push", () => {
     const server = await MockServer.start([
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
-      onRequest(
-        "GET",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull/metadata`,
+      onEndpoint(
+        "variables.pullMetadata",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
         async () => {
           if (created === null) {
             return {
@@ -297,9 +301,9 @@ describe("maruhi push", () => {
           };
         },
       ),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
         (request) => {
           created = request.body as CreateBody;
           return {

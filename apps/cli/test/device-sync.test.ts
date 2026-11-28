@@ -26,10 +26,10 @@ import {
   recordOwnDevice,
   chainWithEnvironment,
 } from "./support/device.ts";
-import { type MockHandler, onRequest } from "./support/server.ts";
+import { type MockHandler, onEndpoint } from "./support/server.ts";
 
 function inviteHandler(built: BuiltChain): MockHandler {
-  return onRequest("POST", `/projects/${built.projectId}/invites`, () => ({
+  return onEndpoint("invites.issue", { projectId: built.projectId }, () => ({
     status: 200,
     json: { expiresAtMs: FAR_FUTURE_MS },
   }));

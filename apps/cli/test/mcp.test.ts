@@ -22,8 +22,9 @@ import { runCli } from "../src/cli.ts";
 import { CliIo } from "../src/io.ts";
 import { Keychain, masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import { MCP_UNTRUSTED_NOTICE, narrowedContext, narrowKeychain } from "../src/mcp.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let owner: GeneratedIdentity;
 let built: BuiltChain;
@@ -86,15 +87,9 @@ afterEach(async () => {
 });
 
 function chainHandler(): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 
@@ -102,9 +97,9 @@ function metadataHandler(
   environmentId: string,
   variables: () => readonly WireDistributedVariableStatement[],
 ): MockHandler {
-  return onRequest(
-    "GET",
-    `/projects/${built.projectId}/environments/${environmentId}/pull/metadata`,
+  return onEndpoint(
+    "variables.pullMetadata",
+    { projectId: built.projectId, environmentId },
     async () => {
       const head = headOf(built, 3);
       const envStatement = await distributedEnvironmentStatement({

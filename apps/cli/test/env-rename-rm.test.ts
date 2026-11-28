@@ -25,9 +25,10 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const ENV_NAME = "Development";
@@ -146,7 +147,7 @@ function headConflict(): { readonly status: number; readonly json: unknown } {
     json: {
       _tag: "ChainHeadConflict",
       currentHeadSeq: built.entries.length,
-      currentHeadHashHex: built.hashes[built.hashes.length - 1],
+      currentHeadHashHex: lastHashOf(built.hashes),
     },
   };
 }
@@ -392,7 +393,7 @@ describe("maruhi env rm", () => {
   it("prints the variables' verified names, marking open rotation flags, before the confirmation", async () => {
     const { env } = await startEnv({
       before: () => [
-        onRequest("GET", `/projects/${built.projectId}/rotation/flags`, () => ({
+        onEndpoint("rotation.flags", { projectId: built.projectId }, () => ({
           status: 200,
           json: {
             flags: [

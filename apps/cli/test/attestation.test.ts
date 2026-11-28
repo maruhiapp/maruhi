@@ -27,8 +27,9 @@ import {
   type VerifiedProject,
 } from "../src/chain-sync.ts";
 import type { CliError } from "../src/errors.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 let owner: GeneratedIdentity;
 let member: GeneratedIdentity;
@@ -275,13 +276,13 @@ describe("wiring into the command pre-phase (project verify — interruption on 
     attestations: readonly DistributedAttestationWire[],
   ): Promise<TestEnv> {
     const server = await startServer([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
         json: {
           projectId: built.projectId,
           entries: built.entries,
           headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
+          headHashHex: lastHashOf(built.hashes),
           attestations,
         },
       })),
@@ -357,9 +358,8 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
     const env = await makeTestEnv();
     const built = await buildStandardChain();
     const server = await startServer([
-      onRequest("PUT", `/projects/${built.projectId}/head-attestation`, () => ({
+      onEndpoint("membership.attest", { projectId: built.projectId }, () => ({
         status: 204,
-        bodyText: "",
       })),
     ]);
     const view2 = await verifiedViewOf(built, 2, []);
@@ -393,9 +393,8 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
     const env = await makeTestEnv();
     const built = await buildStandardChain();
     const server = await startServer([
-      onRequest("PUT", `/projects/${built.projectId}/head-attestation`, () => ({
+      onEndpoint("membership.attest", { projectId: built.projectId }, () => ({
         status: 204,
-        bodyText: "",
       })),
     ]);
     const view3 = await verifiedViewOf(built, 3, []);
@@ -414,9 +413,8 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
     const env = await makeTestEnv();
     const built = await buildStandardChain();
     const server = await startServer([
-      onRequest("PUT", `/projects/${built.projectId}/head-attestation`, () => ({
+      onEndpoint("membership.attest", { projectId: built.projectId }, () => ({
         status: 204,
-        bodyText: "",
       })),
     ]);
     const view3 = await verifiedViewOf(built, 3, []);
@@ -450,7 +448,7 @@ describe("submitHeadAttestationIfAdvanced (submission — SHOULD)", () => {
     const env = await makeTestEnv();
     const built = await buildStandardChain();
     const server = await startServer([
-      onRequest("PUT", `/projects/${built.projectId}/head-attestation`, () => ({
+      onEndpoint("membership.attest", { projectId: built.projectId }, () => ({
         status: 409,
         json: { _tag: "AttestationRegression", storedSeq: 9 },
       })),

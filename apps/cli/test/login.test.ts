@@ -1,15 +1,16 @@
 import { testUserId } from "@maruhi/test-kit";
+import type { ApiReply, ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, tokenEntryName } from "../src/keychain.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
 import {
+  type EndpointAnswer,
   type MockHandler,
-  type MockRequest,
-  type MockResponse,
   MockServer,
-  onRequest,
+  offSpec,
+  onEndpoint,
 } from "./support/server.ts";
 import { runCliWithClock } from "./support/test-clock.ts";
 
@@ -38,7 +39,7 @@ async function start(handlers: readonly MockHandler[]): Promise<MockServer> {
 function approvedResponse(input?: {
   readonly token?: string;
   readonly expiresAtMs?: number;
-}): MockResponse {
+}): ApiReply<"authCli.cliPoll"> {
   return {
     status: 200,
     json: {
@@ -54,7 +55,7 @@ function approvedResponse(input?: {
 function fakeHandoff(
   input: {
     readonly pendingPolls?: number;
-    readonly finalPoll?: MockResponse;
+    readonly finalPoll?: EndpointAnswer<"authCli.cliPoll">;
     readonly startOverrides?: Readonly<Record<string, unknown>>;
     readonly token?: string;
     readonly expiresAtMs?: number;
@@ -70,7 +71,7 @@ function fakeHandoff(
   let polls = 0;
   const pendingPolls = input.pendingPolls ?? 0;
   const handlers: MockHandler[] = [
-    onRequest("POST", "/auth/cli/start", (request: MockRequest) => {
+    onEndpoint("authCli.cliStart", (request) => {
       startBodies.push(request.body as Record<string, unknown>);
       return {
         status: 200,
@@ -85,7 +86,7 @@ function fakeHandoff(
         },
       };
     }),
-    onRequest("POST", "/auth/cli/poll", (request: MockRequest) => {
+    onEndpoint("authCli.cliPoll", (request) => {
       pollBodies.push(request.body as Record<string, unknown>);
       polls += 1;
       if (polls <= pendingPolls) {
@@ -177,14 +178,14 @@ describe("maruhi login", () => {
   });
 
   describe("signupPolicy pre-fail-fast (AUTH_SPEC §3 / hosted-design §2-2 (i)(ii))", () => {
-    function handoffWithConfig(config: Record<string, unknown>): {
+    function handoffWithConfig(config: Omit<ApiSuccess<"auth.authConfig">, "githubClientId">): {
       handlers: MockHandler[];
       polls: () => number;
     } {
       const handoff = fakeHandoff();
       return {
         handlers: [
-          onRequest("GET", "/auth/config", () => ({
+          onEndpoint("auth.authConfig", () => ({
             status: 200,
             json: { githubClientId: "dummy", ...config },
           })),
@@ -388,7 +389,7 @@ describe("maruhi login", () => {
   it("a poll 429 is not a failure — it backs off and continues (§4-1 (5))", async () => {
     let polls = 0;
     const maruhi = await start([
-      onRequest("POST", "/auth/cli/start", () => ({
+      onEndpoint("authCli.cliStart", () => ({
         status: 200,
         json: {
           flowId: FLOW_ID,
@@ -399,7 +400,7 @@ describe("maruhi login", () => {
           pollIntervalSeconds: 0,
         },
       })),
-      onRequest("POST", "/auth/cli/poll", () => {
+      onEndpoint("authCli.cliPoll", () => {
         polls += 1;
         if (polls === 1) {
           return { status: 429, json: { _tag: "AuthRateLimited", retryAfterSeconds: 0 } };
@@ -450,7 +451,7 @@ describe("maruhi login", () => {
   it("the server-driven backoff also rides the Clock — a 429's retryAfterSeconds pushes the next wait past the deadline", async () => {
     let polls = 0;
     const maruhi = await start([
-      onRequest("POST", "/auth/cli/start", () => ({
+      onEndpoint("authCli.cliStart", () => ({
         status: 200,
         json: {
           flowId: FLOW_ID,
@@ -461,7 +462,7 @@ describe("maruhi login", () => {
           pollIntervalSeconds: 0,
         },
       })),
-      onRequest("POST", "/auth/cli/poll", () => {
+      onEndpoint("authCli.cliPoll", () => {
         polls += 1;
         return { status: 429, json: { _tag: "AuthRateLimited", retryAfterSeconds: 8 } };
       }),
@@ -517,7 +518,7 @@ describe("maruhi login", () => {
 
   it("an unconfigured server (503 SetupIncomplete) fails after showing the setup guide", async () => {
     const maruhi = await start([
-      onRequest("POST", "/auth/cli/start", () => ({
+      onEndpoint("authCli.cliStart", () => ({
         status: 503,
         json: { _tag: "SetupIncomplete", reason: "github-oauth-unconfigured" },
       })),
@@ -532,7 +533,7 @@ describe("maruhi login", () => {
 
   it("a server lacking a rate-limit binding (503 SetupIncomplete rate-limit-unconfigured) names the binding fix, not the OAuth App", async () => {
     const maruhi = await start([
-      onRequest("POST", "/auth/cli/start", () => ({
+      onEndpoint("authCli.cliStart", () => ({
         status: 503,
         json: { _tag: "SetupIncomplete", reason: "rate-limit-unconfigured" },
       })),
@@ -627,7 +628,7 @@ describe("maruhi login", () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
-      onRequest("GET", "/auth/recovery/status", () => ({
+      onEndpoint("auth.recoveryStatus", () => ({
         status: 200,
         json: { registered: true, updatedAtMs: 1754006400000 },
       })),
@@ -646,7 +647,7 @@ describe("maruhi login", () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
-      onRequest("GET", "/auth/recovery/status", () => ({
+      onEndpoint("auth.recoveryStatus", () => ({
         status: 200,
         json: { registered: false, updatedAtMs: null },
       })),
@@ -683,7 +684,7 @@ describe("maruhi login", () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
-      onRequest("POST", "/auth/token/revoke", (request) => {
+      onEndpoint("auth.revokeToken", (request) => {
         expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_issued");
         revoked += 1;
         return { status: 204 };
@@ -703,7 +704,7 @@ describe("maruhi login", () => {
     const handoff = fakeHandoff();
     const maruhi = await start([
       ...handoff.handlers,
-      onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
+      onEndpoint("auth.revokeToken", () => offSpec({ status: 500, bodyText: "boom" })),
     ]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -728,7 +729,7 @@ describe("maruhi logout", () => {
   it("revokes the own token and removes it from the keychain", async () => {
     let revoked = 0;
     const maruhi = await start([
-      onRequest("POST", "/auth/token/revoke", (request) => {
+      onEndpoint("auth.revokeToken", (request) => {
         expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_stored");
         revoked += 1;
         return { status: 204 };
@@ -752,7 +753,7 @@ describe("maruhi logout", () => {
 
   it("on revocation-API failure (5xx), deletes from the keychain first (never leaves an invalid token)", async () => {
     const maruhi = await start([
-      onRequest("POST", "/auth/token/revoke", () => ({ status: 500, bodyText: "boom" })),
+      onEndpoint("auth.revokeToken", () => offSpec({ status: 500, bodyText: "boom" })),
     ]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -771,7 +772,7 @@ describe("maruhi logout", () => {
 
   it("also succeeds by removing the keychain entry when already revoked (401)", async () => {
     const maruhi = await start([
-      onRequest("POST", "/auth/token/revoke", () => ({
+      onEndpoint("auth.revokeToken", () => ({
         status: 401,
         json: { _tag: "Unauthorized" },
       })),
@@ -792,7 +793,7 @@ describe("maruhi logout", () => {
   });
 
   it("warns that a remaining MARUHI_TOKEN 'keeps authenticating'", async () => {
-    const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
+    const maruhi = await start([onEndpoint("auth.revokeToken", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
@@ -818,9 +819,7 @@ describe("maruhi logout", () => {
       ["maruhi_pat_env", "not-a-url", "Cannot parse"],
       ["maruhi_pat_env", "http://remote.example", "loopback"],
     ] as const) {
-      const maruhi = await start([
-        onRequest("POST", "/auth/token/revoke", () => ({ status: 204 })),
-      ]);
+      const maruhi = await start([onEndpoint("auth.revokeToken", () => ({ status: 204 }))]);
       const env = await makeTestEnv();
       await seedConfig(env, { server: maruhi.origin });
       env.keychain.set(
@@ -844,7 +843,7 @@ describe("maruhi logout", () => {
   });
 
   it("a mismatched MARUHI_TOKEN_ORIGIN guides that it 'is not used'", async () => {
-    const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
+    const maruhi = await start([onEndpoint("auth.revokeToken", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(
@@ -865,7 +864,7 @@ describe("maruhi logout", () => {
   });
 
   it("does not warn on a whitespace-only MARUHI_TOKEN (same check as session resolution)", async () => {
-    const maruhi = await start([onRequest("POST", "/auth/token/revoke", () => ({ status: 204 }))]);
+    const maruhi = await start([onEndpoint("auth.revokeToken", () => ({ status: 204 }))]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
     env.keychain.set(

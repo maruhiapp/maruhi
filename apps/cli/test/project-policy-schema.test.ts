@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { isServerRejection, toCliError } from "../src/failure.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
@@ -20,9 +20,12 @@ const POLICY_PATH = `/projects/${PROJECT}/schema-policy`;
 function policyHandlers(initial: "enabled" | "locked"): MockHandler[] {
   let current = initial;
   return [
-    onRequest("GET", POLICY_PATH, () => ({ status: 200, json: { schemaPolicy: current } })),
-    onRequest("PUT", POLICY_PATH, (request) => {
-      current = (request.body as { schemaPolicy: "enabled" | "locked" }).schemaPolicy;
+    onEndpoint("schemaPolicy.get", { projectId: PROJECT }, () => ({
+      status: 200,
+      json: { schemaPolicy: current },
+    })),
+    onEndpoint("schemaPolicy.set", { projectId: PROJECT }, (request) => {
+      current = request.body.schemaPolicy;
       return { status: 204 };
     }),
   ];
@@ -77,8 +80,11 @@ describe("maruhi project policy schema", () => {
 
   it("a 403 for the role names the admin role it needs (exit 1)", async () => {
     const { env } = await startEnv([
-      onRequest("GET", POLICY_PATH, () => ({ status: 200, json: { schemaPolicy: "enabled" } })),
-      onRequest("PUT", POLICY_PATH, () => ({
+      onEndpoint("schemaPolicy.get", { projectId: PROJECT }, () => ({
+        status: 200,
+        json: { schemaPolicy: "enabled" },
+      })),
+      onEndpoint("schemaPolicy.set", { projectId: PROJECT }, () => ({
         status: 403,
         json: { _tag: "Forbidden", reason: "insufficient-role" },
       })),

@@ -15,8 +15,9 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let owner: GeneratedIdentity;
 let devMember: GeneratedIdentity;
@@ -59,20 +60,14 @@ afterEach(async () => {
 });
 
 function chainHandler(): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 
 function listHandler(statements: readonly WireDistributedEnvironmentStatement[]): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/environments`, () => ({
+  return onEndpoint("environments.list", { projectId: built.projectId }, () => ({
     status: 200,
     json: {
       environments: statements.map((statement) => ({
@@ -215,21 +210,19 @@ describe("maruhi env list", () => {
     });
     let chainCalls = 0;
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${raced.projectId}/chain`, () => {
+      onEndpoint("membership.get", { projectId: raced.projectId }, () => {
         chainCalls += 1;
         const length = chainCalls === 1 ? raced.entries.length - 1 : raced.entries.length;
         return {
           status: 200,
-          json: {
-            projectId: raced.projectId,
-            entries: raced.entries.slice(0, length),
-            headSeq: length,
-            headHashHex: raced.hashes[length - 1],
-            attestations: [],
-          },
+          json: servedChain(
+            raced.projectId,
+            raced.entries.slice(0, length),
+            raced.hashes.slice(0, length),
+          ),
         };
       }),
-      onRequest("GET", `/projects/${raced.projectId}/environments`, () => ({
+      onEndpoint("environments.list", { projectId: raced.projectId }, () => ({
         status: 200,
         json: {
           environments: [{ environmentId: "env-dev", currentEpoch: 1, statement: dev }],

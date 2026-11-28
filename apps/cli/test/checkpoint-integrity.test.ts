@@ -33,8 +33,9 @@ import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { checkCheckpointIntegrity } from "../src/checkpoint-integrity.ts";
 import { runCli } from "../src/cli.ts";
 import { verifyLeaseDistribution } from "../src/values.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "prod";
 const CHECKPOINT_SEQ = 4;
@@ -162,15 +163,9 @@ afterEach(async () => {
 });
 
 function chainHandler(built: BuiltChain): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId }, () => ({
     status: 200,
-    json: {
-      projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(projectId, built.entries, built.hashes),
   }));
 }
 
@@ -188,7 +183,7 @@ interface PullOverrides {
 function pullHandler(overrides: PullOverrides = {}): MockHandler {
   const served =
     overrides.checkpointSnapshot === undefined ? snapshot : overrides.checkpointSnapshot;
-  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
+  return onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, () => ({
     status: 200,
     json: {
       environmentId: ENV_ID,
@@ -351,13 +346,7 @@ describe("accepting positive cases of rule 2 (§6.3 checkpoint integrity 2)", ()
       chainCalls += 1;
       return {
         status: 200,
-        json: {
-          projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(projectId, built.entries, built.hashes),
       };
     };
     const env = await startEnv([staleChain, pullHandler()]);
@@ -628,13 +617,7 @@ describe("classifying a benign race (baseline advancing after the fetch view is 
       chainCalls += 1;
       return {
         status: 200,
-        json: {
-          projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(projectId, built.entries, built.hashes),
       };
     };
     const env = await startEnv([racingChain, pullHandler()]);

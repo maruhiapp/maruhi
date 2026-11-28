@@ -6,6 +6,7 @@ import {
   generateIdentity,
   genesisOp,
 } from "@maruhi/test-kit";
+import type { ApiPayload } from "@maruhi/test-kit/api";
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -21,7 +22,7 @@ import type { PrfPagePost } from "../src/passkey.package/passkey-page.ts";
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let owner: GeneratedIdentity;
 let reserve: GeneratedIdentity;
@@ -85,7 +86,7 @@ interface PasskeyRow {
 }
 
 function statusHandler(passkeys: readonly PasskeyRow[]): MockHandler {
-  return onRequest("GET", "/auth/key-wraps", () => ({
+  return onEndpoint("keyWraps.status", () => ({
     status: 200,
     json: {
       recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
@@ -95,34 +96,23 @@ function statusHandler(passkeys: readonly PasskeyRow[]): MockHandler {
   }));
 }
 
-const noMembershipsHandler: MockHandler = onRequest("GET", "/projects", () => ({
+const noMembershipsHandler: MockHandler = onEndpoint("membership.list", () => ({
   status: 200,
   json: { projects: [] },
 }));
 
-interface RegistrationBody {
-  readonly wrapId: string;
-  readonly wrap: {
-    readonly suite: string;
-    readonly nonceHex: string;
-    readonly ciphertextHex: string;
-  };
-  readonly credentialIdHex: string;
-  readonly prfSaltHex: string;
-  readonly rpId: string;
-  readonly label?: string;
-}
+type RegistrationBody = ApiPayload<"keyWraps.passkeyRegister">;
 
 function registerHandler(record: (body: RegistrationBody) => void): MockHandler {
-  return onRequest("POST", "/auth/key-wraps/passkey", (request) => {
-    const body = request.body as RegistrationBody;
+  return onEndpoint("keyWraps.passkeyRegister", (request) => {
+    const body = request.body;
     record(body);
     return { status: 200, json: { wrapId: body.wrapId } };
   });
 }
 
 function wrapHandler(wrapId: string, registration: RegistrationBody): MockHandler {
-  return onRequest("GET", `/auth/key-wraps/passkey/${wrapId}`, () => ({
+  return onEndpoint("keyWraps.passkeyGet", { wrapId }, () => ({
     status: 200,
     json: { ...registration, label: registration.label ?? null, updatedAtMs: 1754006400000 },
   }));
@@ -194,7 +184,7 @@ async function ledgerFor(user: GeneratedIdentity): Promise<Ledger> {
   if (!wrapped.ok) {
     throw new Error("test wrap failed");
   }
-  const handler = onRequest("GET", "/auth/recovery", () => ({
+  const handler = onEndpoint("auth.recoveryGet", () => ({
     status: 200,
     json: {
       suite: "maruhi/v1",
@@ -660,7 +650,7 @@ describe("maruhi key recover --passkey (recovery)", () => {
     const { registration } = await registerOnce();
     const { env, server } = await start([
       statusHandler([rowOf(registration)]),
-      onRequest("GET", `/auth/key-wraps/passkey/${registration.wrapId}`, () => ({
+      onEndpoint("keyWraps.passkeyGet", { wrapId: registration.wrapId }, () => ({
         status: 429,
         json: { _tag: "KeyWrapRateLimited", window: "blob-fetch", retryAfterSeconds: 1200 },
       })),
@@ -753,7 +743,7 @@ describe("the ceremony's 3-channel TTY gate (ADR-0016 decision 7)", () => {
             },
           ]),
           ledger.handler,
-          onRequest("DELETE", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({ status: 204 })),
+          onEndpoint("keyWraps.passkeyDelete", { wrapId: WRAP_ID }, () => ({ status: 204 })),
         ]);
         if (ceremony.seed === "key") {
           seedDeviceAndLedger(env, server.origin);
@@ -797,8 +787,8 @@ describe("maruhi key seal list / remove", () => {
     ];
     const { env, server } = await start([
       statusHandler(rows),
-      onRequest("DELETE", `/auth/key-wraps/passkey/${WRAP_ID}`, () => ({ status: 204 })),
-      onRequest("DELETE", `/auth/key-wraps/passkey/${OTHER_WRAP_ID}`, () => ({
+      onEndpoint("keyWraps.passkeyDelete", { wrapId: WRAP_ID }, () => ({ status: 204 })),
+      onEndpoint("keyWraps.passkeyDelete", { wrapId: OTHER_WRAP_ID }, () => ({
         status: 404,
         json: { _tag: "KeyWrapNotFound" },
       })),

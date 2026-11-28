@@ -30,7 +30,7 @@ import {
 } from "./support/device.ts";
 import type { TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";
-import { type MockHandler, onRequest } from "./support/server.ts";
+import { type MockHandler, onEndpoint } from "./support/server.ts";
 
 async function reserveRotateFixture(options: {
   readonly withEnvironment: boolean;
@@ -72,7 +72,7 @@ async function reserveRotateFixture(options: {
       ? {}
       : { dekRegisterStatus: options.dekRegisterStatus }),
     extra: [
-      onRequest("GET", "/auth/recovery", () => ({
+      onEndpoint("auth.recoveryGet", () => ({
         status: 200,
         json: {
           suite: "maruhi/v1",
@@ -81,15 +81,15 @@ async function reserveRotateFixture(options: {
           updatedAtMs: 1754006400000,
         },
       })),
-      onRequest("GET", "/auth/recovery/status", () => ({
+      onEndpoint("auth.recoveryStatus", () => ({
         status: 200,
         json: { registered: true, updatedAtMs: 1754006400000 },
       })),
-      onRequest("PUT", "/auth/recovery", (request) => {
+      onEndpoint("auth.recoveryPut", (request) => {
         ledgerPuts.push(request.body);
         return { status: 204 };
       }),
-      onRequest("GET", "/auth/key-wraps", () => ({
+      onEndpoint("keyWraps.status", () => ({
         status: 200,
         json: {
           recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
@@ -169,15 +169,15 @@ describe("maruhi key recovery --replace (replace without opening the ledger — 
       built,
       withEnvironment: false,
       extra: [
-        onRequest("GET", "/auth/recovery/status", () => ({
+        onEndpoint("auth.recoveryStatus", () => ({
           status: 200,
           json: { registered: true, updatedAtMs: 1754006400000 },
         })),
-        onRequest("PUT", "/auth/recovery", (request) => {
+        onEndpoint("auth.recoveryPut", (request) => {
           ledgerPuts.push(request.body);
           return { status: 204 };
         }),
-        onRequest("GET", "/auth/key-wraps", () => ({
+        onEndpoint("keyWraps.status", () => ({
           status: 200,
           json: {
             recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
@@ -275,15 +275,15 @@ describe("maruhi key recover / key recovery — the on-chain judgment of the led
       withEnvironment: false,
       extra: [
         ledger.handler,
-        onRequest("GET", "/auth/recovery/status", () => ({
+        onEndpoint("auth.recoveryStatus", () => ({
           status: 200,
           json: { registered: true, updatedAtMs: 1754006400000 },
         })),
-        onRequest("PUT", "/auth/recovery", (request) => {
+        onEndpoint("auth.recoveryPut", (request) => {
           ledgerPuts.push(request.body);
           return { status: 204 };
         }),
-        onRequest("GET", "/auth/key-wraps", () => ({
+        onEndpoint("keyWraps.status", () => ({
           status: 200,
           json: {
             recoveryCode: { registered: true, updatedAtMs: 1754006400000 },

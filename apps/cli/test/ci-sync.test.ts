@@ -33,6 +33,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { cliError } from "../src/errors.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
+import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import { type MockHandler, type MockRequest, MockServer } from "./support/server.ts";
 import { makeFakeCloudflare, makeFakeNetlify } from "./support/vendor-api.ts";
@@ -224,7 +225,7 @@ function leaseHandler(environment: string, leased: { keys: string[] }): MockHand
         currentEpoch: 1,
         chain: built.entries,
         headSeq: built.entries.length,
-        headHashHex: built.hashes[built.hashes.length - 1],
+        headHashHex: lastHashOf(built.hashes),
         statement: envStatements.get(environment),
         variables,
         deletedVariables: [],

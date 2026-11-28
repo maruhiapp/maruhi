@@ -8,7 +8,7 @@ import { masterKeyEntryName, serializeStoredToken, tokenEntryName } from "../src
 import { GH_ENV } from "../src/sync.package/sync-exec.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { githubSigningKeysHandler, sshLineOf } from "./support/invite.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint, onRequest } from "./support/server.ts";
 
 let alice: GeneratedIdentity;
 let bob: GeneratedIdentity;
@@ -58,11 +58,11 @@ function saveConfirmation(env: TestEnv): () => string {
 
 function recoveryHandlers(): MockHandler[] {
   return [
-    onRequest("GET", "/auth/recovery/status", () => ({
+    onEndpoint("auth.recoveryStatus", () => ({
       status: 200,
       json: { registered: false, updatedAtMs: null },
     })),
-    onRequest("PUT", "/auth/recovery", () => ({ status: 204 })),
+    onEndpoint("auth.recoveryPut", () => ({ status: 204 })),
   ];
 }
 

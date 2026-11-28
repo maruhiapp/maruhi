@@ -27,7 +27,7 @@ import {
   startEnv,
   wrap1,
 } from "./support/push.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 describe("maruhi push", () => {
   it("refuses when the post-409 refetched statement is a metaVersion rollback (the §12-5 meta isomorph)", async () => {
@@ -78,25 +78,29 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[statementV2]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
-        pullCalls += 1;
-        return {
-          status: 200,
-          json: await pullJsonOf(
-            [
-              {
-                variableId: "v-existing",
-                statement: pullCalls === 1 ? statementV2 : statementV1,
-                value: pullCalls === 1 ? existing : winner,
-              },
-            ],
-            [wrap1],
-          ),
-        };
-      }),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+      onEndpoint(
+        "variables.pull",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        async () => {
+          pullCalls += 1;
+          return {
+            status: 200,
+            json: await pullJsonOf(
+              [
+                {
+                  variableId: "v-existing",
+                  statement: pullCalls === 1 ? statementV2 : statementV1,
+                  value: pullCalls === 1 ? existing : winner,
+                },
+              ],
+              [wrap1],
+            ),
+          };
+        },
+      ),
+      onEndpoint(
+        "variables.push",
+        { projectId: chainV1.projectId, environmentId: ENV_ID, variableId: "v-existing" },
         () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
       ),
     ]);
@@ -161,28 +165,32 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[statementV1]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
-        pullCalls += 1;
-        return {
-          status: 200,
-          json: await pullJsonOf(
-            [
-              {
-                variableId: "v-existing",
-                statement: pullCalls === 1 ? statementV1 : forkedSuccessor,
-                value: pullCalls === 1 ? existing : winner,
-              },
-            ],
-            [wrap1],
-            1,
-            pullCalls === 1 ? 1 : 2,
-            pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
-          ),
-        };
-      }),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+      onEndpoint(
+        "variables.pull",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        async () => {
+          pullCalls += 1;
+          return {
+            status: 200,
+            json: await pullJsonOf(
+              [
+                {
+                  variableId: "v-existing",
+                  statement: pullCalls === 1 ? statementV1 : forkedSuccessor,
+                  value: pullCalls === 1 ? existing : winner,
+                },
+              ],
+              [wrap1],
+              1,
+              pullCalls === 1 ? 1 : 2,
+              pullCalls === 1 ? undefined : await manifestHashAt([statementV1]),
+            ),
+          };
+        },
+      ),
+      onEndpoint(
+        "variables.push",
+        { projectId: chainV1.projectId, environmentId: ENV_ID, variableId: "v-existing" },
         () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
       ),
     ]);
@@ -239,23 +247,27 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[entryExisting.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
-        pullCalls += 1;
-        return {
-          status: 200,
-          json: await pullJsonOf(
-            [
-              pullCalls === 1
-                ? entryExisting
-                : { ...entryExisting, statement: forkedStatement, value: winner },
-            ],
-            [wrap1],
-          ),
-        };
-      }),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+      onEndpoint(
+        "variables.pull",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        async () => {
+          pullCalls += 1;
+          return {
+            status: 200,
+            json: await pullJsonOf(
+              [
+                pullCalls === 1
+                  ? entryExisting
+                  : { ...entryExisting, statement: forkedStatement, value: winner },
+              ],
+              [wrap1],
+            ),
+          };
+        },
+      ),
+      onEndpoint(
+        "variables.push",
+        { projectId: chainV1.projectId, environmentId: ENV_ID, variableId: "v-existing" },
         () => ({ status: 409, json: { _tag: "VersionConflict", currentVersion: 5 } }),
       ),
     ]);
@@ -291,20 +303,28 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[], [entryRaced.statement]]),
-      onRequest("GET", `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`, async () => {
-        pullCalls += 1;
-        return {
-          status: 200,
-          json: await pullJsonOf([entryRaced], [wrap1], 1, 2, await manifestHashAt([])),
-        };
-      }),
-      onRequest("POST", `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`, () => ({
-        status: 409,
-        json: { _tag: "MetaVersionConflict", currentMetaVersion: 1 },
-      })),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-meta-race/versions`,
+      onEndpoint(
+        "variables.pull",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        async () => {
+          pullCalls += 1;
+          return {
+            status: 200,
+            json: await pullJsonOf([entryRaced], [wrap1], 1, 2, await manifestHashAt([])),
+          };
+        },
+      ),
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
+        () => ({
+          status: 409,
+          json: { _tag: "MetaVersionConflict", currentMetaVersion: 1 },
+        }),
+      ),
+      onEndpoint(
+        "variables.push",
+        { projectId: chainV1.projectId, environmentId: ENV_ID, variableId: "v-meta-race" },
         (request) => {
           pushedVersion = (request.body as { value: WireEncryptedPayload }).value.aad.version;
           return {
@@ -338,9 +358,9 @@ describe("maruhi push", () => {
       chainSequenceHandlerOf([chainV1]),
       dekSequenceHandlerOf([[wrap1]]),
       pullMetadataHandlerOf([[]], 1, echo),
-      onRequest(
-        "POST",
-        `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables`,
+      onEndpoint(
+        "variables.create",
+        { projectId: chainV1.projectId, environmentId: ENV_ID },
         (request) => {
           const body = request.body as CreateBody;
           createCalls.push(body);
@@ -389,9 +409,9 @@ describe("maruhi push", () => {
         dekSequenceHandlerOf([[wrap1]]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
         pullHandlerOf([entryExisting], [wrap1]),
-        onRequest(
-          "POST",
-          `/projects/${chainV1.projectId}/environments/${ENV_ID}/variables/v-existing/versions`,
+        onEndpoint(
+          "variables.push",
+          { projectId: chainV1.projectId, environmentId: ENV_ID, variableId: "v-existing" },
           () => {
             attempts += 1;
             return { status: 409, json: { _tag: "VersionConflict", currentVersion: 1 } };
@@ -431,9 +451,9 @@ describe("maruhi push", () => {
       [
         chainSequenceHandlerOf([chainV1]),
         pullMetadataHandlerOf([[entryExisting.statement]]),
-        onRequest(
-          "GET",
-          `/projects/${chainV1.projectId}/environments/${ENV_ID}/pull`,
+        onEndpoint(
+          "variables.pull",
+          { projectId: chainV1.projectId, environmentId: ENV_ID },
           async () => ({
             status: 200,
             json: await pullJsonOf(

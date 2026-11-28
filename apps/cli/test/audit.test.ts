@@ -18,8 +18,9 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-audit-1";
 const BASE_TS = 1_755_000_000_000;
@@ -175,17 +176,11 @@ async function makeAuditServer(input: AuditServerInput): Promise<readonly MockHa
     statements: [activeStatement],
   });
   return [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries: input.built.entries as readonly ChainEntry[],
-        headSeq: input.built.entries.length,
-        headHashHex: input.built.hashes[input.built.hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, input.built.entries, input.built.hashes),
     })),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () =>
+    onEndpoint("variables.pullMetadata", { projectId, environmentId: ENV_ID }, () =>
       input.metadataAvailable === false
         ? { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: ENV_ID } }
         : {
@@ -767,7 +762,7 @@ describe("maruhi audit invites / self", () => {
     const built = await baseChain();
     const handlers = [
       ...(await makeAuditServer({ built, rows: await mirrorRowsOf(built) })),
-      onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
+      onEndpoint("audit.invites", { projectId: built.projectId }, () => ({
         status: 200,
         json: {
           events: [
@@ -794,7 +789,7 @@ describe("maruhi audit invites / self", () => {
     const built = await baseChain();
     const handlers = [
       ...(await makeAuditServer({ built, rows: await mirrorRowsOf(built) })),
-      onRequest("GET", `/projects/${built.projectId}/audit/invites`, () => ({
+      onEndpoint("audit.invites", { projectId: built.projectId }, () => ({
         status: 200,
         json: {
           events: [
@@ -820,7 +815,7 @@ describe("maruhi audit invites / self", () => {
 
   it("self displays account events and annotates the implications of watch-worthy events", async () => {
     const handlers = [
-      onRequest("GET", "/auth/audit/events", () => ({
+      onEndpoint("audit.self", () => ({
         status: 200,
         json: {
           events: [

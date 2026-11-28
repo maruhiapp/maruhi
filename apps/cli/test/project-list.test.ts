@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
@@ -26,7 +26,7 @@ async function startEnv(server: MockServer): Promise<TestEnv> {
 describe("maruhi project list", () => {
   it("follows nextAfter to gather every page and displays one project per line", async () => {
     const server = await MockServer.start([
-      onRequest("GET", "/projects", (request) =>
+      onEndpoint("membership.list", (request) =>
         request.query["after"] === undefined
           ? {
               status: 200,
@@ -54,7 +54,7 @@ describe("maruhi project list", () => {
 
   it("zero memberships says No projects (exit 0)", async () => {
     const server = await MockServer.start([
-      onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } })),
+      onEndpoint("membership.list", () => ({ status: 200, json: { projects: [] } })),
     ]);
     servers.push(server);
     const env = await startEnv(server);
@@ -65,7 +65,7 @@ describe("maruhi project list", () => {
 
   it("a server whose nextAfter never exhausts is cut off at the page cap with exit 1 (bounded)", async () => {
     const server = await MockServer.start([
-      onRequest("GET", "/projects", () => ({
+      onEndpoint("membership.list", () => ({
         status: 200,
         json: { projects: [{ projectId: PROJECT_A, role: "owner" }], nextAfter: PROJECT_A },
       })),

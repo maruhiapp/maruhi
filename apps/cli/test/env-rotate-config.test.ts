@@ -23,7 +23,7 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { receiptVariableName } from "../src/sync.package/sync-receipt.ts";
-import { lastHashOf } from "./support/chain-handler.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import {
   chainBase,
   dek1,
@@ -662,13 +662,7 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
           pushed.length === 2
             ? {
                 status: 200,
-                json: {
-                  projectId: chainBase.projectId,
-                  entries: chainBase.entries,
-                  headSeq: chainBase.entries.length,
-                  headHashHex: lastHashOf(chainBase.hashes),
-                  attestations: [],
-                },
+                json: servedChain(chainBase.projectId, chainBase.entries, chainBase.hashes),
               }
             : undefined,
       },

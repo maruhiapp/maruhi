@@ -21,8 +21,9 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName } from "../src/keychain.ts";
 import { scanEnvReferences } from "../src/schema.package/schema-lint.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const SECRET_DESCRIPTION = "Endpoint description that must never reach the lint report";
@@ -83,22 +84,16 @@ afterEach(async () => {
 });
 
 function chainHandler(): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 
 function metadataHandler(variables: readonly WireDistributedVariableStatement[]): MockHandler {
-  return onRequest(
-    "GET",
-    `/projects/${built.projectId}/environments/${ENV_ID}/pull/metadata`,
+  return onEndpoint(
+    "variables.pullMetadata",
+    { projectId: built.projectId, environmentId: ENV_ID },
     async () => ({
       status: 200,
       json: {

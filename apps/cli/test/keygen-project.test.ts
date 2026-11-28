@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { masterKeyEntryName, parseStoredMasterKey, tokenEntryName } from "../src/keychain.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
@@ -37,14 +38,14 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
 }
 
 function recoveryStatusHandler(registered: boolean): MockHandler {
-  return onRequest("GET", "/auth/recovery/status", () => ({
+  return onEndpoint("auth.recoveryStatus", () => ({
     status: 200,
     json: { registered, updatedAtMs: registered ? 1754006400000 : null },
   }));
 }
 
 function recoveryPutHandler(): MockHandler {
-  return onRequest("PUT", "/auth/recovery", () => ({ status: 204 }));
+  return onEndpoint("auth.recoveryPut", () => ({ status: 204 }));
 }
 
 function displayedRecoveryCode(env: TestEnv): string {
@@ -164,7 +165,7 @@ describe("maruhi key", () => {
 });
 
 function meHandler(userId: string, orgs: readonly { orgId: string; slug: string }[]): MockHandler {
-  return onRequest("GET", "/auth/me", () => ({
+  return onEndpoint("auth.me", () => ({
     status: 200,
     json: {
       userId,
@@ -213,7 +214,7 @@ describe("maruhi project init", () => {
     const bogus = "ab".repeat(32);
     const maruhi = await start([
       meHandler(user.userId, [{ orgId: "org_personal", slug: "me" }]),
-      onRequest("POST", "/projects", () => ({
+      onEndpoint("membership.init", () => ({
         status: 200,
         json: { projectId: bogus, headSeq: 1, headHashHex: bogus },
       })),
@@ -270,15 +271,9 @@ describe("maruhi project verify", () => {
       { actor: owner, operation: addMemberOp(member, "reader") },
     ]);
     const maruhi = await start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
     ]);
     const env = await makeTestEnv();

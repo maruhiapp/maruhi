@@ -18,7 +18,9 @@ import {
   genesisOp,
   headOf,
   type WireDistributedEnvironmentStatement,
+  type WireDistributedValue,
   type WireDistributedVariableStatement,
+  type WireRecipientDek,
 } from "@maruhi/test-kit";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -26,6 +28,7 @@ import { runCli } from "../src/cli.ts";
 import { acceptedProxyConfigsPathOf } from "../src/proxy.package/proxy-accept.ts";
 import { makeEphemeralCa } from "../src/proxy.package/proxy-cert.ts";
 import { parseListenAddress } from "../src/proxy.package/proxy-run.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import {
   makeTestEnv,
   type RunnerCall,
@@ -34,7 +37,7 @@ import {
   type TestEnv,
 } from "./support/env.ts";
 import { httpsViaProxy, type Origin, startOrigin } from "./support/proxy-client.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const REAL_TOKEN = "ghp_real_token_0123456789abcdefghijklmnop";
@@ -44,12 +47,12 @@ const REAL_OTHER = "other-secret-value-xyz";
 interface Fixture {
   readonly owner: GeneratedIdentity;
   readonly built: BuiltChain;
-  readonly wraps: readonly unknown[];
+  readonly wraps: readonly WireRecipientDek[];
   readonly envStatement: WireDistributedEnvironmentStatement;
   readonly entries: readonly {
     readonly variableId: string;
     readonly statement: WireDistributedVariableStatement;
-    readonly value: unknown;
+    readonly value: WireDistributedValue;
   }[];
 }
 
@@ -121,37 +124,35 @@ afterEach(async () => {
 function handlers(): MockHandler[] {
   const { built, wraps, envStatement, entries, owner } = fixture;
   return [
-    onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId: built.projectId }, () => ({
       status: 200,
-      json: {
-        projectId: built.projectId,
-        entries: built.entries,
-        headSeq: built.entries.length,
-        headHashHex: built.hashes[built.hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(built.projectId, built.entries, built.hashes),
     })),
-    onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => ({
-      status: 200,
-      json: {
-        environmentId: ENV_ID,
-        currentEpoch: 1,
-        statement: envStatement,
-        variables: entries,
-        deletedVariables: [],
-        deks: wraps,
-        manifest: await distributedManifest({
-          projectId: built.projectId,
+    onEndpoint(
+      "variables.pull",
+      { projectId: built.projectId, environmentId: ENV_ID },
+      async () => ({
+        status: 200,
+        json: {
           environmentId: ENV_ID,
-          epoch: 1,
-          issuer: owner,
-          head: headOf(built, 2),
-          envStatement,
-          statements: entries.map((e) => e.statement),
-        }),
-        schemaPolicy: "enabled" as const,
-      },
-    })),
+          currentEpoch: 1,
+          statement: envStatement,
+          variables: entries,
+          deletedVariables: [],
+          deks: wraps,
+          manifest: await distributedManifest({
+            projectId: built.projectId,
+            environmentId: ENV_ID,
+            epoch: 1,
+            issuer: owner,
+            head: headOf(built, 2),
+            envStatement,
+            statements: entries.map((e) => e.statement),
+          }),
+          schemaPolicy: "enabled" as const,
+        },
+      }),
+    ),
   ];
 }
 

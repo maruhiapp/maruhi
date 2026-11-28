@@ -29,9 +29,10 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "prod";
 
@@ -129,15 +130,9 @@ afterEach(async () => {
 });
 
 function chainHandler(built: BuiltChain): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId }, () => ({
     status: 200,
-    json: {
-      projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(projectId, built.entries, built.hashes),
   }));
 }
 
@@ -155,22 +150,23 @@ interface PullJson {
 }
 
 function pullHandler(payload: PullJson): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
-    status: 200,
-    json: {
+  return onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, () => {
+    const json = {
       environmentId: ENV_ID,
       currentEpoch: payload.currentEpoch,
       statement: envStatement,
       variables: payload.variables,
       deletedVariables: payload.deletedVariables ?? [],
       deks: payload.deks,
-      ...(payload.manifest === undefined ? {} : { manifest: payload.manifest }),
       ...(payload.checkpointSnapshot === undefined
         ? {}
         : { checkpointSnapshot: payload.checkpointSnapshot }),
       schemaPolicy: "enabled" as const,
-    },
-  }));
+    };
+    return payload.manifest === undefined
+      ? offSpec({ status: 200, json })
+      : { status: 200, json: { ...json, manifest: payload.manifest } };
+  });
 }
 
 async function startEnv(handlers: readonly MockHandler[]): Promise<TestEnv> {
@@ -479,18 +475,12 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
   it("rule (c)'s criterion also covers the floor manifest's own epoch (the window where pullEpoch lags)", async () => {
     const env = await makeTestEnv();
     let chainCalls = 0;
-    const progressiveChain: MockHandler = onRequest("GET", `/projects/${projectId}/chain`, () => {
+    const progressiveChain: MockHandler = onEndpoint("membership.get", { projectId }, () => {
       chainCalls += 1;
       const built = chainCalls === 1 ? chain1 : chain2;
       return {
         status: 200,
-        json: {
-          projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(projectId, built.entries, built.hashes),
       };
     });
     await startPhase(env, [
@@ -526,7 +516,7 @@ describe("the floor's manifest extension (applying §6.3 rules (a)(b)(c) to mani
 
 describe("prev-chain verification of adjacent manifestVersions (§4.3 verification rule (1) — session-31 M1-A1)", () => {
   function metadataHandler(manifest: WireDistributedManifest): MockHandler {
-    return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () => ({
+    return onEndpoint("variables.pullMetadata", { projectId, environmentId: ENV_ID }, () => ({
       status: 200,
       json: {
         environmentId: ENV_ID,
@@ -686,17 +676,11 @@ function makeRotateAcceptingServer(input: {
   let manifest: WireDistributedManifest = input.initialManifest;
   let checkpointSnapshot: WireCheckpointSnapshot | null = null;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, entries, hashes),
     })),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
+    onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, () => ({
       status: 200,
       json: {
         environmentId: ENV_ID,
@@ -784,7 +768,7 @@ function makeRotateAcceptingServer(input: {
           environmentId: ENV_ID,
           currentEpoch,
           headSeq: entries.length,
-          headHashHex: hashes[hashes.length - 1],
+          headHashHex: lastHashOf(hashes),
         },
       };
     },

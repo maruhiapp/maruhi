@@ -12,6 +12,7 @@ import {
   genesisOp,
   testProjectId,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { Cause, Effect, Exit, Fiber } from "effect";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
@@ -21,7 +22,14 @@ import { runCli } from "../src/cli.ts";
 import { projectExportOp } from "../src/project.package/project-export.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  type MockRequest,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
 const refusedOpens = vi.hoisted(() => new Set<string>());
 
@@ -100,7 +108,7 @@ function snapshotLines(): string[] {
   ];
 }
 
-const identitiesAt = (chainHeadHashHex: string) => ({
+const identitiesAt = (chainHeadHashHex: string): ApiSuccess<"export.identities"> => ({
   exportedBy: "user-owner-1111",
   chainHeadSeq: built.entries.length,
   chainHeadHashHex,
@@ -125,7 +133,7 @@ interface Fixture {
 interface StartOptions {
   readonly changedPages?: number;
   readonly firstPage?: { readonly status: number; readonly json: unknown };
-  readonly identities?: { readonly status: number; readonly json: unknown };
+  readonly identities?: EndpointAnswer<"export.identities">;
   readonly staleCompanions?: number;
   readonly mirrorOf?: string;
 }
@@ -167,7 +175,7 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
       }
       return { status: 200, json: { lines: lines.slice(3), head } };
     },
-    onRequest("GET", `/projects/${built.projectId}/export/identities`, () => {
+    onEndpoint("export.identities", { projectId: built.projectId }, () => {
       if (options.identities !== undefined) {
         return options.identities;
       }
@@ -294,7 +302,7 @@ describe("maruhi project export (PF3)", () => {
     const second = join(again.dir, "second.ndjson.gz");
     expect(await runCli(["project", "export", "--out", second], again.env.layer)).toBe(0);
     const half = await startEnv({
-      identities: { status: 500, json: { message: "injected identities failure" } },
+      identities: offSpec({ status: 500, json: { message: "injected identities failure" } }),
     });
     const data = join(half.dir, "half.ndjson.gz");
     expect(await runCli(["project", "export", "--out", data], half.env.layer)).toBe(1);

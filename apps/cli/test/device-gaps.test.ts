@@ -25,8 +25,9 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app";
 const OTHER_ENV_ID = "env-other";
@@ -101,7 +102,7 @@ interface Posted {
 }
 
 async function start(input: {
-  readonly rows: readonly unknown[];
+  readonly rows: readonly WireRecipientDek[];
   readonly registerStatus?: number;
 }): Promise<{ env: TestEnv; posted: Posted[] }> {
   const { projectId } = built;
@@ -122,17 +123,11 @@ async function start(input: {
     envStatement,
   });
   const server = await MockServer.start([
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries: built.entries,
-        headSeq: built.entries.length,
-        headHashHex: built.hashes[built.hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, built.entries, built.hashes),
     })),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, () => ({
+    onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, () => ({
       status: 200,
       json: {
         environmentId: ENV_ID,
@@ -145,10 +140,10 @@ async function start(input: {
         schemaPolicy: "enabled" as const,
       },
     })),
-    onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/deks`, (request) => {
+    onEndpoint("deks.register", { projectId, environmentId: ENV_ID }, (request) => {
       const body = request.body as { readonly deks: readonly Posted[] };
       if (input.registerStatus !== undefined) {
-        return { status: input.registerStatus, json: { _tag: "Internal" } };
+        return offSpec({ status: input.registerStatus, json: { _tag: "Internal" } });
       }
       posted.push(...body.deks);
       return { status: 204 };

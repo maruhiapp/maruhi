@@ -15,6 +15,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandler,
@@ -26,7 +27,7 @@ import {
   servers,
   startEnv,
 } from "./support/pull-run.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 describe("distribution-time verification of meta statements (§4.2 / §6.3)", () => {
   it("refuses a statement-signature bit-flip before decryption", async () => {
@@ -216,17 +217,11 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
-      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+      onEndpoint("variables.pull", { projectId: built.projectId, environmentId: ENV_ID }, () => ({
         status: 200,
         json: pullJson,
       })),
@@ -307,17 +302,11 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
       schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
-      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+      onEndpoint("variables.pull", { projectId: built.projectId, environmentId: ENV_ID }, () => ({
         status: 200,
         json: pullJson,
       })),
@@ -346,18 +335,12 @@ describe("distribution-time verification of meta statements (§4.2 / §6.3)", ()
     });
     const shortChain = built.entries.slice(0, 2);
     let chainCalls = 0;
-    const progressiveChain = onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+    const progressiveChain = onEndpoint("membership.get", { projectId: built.projectId }, () => {
       chainCalls += 1;
       const entries = chainCalls === 1 ? shortChain : built.entries;
       return {
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries,
-          headSeq: entries.length,
-          headHashHex: built.hashes[entries.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, entries, built.hashes.slice(0, entries.length)),
       };
     });
     const env = await startEnv([

@@ -23,11 +23,12 @@ import {
   testVariableId,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
 
 const ENV_ID = "prod";
@@ -68,28 +69,9 @@ afterEach(async () => {
   servers = [];
 });
 
-interface WireWrap {
-  readonly recipientUserId: string;
-  readonly recipientEncPubHex: string;
-  readonly encHex: string;
-  readonly ciphertextHex: string;
-}
+type WireProposal = ApiSuccess<"rotation.proposals">["proposals"][number];
 
-interface WireProposal {
-  readonly proposalId: string;
-  readonly environmentId: string;
-  readonly connector: string;
-  readonly facts: readonly string[];
-  readonly claimsDigestHex: string;
-  readonly grantChainSeq: number;
-  readonly createdAtMs: number;
-  readonly expiresAtMs: number;
-  readonly variables: readonly {
-    readonly variableId: string;
-    readonly baseVersion: number;
-    readonly wraps: readonly WireWrap[];
-  }[];
-}
+type WireWrap = WireProposal["variables"][number]["wraps"][number];
 
 interface ProposedVariableSpec {
   readonly variableId: string;
@@ -276,11 +258,11 @@ async function startEnv(
     `^/projects/${built.projectId}/rotation/proposals/([0-9a-f]{32})/resolution$`,
   );
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${built.projectId}/rotation/flags`, () => ({
+    onEndpoint("rotation.flags", { projectId: built.projectId }, () => ({
       status: 200,
       json: { flags: [] },
     })),
-    onRequest("GET", `/projects/${built.projectId}/rotation/proposals`, () => ({
+    onEndpoint("rotation.proposals", { projectId: built.projectId }, () => ({
       status: 200,
       json: { proposals: pending },
     })),

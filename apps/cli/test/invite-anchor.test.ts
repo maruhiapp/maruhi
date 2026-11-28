@@ -12,8 +12,9 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let inviter: GeneratedIdentity;
 let acceptor: GeneratedIdentity;
@@ -30,15 +31,9 @@ afterEach(async () => {
 });
 
 function chainHandler(built: BuiltChain): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 

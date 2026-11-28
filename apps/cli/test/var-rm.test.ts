@@ -21,9 +21,10 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { makeMetaEnvironmentServer, type MetaEnvironmentState } from "./support/meta-server.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "dev";
 const DESCRIPTION = "Primary endpoint of the shop";
@@ -285,32 +286,30 @@ describe("the CAS retry and the binding to the confirmed target", () => {
     let metadataCalls = 0;
     const deleteCalls: MockRequest[] = [];
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
-      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull/metadata`, () => {
-        metadataCalls += 1;
-        const first = metadataCalls === 1;
-        return {
-          status: 200,
-          json: {
-            environmentId: ENV_ID,
-            currentEpoch: 1,
-            statement: envStatement,
-            variables: first ? [declaredV3] : [replacement],
-            deletedVariables: first ? [] : [tombstone],
-            manifest: first ? firstManifest : secondManifest,
-            schemaPolicy: "enabled" as const,
-          },
-        };
-      }),
+      onEndpoint(
+        "variables.pullMetadata",
+        { projectId: built.projectId, environmentId: ENV_ID },
+        () => {
+          metadataCalls += 1;
+          const first = metadataCalls === 1;
+          return {
+            status: 200,
+            json: {
+              environmentId: ENV_ID,
+              currentEpoch: 1,
+              statement: envStatement,
+              variables: first ? [declaredV3] : [replacement],
+              deletedVariables: first ? [] : [tombstone],
+              manifest: first ? firstManifest : secondManifest,
+              schemaPolicy: "enabled" as const,
+            },
+          };
+        },
+      ),
       (request) => {
         if (request.method !== "DELETE") {
           return null;

@@ -35,6 +35,7 @@ import {
   type WireDistributedValue,
   type WireDistributedVariableStatement,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -45,8 +46,15 @@ import { checkpointProposal, issueCheckpoint } from "../src/checkpoint.package/c
 import { runCli } from "../src/cli.ts";
 import { makeFloorHandle } from "../src/floor-check.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  type MockResponse,
+  MockServer,
+  onEndpoint,
+} from "./support/server.ts";
 
 const ENV_A = "alpha";
 const ENV_B = "dev";
@@ -81,9 +89,12 @@ interface MockEnvironment {
 interface CheckpointServerOptions {
   readonly built: BuiltChain;
   readonly environments: MockEnvironment[];
-  readonly me: { readonly userId: string; readonly tokenScopes?: readonly unknown[] };
+  readonly me: {
+    readonly userId: string;
+    readonly tokenScopes?: NonNullable<ApiSuccess<"auth.me">["tokenScopes"]>;
+  };
   readonly auditHeadHashHex?: string;
-  readonly onAuditHead?: (call: number) => MockResponse | undefined;
+  readonly onAuditHead?: (call: number) => EndpointAnswer<"audit.auditHead"> | undefined;
   readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
   readonly acceptWithoutAppending?: boolean;
   readonly firstFetchEntries?: number;
@@ -110,7 +121,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
   let auditHeadCalls = 0;
   let chainCalls = 0;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => {
+    onEndpoint("membership.get", { projectId }, () => {
       const served =
         chainCalls === 0 && options.firstFetchEntries !== undefined
           ? options.firstFetchEntries
@@ -118,16 +129,10 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
       chainCalls += 1;
       return {
         status: 200,
-        json: {
-          projectId,
-          entries: entries.slice(0, served),
-          headSeq: served,
-          headHashHex: hashes[served - 1],
-          attestations: [],
-        },
+        json: servedChain(projectId, entries.slice(0, served), hashes.slice(0, served)),
       };
     }),
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
+    onEndpoint("environments.list", { projectId }, () => ({
       status: 200,
       json: {
         environments: options.environments.map((environment) => ({
@@ -138,7 +143,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
         schemaPolicy: "enabled",
       },
     })),
-    onRequest("GET", "/auth/me", () => ({
+    onEndpoint("auth.me", () => ({
       status: 200,
       json: {
         userId: options.me.userId,
@@ -146,7 +151,7 @@ function makeCheckpointServer(options: CheckpointServerOptions): CheckpointServe
         ...(options.me.tokenScopes === undefined ? {} : { tokenScopes: options.me.tokenScopes }),
       },
     })),
-    onRequest("GET", `/projects/${projectId}/audit-head`, () => {
+    onEndpoint("audit.auditHead", { projectId }, () => {
       const injected = options.onAuditHead?.(auditHeadCalls);
       auditHeadCalls += 1;
       if (injected !== undefined) {
@@ -543,7 +548,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
   });
 
   async function makeNotReadyFixture(input: {
-    readonly onAuditHead?: (call: number) => MockResponse | undefined;
+    readonly onAuditHead?: (call: number) => EndpointAnswer<"audit.auditHead"> | undefined;
     readonly onAppend?: (call: number, body: AppendBody) => MockResponse | undefined;
   }): Promise<{ state: CheckpointServerState; env: TestEnv }> {
     const dek = crypto.getRandomValues(new Uint8Array(32));
@@ -576,7 +581,7 @@ describe("maruhi project checkpoint (trigger (ii) — CRYPTO_SPEC §6.3 / AUTH_S
     return { state, env };
   }
 
-  const NOT_READY: MockResponse = { status: 503, json: { _tag: "AuditHeadNotReady" } };
+  const NOT_READY = { status: 503, json: { _tag: "AuditHeadNotReady" } } as const;
 
   it("absorbs AuditHeadNotReady (503) on attestation fetch with bounded retries (progress is server-side)", async () => {
     const { state, env } = await makeNotReadyFixture({

@@ -8,6 +8,7 @@ import {
   grantServerOp,
   testProjectId,
 } from "@maruhi/test-kit";
+import type { ApiReply } from "@maruhi/test-kit/api";
 import { Effect } from "effect";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -28,7 +29,7 @@ import {
   SOURCE_MUTATION_SEQ,
   start,
 } from "./support/mirror.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 
 let forked: BuiltChain;
 
@@ -199,7 +200,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
 
   it("a deployment under another hostname is the same deployment: the mark refuses it as the source of itself (ruling C revision, round 5)", async () => {
     const fingerprint = "ab".repeat(16);
-    const config = () => ({
+    const config = (): ApiReply<"auth.authConfig"> => ({
       status: 200,
       json: {
         githubClientId: "dummy",
@@ -209,11 +210,8 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       },
     });
     const state = mirrorState(false);
-    const mirror = await start([
-      onRequest("GET", "/auth/config", config),
-      ...mirrorHandlers(state),
-    ]);
-    const alias = await start([onRequest("GET", "/auth/config", config)]);
+    const mirror = await start([onEndpoint("auth.authConfig", config), ...mirrorHandlers(state)]);
+    const alias = await start([onEndpoint("auth.authConfig", config)]);
     const env = await makeTestEnv();
     seedSession(env, mirror.origin, owner);
     await seedConfig(env, { server: mirror.origin, defaultProject: built.projectId });
@@ -721,7 +719,7 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
       `if ${hedged.source.origin} is frozen for this project; if it holds the project writable, the mark goes the other way round`,
     );
     const fingerprint = "ab".repeat(16);
-    const config = () => ({
+    const config = (): ApiReply<"auth.authConfig"> => ({
       status: 200,
       json: {
         githubClientId: "dummy",
@@ -732,10 +730,10 @@ describe("maruhi mirror sync / status / mark / promote (PF2)", () => {
     });
     const aliasState = mirrorState(false);
     const aliased = await start([
-      onRequest("GET", "/auth/config", config),
+      onEndpoint("auth.authConfig", config),
       ...mirrorHandlers(aliasState),
     ]);
-    const alias = await start([onRequest("GET", "/auth/config", config)]);
+    const alias = await start([onEndpoint("auth.authConfig", config)]);
     const aliasSource = await start(sourceHandlers());
     const aliasEnv = await makeTestEnv();
     seedSession(aliasEnv, aliased.origin, owner);
