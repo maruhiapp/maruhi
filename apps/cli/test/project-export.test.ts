@@ -25,7 +25,6 @@ import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/en
 import {
   type EndpointAnswer,
   type MockHandler,
-  type MockRequest,
   MockServer,
   offSpec,
   onEndpoint,
@@ -132,7 +131,7 @@ interface Fixture {
 
 interface StartOptions {
   readonly changedPages?: number;
-  readonly firstPage?: { readonly status: number; readonly json: unknown };
+  readonly firstPage?: EndpointAnswer<"export.page">;
   readonly identities?: EndpointAnswer<"export.identities">;
   readonly staleCompanions?: number;
   readonly mirrorOf?: string;
@@ -153,10 +152,7 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
   };
   const handlers: MockHandler[] = [
     chainHandlerOf(built),
-    (request: MockRequest) => {
-      if (request.method !== "GET" || request.path !== `/projects/${built.projectId}/export`) {
-        return null;
-      }
+    onEndpoint("export.page", { projectId: built.projectId }, (request) => {
       const cursor = request.query["cursor"];
       if (cursor === undefined) {
         return (
@@ -174,7 +170,7 @@ async function startEnv(options: StartOptions = {}): Promise<Fixture> {
         return { status: 409, json: { _tag: "ExportChanged", reason: "project-changed" } };
       }
       return { status: 200, json: { lines: lines.slice(3), head } };
-    },
+    }),
     onEndpoint("export.identities", { projectId: built.projectId }, () => {
       if (options.identities !== undefined) {
         return options.identities;

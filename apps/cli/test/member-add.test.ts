@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { decodeHex, fingerprintToWords } from "@maruhi/crypto";
 import {
@@ -22,6 +21,7 @@ import {
   testEnvironmentId,
   type WireDistributedEnvironmentStatement,
   type WireRecipientDek,
+  type WireWrappedDek,
 } from "@maruhi/test-kit";
 import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -29,6 +29,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import {
   acceptAppendedEntry,
+  type AppendAnswer,
   injectedAppendResponse,
   servedChain,
 } from "./support/chain-handler.ts";
@@ -43,7 +44,13 @@ import {
   type IssuedInviteFixture,
   sshLineOf,
 } from "./support/invite.ts";
-import { type MockHandler, type MockResponse, MockServer, onEndpoint } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -94,29 +101,13 @@ interface AddServerState {
   readonly appendedEntries: ChainEntry[];
   readonly registerBodies: {
     readonly environmentId: string;
-    readonly deks: readonly WrappedDek[];
+    readonly deks: readonly WireWrappedDek[];
   }[];
   readonly removeBodies: {
     readonly environmentId: string;
     readonly wraps: readonly { epoch: number; recipientUserId: string }[];
   }[];
   readonly counters: { appendAttempts: number; registerAttempts: number };
-}
-
-function onDeksRoute(
-  projectId: string,
-  method: string,
-  respond: (environmentId: string, request: Parameters<MockHandler>[0]) => ReturnType<MockHandler>,
-): MockHandler {
-  return (request) => {
-    const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/deks$`).exec(
-      request.path,
-    );
-    if (match === null || request.method !== method) {
-      return null;
-    }
-    return respond(match[1] ?? "", request);
-  };
 }
 
 async function makeAddServer(input: {
@@ -127,15 +118,15 @@ async function makeAddServer(input: {
   readonly occupiedSlots?: readonly string[];
   readonly occupiedSlotEncPub?: Readonly<Record<string, string>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
-  readonly onAppend?: (call: number) => MockResponse | undefined;
+  readonly onAppend?: (call: number) => AppendAnswer | undefined;
   readonly chainAfterConflict?: BuiltChain;
-  readonly onRegister?: (call: number) => MockResponse | undefined;
+  readonly onRegister?: (call: number) => EndpointAnswer<"deks.register"> | undefined;
 }): Promise<AddServerState> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
   const hashes: string[] = [...input.built.hashes];
   const appendedEntries: ChainEntry[] = [];
-  const registerBodies: { environmentId: string; deks: readonly WrappedDek[] }[] = [];
+  const registerBodies: { environmentId: string; deks: readonly WireWrappedDek[] }[] = [];
   const removeBodies: {
     environmentId: string;
     wraps: readonly { epoch: number; recipientUserId: string }[];
@@ -157,19 +148,16 @@ async function makeAddServer(input: {
       status: 200,
       json: servedChain(projectId, entries, hashes),
     })),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
+    onEndpoint("membership.append", { projectId }, async (request) => {
       const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as { readonly entry: ChainEntry };
+      const body = { entry: request.body.entry as ChainEntry };
       appendedEntries.push(body.entry);
       return acceptAppendedEntry(projectId, entries, hashes, body.entry);
-    },
+    }),
     onEndpoint("invites.list", { projectId }, () => ({
       status: 200,
       json: { invitations: [input.invitation] },
@@ -185,14 +173,18 @@ async function makeAddServer(input: {
         schemaPolicy: "enabled",
       },
     })),
-    onDeksRoute(projectId, "GET", () => ({ status: 200, json: { deks: input.ownDeks } })),
-    onDeksRoute(projectId, "POST", (environmentId, request) => {
+    onEndpoint("deks.listMine", { projectId }, () => ({
+      status: 200,
+      json: { deks: input.ownDeks },
+    })),
+    onEndpoint("deks.register", { projectId }, (request) => {
+      const environmentId = request.params.environmentId;
       const injected = input.onRegister?.(counters.registerAttempts);
       counters.registerAttempts += 1;
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as { readonly deks: readonly WrappedDek[] };
+      const body = request.body;
       const conflict = body.deks.find((wrap) =>
         occupied.has(`${environmentId}:${wrap.epoch}:${wrap.recipientUserId}`),
       );
@@ -215,10 +207,9 @@ async function makeAddServer(input: {
       }
       return { status: 204 };
     }),
-    onDeksRoute(projectId, "DELETE", (environmentId, request) => {
-      const body = request.body as {
-        readonly wraps: readonly { epoch: number; recipientUserId: string }[];
-      };
+    onEndpoint("deks.remove", { projectId }, (request) => {
+      const environmentId = request.params.environmentId;
+      const body = request.body;
       removeBodies.push({ environmentId, wraps: body.wraps });
       for (const wrap of body.wraps) {
         const slot = `${environmentId}:${wrap.epoch}:${wrap.recipientUserId}`;
@@ -529,7 +520,7 @@ describe("maruhi member add", () => {
       ],
       occupiedSlots: [`${ENV_ID}:1:${acceptor.userId}`],
       occupiedSlotEncPub: { [`${ENV_ID}:1:${acceptor.userId}`]: oldKeys.encPubHex },
-      onRegister: (call) => (call === 2 ? { status: 500, json: {} } : undefined),
+      onRegister: (call) => (call === 2 ? offSpec({ status: 500, json: {} }) : undefined),
     });
     const env = await startAddEnv(state, built.projectId);
 

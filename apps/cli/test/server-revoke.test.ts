@@ -32,13 +32,20 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import {
   acceptAppendedEntry,
+  type AppendAnswer,
   injectedAppendResponse,
   lastHashOf,
   servedChain,
 } from "./support/chain-handler.ts";
 import type { WireRotateBody } from "./support/env-rotate.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockResponse, MockServer, onEndpoint } from "./support/server.ts";
+import {
+  type EndpointAnswer,
+  type MockHandler,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -97,9 +104,9 @@ async function makeRevokeServer(input: {
   readonly built: BuiltChain;
   readonly environments?: Readonly<Record<string, RevokeEnvironmentFixture>>;
   readonly listedStatements?: readonly WireDistributedEnvironmentStatement[];
-  readonly onAppend?: (call: number) => MockResponse | undefined;
+  readonly onAppend?: (call: number) => AppendAnswer | undefined;
   readonly chainAfterConflict?: BuiltChain;
-  readonly onRotate?: (environmentId: string) => MockResponse | undefined;
+  readonly onRotate?: (environmentId: string) => EndpointAnswer<"environments.rotate"> | undefined;
 }): Promise<RevokeServerState> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -144,11 +151,8 @@ async function makeRevokeServer(input: {
   const serveManifest = async (
     environmentId: string,
     environment: RevokeEnvironmentFixture,
-    statement: WireDistributedEnvironmentStatement | undefined,
-  ): Promise<WireDistributedManifest | undefined> => {
-    if (statement === undefined) {
-      return undefined;
-    }
+    statement: WireDistributedEnvironmentStatement,
+  ): Promise<WireDistributedManifest> => {
     let manifest = manifests.get(environmentId);
     if (manifest === undefined) {
       manifest = await distributedManifest({
@@ -180,36 +184,27 @@ async function makeRevokeServer(input: {
         schemaPolicy: "enabled",
       },
     })),
-    async (request) => {
-      if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
-        return null;
-      }
+    onEndpoint("membership.append", { projectId }, async (request) => {
       const injected = injectedAppendResponse(input, counters.appendAttempts, entries, hashes);
       counters.appendAttempts += 1;
       if (injected !== undefined) {
         return injected;
       }
-      const body = request.body as { readonly entry: ChainEntry };
+      const body = { entry: request.body.entry as ChainEntry };
       appendedEntries.push(body.entry);
       return acceptAppendedEntry(projectId, entries, hashes, body.entry);
-    },
-    async (request) => {
-      const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/pull$`).exec(
-        request.path,
-      );
-      if (match === null || request.method !== "GET") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    }),
+    onEndpoint("variables.pull", { projectId }, async (request) => {
+      const environmentId = request.params.environmentId;
       const environment = environments[environmentId];
-      if (environment === undefined) {
-        return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: match[1] } };
+      const statement = listedStatements.find((item) => item.environmentId === environmentId);
+      if (environment === undefined || statement === undefined) {
+        return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
       }
-      const statement = listedStatements.find((item) => item.environmentId === match[1]);
       return {
         status: 200,
         json: {
-          environmentId: match[1],
+          environmentId,
           currentEpoch: environment.currentEpoch,
           statement,
           variables: environment.variables ?? [],
@@ -220,15 +215,9 @@ async function makeRevokeServer(input: {
           schemaPolicy: "enabled" as const,
         },
       };
-    },
-    async (request) => {
-      const match = new RegExp(`^/projects/${projectId}/environments/([^/]+)/rotate$`).exec(
-        request.path,
-      );
-      if (match === null || request.method !== "POST") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
+    }),
+    onEndpoint("environments.rotate", { projectId }, async (request) => {
+      const environmentId = request.params.environmentId;
       const environment = environments[environmentId];
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
@@ -275,16 +264,10 @@ async function makeRevokeServer(input: {
           headHashHex: lastHashOf(hashes),
         },
       };
-    },
-    (request) => {
-      const match = new RegExp(
-        `^/projects/${projectId}/environments/([^/]+)/variables/([^/]+)/versions$`,
-      ).exec(request.path);
-      if (match === null || request.method !== "POST") {
-        return null;
-      }
-      const environmentId = match[1] ?? "";
-      const variableId = match[2] ?? "";
+    }),
+    onEndpoint("variables.push", { projectId }, (request) => {
+      const environmentId = request.params.environmentId;
+      const variableId = request.params.variableId;
       const environment = environments[environmentId];
       if (environment === undefined) {
         return { status: 404, json: { _tag: "EnvironmentNotFound", environmentId } };
@@ -306,7 +289,7 @@ async function makeRevokeServer(input: {
         status: 200,
         json: { variableId, version: body.value.aad.version, epoch: body.value.aad.epoch },
       };
-    },
+    }),
   ];
   return { handlers, appendedEntries, counters, rotateBodies, pushes };
 }
@@ -593,7 +576,7 @@ describe("maruhi server revoke", () => {
         },
       },
       onRotate: (environmentId) =>
-        environmentId === ENV_B ? { status: 500, json: {} } : undefined,
+        environmentId === ENV_B ? offSpec({ status: 500, json: {} }) : undefined,
     });
     const env = await startRevokeEnv(state, built.projectId, owner);
 

@@ -28,6 +28,7 @@ import {
   type WireDistributedValue,
   type WireDistributedVariableStatement,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
@@ -35,7 +36,7 @@ import { cliError } from "../src/errors.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
 import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 import { makeFakeCloudflare, makeFakeNetlify } from "./support/vendor-api.ts";
 
 const SOURCE_ENV = "prod";
@@ -174,7 +175,7 @@ function oidcHandler(state: { issued: number }): MockHandler {
 async function leaseWrapFor(
   environment: string,
   body: { oidcToken: string; ephemeralPubHex: string },
-) {
+): Promise<ApiSuccess<"lease.issue">["leases"][number]> {
   const payload = jwtPayload(body.oidcToken);
   const digest = await computeLeaseClaimsDigest({
     issuerUrl: String(payload["iss"]),
@@ -207,42 +208,43 @@ async function leaseWrapFor(
 }
 
 function leaseHandler(environment: string, leased: { keys: string[] }): MockHandler {
-  return async (request) => {
-    if (
-      request.method !== "POST" ||
-      request.path !== `/projects/${built.projectId}/environments/${environment}/lease`
-    ) {
-      return null;
-    }
-    const body = request.body as { oidcToken: string; ephemeralPubHex: string };
-    leased.keys.push(body.ephemeralPubHex);
-    const variables = entries.get(environment) ?? [];
-    return {
-      status: 200,
-      json: {
-        projectId: built.projectId,
-        environmentId: environment,
-        currentEpoch: 1,
-        chain: built.entries,
-        headSeq: built.entries.length,
-        headHashHex: lastHashOf(built.hashes),
-        statement: envStatements.get(environment),
-        variables,
-        deletedVariables: [],
-        manifest: await distributedManifest({
+  return onEndpoint(
+    "lease.issue",
+    { projectId: built.projectId, environmentId: environment },
+    async (request) => {
+      const body = request.body;
+      leased.keys.push(body.ephemeralPubHex);
+      const variables = entries.get(environment) ?? [];
+      const statement = envStatements.get(environment);
+      if (statement === undefined) {
+        throw new Error(`leaseHandler: no statement for ${environment}`);
+      }
+      return {
+        status: 200,
+        json: {
           projectId: built.projectId,
           environmentId: environment,
-          epoch: 1,
-          issuer: owner,
-          head: headOf(built, built.entries.length),
-          envStatement: envStatements.get(environment) as WireDistributedEnvironmentStatement,
-          statements: variables.map((entry) => entry.statement),
-        }),
-        leases: [await leaseWrapFor(environment, body)],
-        schemaPolicy: "enabled" as const,
-      },
-    };
-  };
+          currentEpoch: 1,
+          chain: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: lastHashOf(built.hashes),
+          statement,
+          variables,
+          deletedVariables: [],
+          manifest: await distributedManifest({
+            projectId: built.projectId,
+            environmentId: environment,
+            epoch: 1,
+            issuer: owner,
+            head: headOf(built, built.entries.length),
+            envStatement: statement,
+            statements: variables.map((entry) => entry.statement),
+          }),
+          leases: [await leaseWrapFor(environment, body)],
+        },
+      };
+    },
+  );
 }
 
 interface CiFixture {
@@ -579,11 +581,11 @@ describe("maruhi ci sync", () => {
     const fixture = await startCi({
       environments: [SOURCE_ENV],
       vendorHandlers: [
-        (request) =>
-          request.method === "POST" &&
-          request.path === `/projects/${built.projectId}/environments/${TOKENS_ENV}/lease`
-            ? { status: 404, json: { _tag: "ProjectNotFound", projectId: built.projectId } }
-            : null,
+        onEndpoint(
+          "lease.issue",
+          { projectId: built.projectId, environmentId: TOKENS_ENV },
+          () => ({ status: 404, json: { _tag: "ProjectNotFound", projectId: built.projectId } }),
+        ),
       ],
       targets: {
         worker: {

@@ -5,7 +5,7 @@ import { runCli } from "../src/cli.ts";
 import { acceptAppendedEntry, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import { built, ENV_ID, owner, start, wrap } from "./support/mirror.ts";
-import { type MockRequest, onEndpoint } from "./support/server.ts";
+import { onEndpoint } from "./support/server.ts";
 
 describe("maruhi server grant --key-from (PF2)", () => {
   it("reads the server key from the named deployment and appends the grant on the server", async () => {
@@ -35,12 +35,8 @@ describe("maruhi server grant --key-from (PF2)", () => {
         appended.push(entry.payload);
         return acceptAppendedEntry(built.projectId, entries, hashes, entry);
       }),
-      (request: MockRequest) =>
-        /\/environments\/[^/]+\/deks$/.test(request.path)
-          ? request.method === "GET"
-            ? { status: 200, json: { deks: [wrap] } }
-            : { status: 204, json: undefined }
-          : null,
+      onEndpoint("deks.listMine", () => ({ status: 200, json: { deks: [wrap] } })),
+      onEndpoint("deks.register", () => ({ status: 204 })),
     ]);
     const keyServer = await start([
       onEndpoint("auth.authConfig", () => ({

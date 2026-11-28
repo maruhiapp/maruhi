@@ -694,18 +694,10 @@ function makeRotateAcceptingServer(input: {
         schemaPolicy: "enabled" as const,
       },
     })),
-    (request) => {
-      const prefix = `/projects/${projectId}/environments/${ENV_ID}/variables/`;
-      if (
-        request.method !== "POST" ||
-        !request.path.startsWith(prefix) ||
-        !request.path.endsWith("/versions")
-      ) {
-        return null;
-      }
-      const variableId = request.path.slice(prefix.length, -"/versions".length);
+    onEndpoint("variables.push", { projectId, environmentId: ENV_ID }, (request) => {
+      const variableId = request.params.variableId;
       pushes.push(variableId);
-      const body = request.body as { readonly value: WireDistributedValue };
+      const body = request.body;
       const stored: WireDistributedValue = {
         ...body.value,
         writerUserId: owner.userId,
@@ -719,14 +711,8 @@ function makeRotateAcceptingServer(input: {
         status: 200,
         json: { variableId, version: body.value.aad.version, epoch: body.value.aad.epoch },
       };
-    },
-    async (request) => {
-      if (
-        request.method !== "POST" ||
-        request.path !== `/projects/${projectId}/environments/${ENV_ID}/rotate`
-      ) {
-        return null;
-      }
+    }),
+    onEndpoint("environments.rotate", { projectId, environmentId: ENV_ID }, async (request) => {
       const body = request.body as WireRotateBody;
       rotateBodies.push(body);
       entries.push(body.entry, body.checkpoint);
@@ -771,7 +757,7 @@ function makeRotateAcceptingServer(input: {
           headHashHex: lastHashOf(hashes),
         },
       };
-    },
+    }),
   ];
   return { handlers, rotateBodies, pushes };
 }

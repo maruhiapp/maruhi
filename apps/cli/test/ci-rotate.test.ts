@@ -33,6 +33,7 @@ import {
   type WireDistributedValue,
   type WireDistributedVariableStatement,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { Clock, Duration, Effect, Layer, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -46,10 +47,12 @@ import {
 import { lastHashOf } from "./support/chain-handler.ts";
 import { makeTestEnv, type TestEnv } from "./support/env.ts";
 import {
+  type EndpointAnswer,
   type MockHandler,
   type MockRequest,
   type MockResponse,
   MockServer,
+  onEndpoint,
 } from "./support/server.ts";
 
 const ENV_ID = "prod";
@@ -240,7 +243,10 @@ function oidcHandler(
   };
 }
 
-async function leaseWrapFor(body: { oidcToken: string; ephemeralPubHex: string }) {
+async function leaseWrapFor(body: {
+  oidcToken: string;
+  ephemeralPubHex: string;
+}): Promise<LeaseWrap> {
   const payload = jwtPayload(body.oidcToken);
   const digest = await computeLeaseClaimsDigest({
     issuerUrl: String(payload["iss"]),
@@ -272,46 +278,45 @@ async function leaseWrapFor(body: { oidcToken: string; ephemeralPubHex: string }
   };
 }
 
+type LeaseWrap = ApiSuccess<"lease.issue">["leases"][number];
+
 interface Leased {
   readonly bodies: { oidcToken: string; ephemeralPubHex: string }[];
 }
 
 function leaseHandler(leased: Leased): MockHandler {
-  return async (request) => {
-    if (
-      request.method !== "POST" ||
-      request.path !== `/projects/${built.projectId}/environments/${ENV_ID}/lease`
-    ) {
-      return null;
-    }
-    const body = request.body as { oidcToken: string; ephemeralPubHex: string };
-    leased.bodies.push(body);
-    return {
-      status: 200,
-      json: {
-        projectId: built.projectId,
-        environmentId: ENV_ID,
-        currentEpoch: 1,
-        chain: built.entries,
-        headSeq: built.entries.length,
-        headHashHex: lastHashOf(built.hashes),
-        statement: envStatement,
-        variables: entries,
-        deletedVariables: [],
-        manifest: await distributedManifest({
+  return onEndpoint(
+    "lease.issue",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    async (request) => {
+      const body = request.body;
+      leased.bodies.push(body);
+      return {
+        status: 200,
+        json: {
           projectId: built.projectId,
           environmentId: ENV_ID,
-          epoch: 1,
-          issuer: owner,
-          head: headOf(built, built.entries.length),
-          envStatement,
-          statements: entries.map((entry) => entry.statement),
-        }),
-        leases: [await leaseWrapFor(body)],
-        schemaPolicy: "enabled" as const,
-      },
-    };
-  };
+          currentEpoch: 1,
+          chain: built.entries,
+          headSeq: built.entries.length,
+          headHashHex: lastHashOf(built.hashes),
+          statement: envStatement,
+          variables: entries,
+          deletedVariables: [],
+          manifest: await distributedManifest({
+            projectId: built.projectId,
+            environmentId: ENV_ID,
+            epoch: 1,
+            issuer: owner,
+            head: headOf(built, built.entries.length),
+            envStatement,
+            statements: entries.map((entry) => entry.statement),
+          }),
+          leases: [await leaseWrapFor(body)],
+        },
+      };
+    },
+  );
 }
 
 interface MintBody {
@@ -338,37 +343,35 @@ interface MintBody {
 interface Minted {
   readonly requests: MockRequest[];
   readonly bodies: MintBody[];
-  reject?: { status: number; json: unknown } | undefined;
-  rejectOnce?: { status: number; json: unknown } | undefined;
+  reject?: EndpointAnswer<"lease.propose"> | undefined;
+  rejectOnce?: EndpointAnswer<"lease.propose"> | undefined;
 }
 
 function mintHandler(minted: Minted): MockHandler {
-  return (request) => {
-    if (
-      request.method !== "POST" ||
-      request.path !== `/projects/${built.projectId}/environments/${ENV_ID}/rotation-proposals`
-    ) {
-      return null;
-    }
-    minted.requests.push(request);
-    const body = request.body as MintBody;
-    minted.bodies.push(body);
-    if (minted.reject !== undefined) {
-      return minted.reject;
-    }
-    if (minted.rejectOnce !== undefined) {
-      const once = minted.rejectOnce;
-      minted.rejectOnce = undefined;
-      return once;
-    }
-    return {
-      status: 200,
-      json: {
-        proposalId: body.proposal.proposalId,
-        expiresAtMs: Date.now() + body.proposal.expiresInDays * 24 * 60 * 60 * 1000,
-      },
-    };
-  };
+  return onEndpoint(
+    "lease.propose",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    (request) => {
+      minted.requests.push(request);
+      const body = request.body as MintBody;
+      minted.bodies.push(body);
+      if (minted.reject !== undefined) {
+        return minted.reject;
+      }
+      if (minted.rejectOnce !== undefined) {
+        const once = minted.rejectOnce;
+        minted.rejectOnce = undefined;
+        return once;
+      }
+      return {
+        status: 200,
+        json: {
+          proposalId: body.proposal.proposalId,
+          expiresAtMs: Date.now() + body.proposal.expiresInDays * 24 * 60 * 60 * 1000,
+        },
+      };
+    },
+  );
 }
 
 const EXEC_RULE = {
@@ -392,21 +395,18 @@ interface PreflightBody {
 
 interface Preflighted {
   readonly bodies: PreflightBody[];
-  reject?: { status: number; json: unknown } | undefined;
+  reject?: EndpointAnswer<"lease.preflight"> | undefined;
 }
 
 function preflightHandler(preflighted: Preflighted): MockHandler {
-  return (request) => {
-    if (
-      request.method !== "POST" ||
-      request.path !==
-        `/projects/${built.projectId}/environments/${ENV_ID}/rotation-proposals/preflight`
-    ) {
-      return null;
-    }
-    preflighted.bodies.push(request.body as PreflightBody);
-    return preflighted.reject ?? { status: 200, json: { ok: true } };
-  };
+  return onEndpoint(
+    "lease.preflight",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    (request) => {
+      preflighted.bodies.push(request.body as PreflightBody);
+      return preflighted.reject ?? { status: 200, json: { ok: true } };
+    },
+  );
 }
 
 interface CiFixture {

@@ -244,8 +244,9 @@ describe("maruhi key generate recovery issuance", () => {
 
   it("does not generate fail-closed when the ledger state cannot be read (--new-identity excepted)", async () => {
     let statusAnswers = false;
-    const status: MockHandler = (request) =>
-      statusAnswers ? null : request.path === "/auth/recovery/status" ? { status: 404 } : null;
+    const status = onEndpoint("auth.recoveryStatus", () =>
+      statusAnswers ? null : offSpec({ status: 404 }),
+    );
     const maruhi = await start([status, statusHandler(true), putHandler(() => {})]);
     const env = await loggedInEnv(maruhi.origin, "user-0001");
     expect(await runCli(["key", "generate"], env.layer)).toBe(1);
@@ -714,12 +715,10 @@ describe("maruhi key recover (restore)", () => {
     const secret = crypto.getRandomValues(new Uint8Array(32));
     const { handler } = await wrappedBlobHandler(user, secret);
     let fetches = 0;
-    const counting: MockHandler = (request) => {
-      if (request.method === "GET" && request.path === "/auth/recovery") {
-        fetches += 1;
-      }
+    const counting = onEndpoint("auth.recoveryGet", () => {
+      fetches += 1;
       return null;
-    };
+    });
     const maruhi = await start([counting, handler]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     const wrong = Redacted.value(formatRecoveryCode(Redacted.make(new Uint8Array(32).fill(1))));

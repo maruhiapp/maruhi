@@ -33,7 +33,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { type CliServices, runCli } from "../src/cli.ts";
 import { IssuerEndpoints } from "../src/connector.package/connector-shared.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 import { withTestClock } from "./support/test-clock.ts";
 import { makeValueEnvironmentServer, type ValueEnvironmentState } from "./support/value-env.ts";
 
@@ -696,10 +696,9 @@ describe("maruhi var rotate (aws-iam-access-key)", () => {
       ],
       config: AWS_CONFIG,
       before: [
-        (request) =>
-          request.method === "POST" && request.path.endsWith("/variables/v-secret/versions")
-            ? { status: 503, json: { _tag: "Unavailable" } }
-            : null,
+        onEndpoint("variables.push", { variableId: "v-secret" }, () =>
+          offSpec({ status: 503, json: { _tag: "Unavailable" } }),
+        ),
       ],
     });
     const iam = fakeIam();

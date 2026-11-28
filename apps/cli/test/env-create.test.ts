@@ -33,8 +33,8 @@ import { makeFileFloorStore } from "../src/floor-log.ts";
 import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
+  type EndpointAnswer,
   type MockHandler,
-  type MockResponse,
   MockServer,
   offSpec,
   onEndpoint,
@@ -78,8 +78,14 @@ function acceptingCreateServer(input: {
   readonly projectId: string;
   readonly base: Awaited<ReturnType<typeof buildChain>>;
   readonly concurrent?: Awaited<ReturnType<typeof buildChain>>;
-  readonly onCreate?: (call: number, body: CompositeCreateBody) => MockResponse | undefined;
-  readonly acceptedResponse?: (call: number, body: CompositeCreateBody) => MockResponse;
+  readonly onCreate?: (
+    call: number,
+    body: CompositeCreateBody,
+  ) => EndpointAnswer<"environments.create"> | undefined;
+  readonly acceptedResponse?: (
+    call: number,
+    body: CompositeCreateBody,
+  ) => EndpointAnswer<"environments.create">;
 }): { readonly handlers: readonly MockHandler[]; readonly bodies: CompositeCreateBody[] } {
   const entries: ChainEntry[] = [...input.base.entries];
   const hashes: string[] = [...input.base.hashes];
@@ -90,13 +96,7 @@ function acceptingCreateServer(input: {
       status: 200,
       json: servedChain(input.projectId, entries, hashes),
     })),
-    async (request) => {
-      if (
-        request.method !== "POST" ||
-        request.path !== `/projects/${input.projectId}/environments`
-      ) {
-        return null;
-      }
+    onEndpoint("environments.create", { projectId: input.projectId }, async (request) => {
       const body = request.body as CompositeCreateBody;
       bodies.push(body);
       const injected = input.onCreate?.(createCalls, body);
@@ -130,7 +130,7 @@ function acceptingCreateServer(input: {
           },
         }
       );
-    },
+    }),
   ];
   return { handlers, bodies };
 }
@@ -614,13 +614,7 @@ describe("maruhi env create", () => {
           json: servedChain(built.projectId, entries, hashes),
         };
       }),
-      async (request) => {
-        if (
-          request.method !== "POST" ||
-          request.path !== `/projects/${built.projectId}/environments`
-        ) {
-          return null;
-        }
+      onEndpoint("environments.create", { projectId: built.projectId }, async (request) => {
         const body = request.body as CompositeCreateBody;
         entries.push(body.entry);
         hashes.push(await computeChainEntryHash(body.entry));
@@ -633,7 +627,7 @@ describe("maruhi env create", () => {
             headHashHex: lastHashOf(hashes),
           },
         };
-      },
+      }),
     ]);
     servers.push(server);
     const env = await makeTestEnv();

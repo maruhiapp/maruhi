@@ -39,7 +39,7 @@ import {
   variableAt,
 } from "./support/env-rotate.ts";
 import type { TestEnv } from "./support/env.ts";
-import { type MockHandler, offSpec } from "./support/server.ts";
+import { type MockHandler, offSpec, onEndpoint } from "./support/server.ts";
 import {
   makeValueEnvironmentServer,
   type StoredVariable,
@@ -515,7 +515,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
   });
 
   it("every target synced from the same environment is processed; one write failure stops neither the rest nor the exit code", async () => {
-    const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -533,10 +532,15 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         },
       }),
       before: [
-        (request) =>
-          request.method === "POST" && request.path === `${base}/variables/receipt-web/versions`
-            ? { status: 503, bodyText: "unavailable" }
-            : null,
+        onEndpoint(
+          "variables.push",
+          {
+            projectId: chainWithReceipts.projectId,
+            environmentId: RECEIPTS_ENV,
+            variableId: "receipt-web",
+          },
+          () => offSpec({ status: 503, bodyText: "unavailable" }),
+        ),
       ],
     });
 
@@ -585,7 +589,6 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
   });
 
   it("a communication failure reading the receipt environment stays a warning — the exit code is unchanged (the scope of SY2 stage 2 2b ruling D)", async () => {
-    const base = `/projects/${chainWithReceipts.projectId}/environments/${RECEIPTS_ENV}`;
     const fixture = await startFixture({
       server: {
         variables: await sourceVariables(chainWithReceipts),
@@ -596,10 +599,11 @@ describe("maruhi env rotate --config (advancing the sync receipt — M1)", () =>
         await storedReceipt({ target: "web", variables: { DATABASE_URL: 1, API_KEY: 1 } }),
       ],
       before: [
-        (request) =>
-          request.method === "GET" && request.path === `${base}/pull`
-            ? { status: 503, bodyText: "unavailable" }
-            : null,
+        onEndpoint(
+          "variables.pull",
+          { projectId: chainWithReceipts.projectId, environmentId: RECEIPTS_ENV },
+          () => offSpec({ status: 503, bodyText: "unavailable" }),
+        ),
       ],
     });
 

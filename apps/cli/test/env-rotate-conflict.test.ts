@@ -606,13 +606,10 @@ describe("maruhi env rotate", () => {
           },
         }),
       ),
-      (request) => {
-        if (request.method !== "POST" || !request.path.endsWith("/versions")) {
-          return null;
-        }
+      onEndpoint("variables.push", (request) => {
         pushPaths.push(request.path);
         return { status: 409, json: { _tag: "EpochConflict", currentEpoch: 3 } };
-      },
+      }),
     ];
     const env = await startEnv(handlers, owner);
 
