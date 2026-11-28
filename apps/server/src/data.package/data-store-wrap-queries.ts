@@ -1,10 +1,16 @@
 import type { EnvironmentId, KeyFingerprintHex, UserId } from "@maruhi/core";
-import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { LEASE_WINDOW_MS } from "../policy.ts";
 import type { WireSuite } from "./data-plane.ts";
-import { columnValue, numberColumn, storedSuite, stringColumn } from "./data-store-rows.ts";
+import {
+  columnValue,
+  keyFingerprintColumn,
+  numberColumn,
+  storedSuite,
+  stringColumn,
+  userIdColumn,
+} from "./data-store-rows.ts";
 import type { LeaseWindowKind } from "./data-store.ts";
 
 export const makeWrapQueries = (sql: SqlStorage) => ({
@@ -80,10 +86,8 @@ export const makeWrapQueries = (sql: SqlStorage) => ({
         ...wrapBodyOf(row),
         recipientEncPubHex: stringColumn(row, "recipient_enc_pub_hex"),
         signatureHex: stringColumn(row, "signature_hex"),
-        signerUserId: decodeUserId(stringColumn(row, "signer_user_id")),
-        signerKeyFingerprintHex: decodeKeyFingerprintHex(
-          stringColumn(row, "signer_key_fingerprint"),
-        ),
+        signerUserId: userIdColumn(row, "signer_user_id"),
+        signerKeyFingerprintHex: keyFingerprintColumn(row, "signer_key_fingerprint"),
       })),
     ),
   listServerWraps: (environmentId: EnvironmentId, serverKeyFingerprintHex: KeyFingerprintHex) =>

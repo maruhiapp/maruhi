@@ -1,9 +1,15 @@
 import type { KeyFingerprintHex, UserId } from "@maruhi/core";
-import { decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { ATTESTATION_WINDOW_MS } from "../policy.ts";
-import { columnValue, numberColumn, storedSuite, stringColumn } from "./data-store-rows.ts";
+import {
+  columnValue,
+  keyFingerprintColumn,
+  numberColumn,
+  storedSuite,
+  stringColumn,
+  userIdColumn,
+} from "./data-store-rows.ts";
 import type { StoredHeadAttestation } from "./data-store.ts";
 
 export const makeAttestationQueries = (sql: SqlStorage) => ({
@@ -27,14 +33,12 @@ export const makeAttestationQueries = (sql: SqlStorage) => ({
       )
       .toArray()
       .map((row): StoredHeadAttestation => ({
-        attesterUserId: decodeUserId(stringColumn(row, "attester_user_id")),
+        attesterUserId: userIdColumn(row, "attester_user_id"),
         suite: storedSuite(columnValue(row, "suite")),
         chainHeadSeq: numberColumn(row, "chain_head_seq"),
         chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
         signatureHex: stringColumn(row, "signature_hex"),
-        attesterKeyFingerprintHex: decodeKeyFingerprintHex(
-          stringColumn(row, "attester_key_fingerprint"),
-        ),
+        attesterKeyFingerprintHex: keyFingerprintColumn(row, "attester_key_fingerprint"),
       })),
   ),
   checkAttestationWindow: (attesterUserId: UserId, limit: number, nowMs: number) =>

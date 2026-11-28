@@ -1,7 +1,10 @@
-import { decodeEnvironmentId } from "@maruhi/core";
-
 import type { MetaStatementInput } from "./data-plane.ts";
-import { numberColumn, stringColumn, type StoredRow } from "./data-store-rows.ts";
+import {
+  environmentIdColumn,
+  numberColumn,
+  type StoredRow,
+  stringColumn,
+} from "./data-store-rows.ts";
 import type { DataWriteOps, MetaAuthorInfo, RemovedProposal } from "./data-store.ts";
 
 function layoutColumnValues(statement: MetaStatementInput): readonly (string | number | null)[] {
@@ -336,7 +339,7 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
       )
       .toArray()
       .map((row) => ({
-        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+        environmentId: environmentIdColumn(row, "environment_id"),
         epoch: numberColumn(row, "epoch"),
       }));
     if (stale.length > 0) {
@@ -449,7 +452,7 @@ export const makeWriteOps = (sql: SqlStorage): DataWriteOps => ({
 function removedProposalsOf(rows: readonly StoredRow[]): RemovedProposal[] {
   return rows.map((row): RemovedProposal => ({
     proposalId: stringColumn(row, "proposal_id"),
-    environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+    environmentId: environmentIdColumn(row, "environment_id"),
     expiresAtMs: Number(row["expires_at"]),
   }));
 }

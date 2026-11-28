@@ -1,6 +1,5 @@
 import { ChainEntrySchema } from "@maruhi/api-schema";
 import type { ProjectId, UserId } from "@maruhi/core";
-import { decodeProjectId } from "@maruhi/core";
 import type { ChainEntry, ChainState } from "@maruhi/crypto";
 import {
   canonicalChainEntryBytes,
@@ -10,6 +9,7 @@ import {
 import { Result, Schema } from "effect";
 
 import type { ImportedIdentity } from "./db.package/index.ts";
+import { projectIdOfGenesisHash } from "./ids.ts";
 
 interface ScannedChainRow {
   readonly seq: unknown;
@@ -158,7 +158,7 @@ export async function verifySnapshotChain(body: ReadableStream): Promise<Snapsho
   }
   const genesis = rows[0]?.entryHashHex;
   return typeof genesis === "string"
-    ? { kind: "ok", projectId: decodeProjectId(genesis), state: verified.value.state }
+    ? { kind: "ok", projectId: projectIdOfGenesisHash(genesis), state: verified.value.state }
     : { kind: "snapshot-chain-invalid" };
 }
 

@@ -1,17 +1,19 @@
 import type { EnvironmentId, VariableId } from "@maruhi/core";
-import { decodeKeyFingerprintHex, decodeUserId, decodeVariableId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import type { PulledVariableValue } from "./data-plane.ts";
 import {
   columnValue,
+  keyFingerprintColumn,
   numberColumn,
   statementColumns,
+  type StoredRow,
   storedSuite,
   storedVariableStatus,
   stringColumn,
+  userIdColumn,
+  variableIdColumn,
   variableStatementV3Fields,
-  type StoredRow,
 } from "./data-store-rows.ts";
 import type { StoredVersionMeta } from "./data-store.ts";
 
@@ -27,8 +29,8 @@ function pulledValueColumns(row: StoredRow, variableId: VariableId): PulledVaria
     chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
     chainHeadSeq: numberColumn(row, "chain_head_seq"),
     signatureHex: stringColumn(row, "signature_hex"),
-    writerUserId: decodeUserId(stringColumn(row, "writer_user_id")),
-    writerKeyFingerprintHex: decodeKeyFingerprintHex(stringColumn(row, "writer_key_fingerprint")),
+    writerUserId: userIdColumn(row, "writer_user_id"),
+    writerKeyFingerprintHex: keyFingerprintColumn(row, "writer_key_fingerprint"),
   };
 }
 
@@ -66,10 +68,10 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         )
         .toArray()
         .map((row) => ({
-          ...pulledValueColumns(row, decodeVariableId(stringColumn(row, "variable_id"))),
+          ...pulledValueColumns(row, variableIdColumn(row, "variable_id")),
           statement: {
             environmentId,
-            variableId: decodeVariableId(stringColumn(row, "variable_id")),
+            variableId: variableIdColumn(row, "variable_id"),
             ...statementColumns(row, "ms_", storedVariableStatus),
             ...variableStatementV3Fields(row, "ms_"),
           },
@@ -90,10 +92,8 @@ export const makeVersionQueries = (sql: SqlStorage) => ({
         .map((row): StoredVersionMeta => ({
           version: numberColumn(row, "version"),
           epoch: numberColumn(row, "epoch"),
-          writerUserId: decodeUserId(stringColumn(row, "writer_user_id")),
-          writerKeyFingerprintHex: decodeKeyFingerprintHex(
-            stringColumn(row, "writer_key_fingerprint"),
-          ),
+          writerUserId: userIdColumn(row, "writer_user_id"),
+          writerKeyFingerprintHex: keyFingerprintColumn(row, "writer_key_fingerprint"),
           pushedAtMs: numberColumn(row, "created_at"),
         })),
     ),

@@ -1,17 +1,19 @@
 import type { EnvironmentId } from "@maruhi/core";
-import { decodeEnvironmentId, decodeKeyFingerprintHex, decodeUserId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import {
   columnValue,
   countsOf,
   environmentAnchorOf,
+  environmentIdColumn,
+  keyFingerprintColumn,
   MS_COLUMNS,
   nullableNumberColumn,
   numberColumn,
   statementOf,
   storedSuite,
   stringColumn,
+  userIdColumn,
 } from "./data-store-rows.ts";
 
 export const makeEnvironmentQueries = (sql: SqlStorage) => ({
@@ -27,7 +29,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+        environmentId: environmentIdColumn(row, "environment_id"),
         name: stringColumn(row, "name"),
         latestMetaVersion: numberColumn(row, "latest_meta_version"),
         deletedAtMs: nullableNumberColumn(row, "deleted_at"),
@@ -67,7 +69,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
       )
       .toArray()
       .map((row) => ({
-        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+        environmentId: environmentIdColumn(row, "environment_id"),
         statement: statementOf(row),
       })),
   ),
@@ -115,7 +117,7 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         return null;
       }
       return {
-        environmentId: decodeEnvironmentId(stringColumn(row, "environment_id")),
+        environmentId: environmentIdColumn(row, "environment_id"),
         suite: storedSuite(columnValue(row, "suite")),
         epoch: numberColumn(row, "epoch"),
         manifestVersion: numberColumn(row, "manifest_version"),
@@ -126,10 +128,8 @@ export const makeEnvironmentQueries = (sql: SqlStorage) => ({
         chainHeadHashHex: stringColumn(row, "chain_head_hash_hex"),
         chainHeadSeq: numberColumn(row, "chain_head_seq"),
         signatureHex: stringColumn(row, "signature_hex"),
-        issuerUserId: decodeUserId(stringColumn(row, "issuer_user_id")),
-        issuerKeyFingerprintHex: decodeKeyFingerprintHex(
-          stringColumn(row, "issuer_key_fingerprint"),
-        ),
+        issuerUserId: userIdColumn(row, "issuer_user_id"),
+        issuerKeyFingerprintHex: keyFingerprintColumn(row, "issuer_key_fingerprint"),
       };
     }),
   environmentManifestAnchor: (environmentId: EnvironmentId) =>
