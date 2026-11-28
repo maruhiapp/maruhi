@@ -17,6 +17,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import {
   chainHandler,
@@ -28,7 +29,7 @@ import {
   servers,
   startEnv,
 } from "./support/pull-run.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 describe("maruhi pull", () => {
   it("syncs + §5.1-verifies + decrypts, then shows only metadata (never the value)", async () => {
@@ -450,9 +451,9 @@ describe("maruhi pull", () => {
     });
     const env = await startEnv([
       chainHandler(),
-      onRequest(
-        "GET",
-        `/projects/${fixture.built.projectId}/environments/${ENV_ID}/pull/metadata`,
+      onEndpoint(
+        "variables.pullMetadata",
+        { projectId: fixture.built.projectId, environmentId: ENV_ID },
         async () => ({
           status: 200,
           json: {
@@ -474,10 +475,14 @@ describe("maruhi pull", () => {
           },
         }),
       ),
-      onRequest("GET", `/projects/${fixture.built.projectId}/environments/${ENV_ID}/deks`, () => ({
-        status: 200,
-        json: { deks: [fixture.wraps[0], poison] },
-      })),
+      onEndpoint(
+        "deks.listMine",
+        { projectId: fixture.built.projectId, environmentId: ENV_ID },
+        () => ({
+          status: 200,
+          json: { deks: [fixture.wraps[0], poison] },
+        }),
+      ),
     ]);
     env.setStdin(new TextEncoder().encode("new-value"));
     expect(await runCli(["push", "GAMMA"], env.layer)).toBe(1);
@@ -515,9 +520,9 @@ describe("maruhi pull", () => {
     );
     const env = await startEnv([
       chainHandler(),
-      onRequest(
-        "GET",
-        `/projects/${fixture.built.projectId}/environments/ghost/pull`,
+      onEndpoint(
+        "variables.pull",
+        { projectId: fixture.built.projectId, environmentId: "ghost" },
         async () => ({
           status: 200,
           json: {
@@ -644,17 +649,11 @@ describe("maruhi pull", () => {
       schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
-      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+      onEndpoint("variables.pull", { projectId: built.projectId, environmentId: ENV_ID }, () => ({
         status: 200,
         json: pullJson,
       })),
@@ -800,17 +799,11 @@ describe("maruhi pull", () => {
       schemaPolicy: "enabled" as const,
     };
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
-      onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, () => ({
+      onEndpoint("variables.pull", { projectId: built.projectId, environmentId: ENV_ID }, () => ({
         status: 200,
         json: pullJson,
       })),
@@ -893,24 +886,22 @@ describe("maruhi pull", () => {
     };
     let chainCalls = 0;
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${fullBuilt.projectId}/chain`, () => {
+      onEndpoint("membership.get", { projectId: fullBuilt.projectId }, () => {
         chainCalls += 1;
         const source = chainCalls === 1 ? shortBuilt : fullBuilt;
         return {
           status: 200,
-          json: {
-            projectId: fullBuilt.projectId,
-            entries: source.entries,
-            headSeq: source.entries.length,
-            headHashHex: source.hashes[source.hashes.length - 1],
-            attestations: [],
-          },
+          json: servedChain(fullBuilt.projectId, source.entries, source.hashes),
         };
       }),
-      onRequest("GET", `/projects/${fullBuilt.projectId}/environments/${ENV_ID}/pull`, () => ({
-        status: 200,
-        json: newcomerPullJson,
-      })),
+      onEndpoint(
+        "variables.pull",
+        { projectId: fullBuilt.projectId, environmentId: ENV_ID },
+        () => ({
+          status: 200,
+          json: newcomerPullJson,
+        }),
+      ),
     ]);
     servers.push(server);
     const env = await makeTestEnv();
@@ -929,18 +920,12 @@ describe("maruhi pull", () => {
     const { built } = fixture;
     const shortChain = built.entries.slice(0, 2);
     let chainCalls = 0;
-    const progressiveChain = onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+    const progressiveChain = onEndpoint("membership.get", { projectId: built.projectId }, () => {
       chainCalls += 1;
       const entries = chainCalls === 1 ? shortChain : built.entries;
       return {
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries,
-          headSeq: entries.length,
-          headHashHex: built.hashes[entries.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, entries, built.hashes.slice(0, entries.length)),
       };
     });
     const env = await startEnv([
@@ -977,18 +962,12 @@ describe("maruhi pull", () => {
       head: headOf(forked, 4),
     });
     let chainCalls = 0;
-    const progressiveChain = onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+    const progressiveChain = onEndpoint("membership.get", { projectId: built.projectId }, () => {
       chainCalls += 1;
       const source = chainCalls === 1 ? built : forked;
       return {
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: source.entries,
-          headSeq: source.entries.length,
-          headHashHex: source.hashes[source.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, source.entries, source.hashes),
       };
     });
     const env = await startEnv([

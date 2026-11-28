@@ -1,4 +1,3 @@
-import type { ChainEntry } from "@maruhi/crypto";
 import {
   addMemberOp,
   buildChain,
@@ -20,12 +19,14 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireDistributedVariableStatement,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { describeDue } from "../src/max-age.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -66,16 +67,7 @@ async function unconvergedChain(): Promise<BuiltChain> {
   ]);
 }
 
-interface WireFlag {
-  readonly environmentId: string;
-  readonly variableId: string;
-  readonly basis: "read" | "readable";
-  readonly targetUserId?: string;
-  readonly targetServerKeyFingerprintHex?: string;
-  readonly recommendedAtMs: number;
-  readonly triggerChainSeq: number;
-  readonly trigger: "remove_member" | "change_role" | "revoke_server";
-}
+type WireFlag = ApiSuccess<"rotation.flags">["flags"][number];
 
 interface RotationServerState {
   readonly handlers: readonly MockHandler[];
@@ -148,28 +140,22 @@ async function makeRotationServer(input: {
   });
 
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries: input.built.entries as readonly ChainEntry[],
-        headSeq: input.built.entries.length,
-        headHashHex: input.built.hashes[input.built.hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, input.built.entries, input.built.hashes),
     })),
-    onRequest("GET", `/projects/${projectId}/environments`, () =>
+    onEndpoint("environments.list", { projectId }, () =>
       input.environmentsAvailable === false
-        ? { status: 500, json: { message: "injected environments failure" } }
+        ? offSpec({ status: 500, json: { message: "injected environments failure" } })
         : {
             status: 200,
             json: {
               environments: [{ environmentId: ENV_ID, currentEpoch, statement: envStatement }],
-              schemaPolicy: "enabled",
+              schemaPolicy: "enabled" as const,
             },
           },
     ),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`, () =>
+    onEndpoint("variables.pullMetadata", { projectId, environmentId: ENV_ID }, () =>
       input.metadataAvailable === false
         ? { status: 404, json: { _tag: "EnvironmentNotFound", environmentId: ENV_ID } }
         : {
@@ -185,9 +171,9 @@ async function makeRotationServer(input: {
             },
           },
     ),
-    onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/variables/vexp/versions`, () =>
+    onEndpoint("variables.history", { projectId, environmentId: ENV_ID, variableId: "vexp" }, () =>
       input.historyAvailable === false
-        ? { status: 500, json: { message: "injected history failure" } }
+        ? offSpec({ status: 500, json: { message: "injected history failure" } })
         : {
             status: 200,
             json: {
@@ -218,21 +204,21 @@ async function makeRotationServer(input: {
             },
           },
     ),
-    onRequest("GET", `/projects/${projectId}/rotation/flags`, () =>
+    onEndpoint("rotation.flags", { projectId }, () =>
       input.flagsAvailable === false
-        ? { status: 500, json: { message: "injected flags failure" } }
+        ? offSpec({ status: 500, json: { message: "injected flags failure" } })
         : { status: 200, json: { flags: input.flags } },
     ),
-    onRequest("GET", `/projects/${projectId}/rotation/proposals`, () =>
+    onEndpoint("rotation.proposals", { projectId }, () =>
       input.pendingProposalExpiries === null
-        ? { status: 500, json: { message: "injected proposal-list failure" } }
+        ? offSpec({ status: 500, json: { message: "injected proposal-list failure" } })
         : {
             status: 200,
             json: {
               proposals: (input.pendingProposalExpiries ?? []).map((expiresAtMs, index) => ({
                 proposalId: `0000000000000000000000000000000${index}`,
                 environmentId: ENV_ID,
-                connector: "exec",
+                connector: "exec" as const,
                 facts: [],
                 claimsDigestHex: "00".repeat(32),
                 grantChainSeq: 1,

@@ -36,8 +36,9 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { OIDC_REQUEST_TOKEN_ENV, OIDC_REQUEST_URL_ENV } from "../src/oidc-github.ts";
+import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "prod";
 const ISSUER = "https://token.actions.githubusercontent.com";
@@ -969,7 +970,7 @@ function validAnchor(): Record<string, unknown> {
     version: 1,
     projectId: fixture.built.projectId,
     headSeq: fixture.built.entries.length,
-    headHashHex: fixture.built.hashes[fixture.built.hashes.length - 1],
+    headHashHex: lastHashOf(fixture.built.hashes),
     environments: { [ENV_ID]: 2 },
   };
 }
@@ -1098,15 +1099,9 @@ describe("maruhi project anchor", () => {
   it("prints anchor JSON to stdout from the verified view (in a form that passes ci run --anchor)", async () => {
     const { built, owner } = fixture;
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries: built.entries,
-          headSeq: built.entries.length,
-          headHashHex: built.hashes[built.hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, built.entries, built.hashes),
       })),
     ]);
     servers.push(server);

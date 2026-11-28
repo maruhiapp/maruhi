@@ -32,7 +32,7 @@ import {
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { buildChildEnvironment } from "../src/run.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const describeSocket = platform() === "win32" ? describe.skip : describe;
 
@@ -732,7 +732,7 @@ async function wrappedBlobHandler(
   if (!wrapped.ok) {
     throw new Error("test wrap failed");
   }
-  const handler = onRequest("GET", "/auth/recovery", () => ({
+  const handler = onEndpoint("auth.recoveryGet", () => ({
     status: 200,
     json: {
       suite: "maruhi/v1",
@@ -751,7 +751,7 @@ describeSocket("key recover lands in memory inside an agent session", () => {
     const { handler, code } = await wrappedBlobHandler(user, secret);
     const maruhi = await MockServer.start([
       handler,
-      onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } })),
+      onEndpoint("membership.list", () => ({ status: 200, json: { projects: [] } })),
     ]);
     cleanups.push(() => maruhi.close());
 
@@ -800,7 +800,7 @@ describeSocket("key recover lands in memory inside an agent session", () => {
     expect(output).not.toContain(user.encSkHex);
     expect(output).not.toContain(code);
 
-    const status = onRequest("GET", "/auth/recovery/status", () => ({
+    const status = onEndpoint("auth.recoveryStatus", () => ({
       status: 200,
       json: { registered: true, updatedAtMs: 1754006400000 },
     }));

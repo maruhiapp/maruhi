@@ -19,7 +19,7 @@ import {
 import { formatRecoveryCode, parseRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import { ledgerHandlerFor, storedMasterRecord, storedReserveRecord } from "./support/ledger.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
@@ -50,7 +50,7 @@ async function loggedInEnv(origin: string, userId: string): Promise<TestEnv> {
 }
 
 function statusHandler(registered: boolean): MockHandler {
-  return onRequest("GET", "/auth/recovery/status", () => ({
+  return onEndpoint("auth.recoveryStatus", () => ({
     status: 200,
     json: { registered, updatedAtMs: registered ? 1754006400000 : null },
   }));
@@ -63,14 +63,14 @@ interface PutBody {
 }
 
 function putHandler(record: (body: PutBody) => void): MockHandler {
-  return onRequest("PUT", "/auth/recovery", (request) => {
+  return onEndpoint("auth.recoveryPut", (request) => {
     record(request.body as PutBody);
     return { status: 204 };
   });
 }
 
 function noProjectsHandler(): MockHandler {
-  return onRequest("GET", "/projects", () => ({ status: 200, json: { projects: [] } }));
+  return onEndpoint("membership.list", () => ({ status: 200, json: { projects: [] } }));
 }
 
 async function recordedReservesOf(
@@ -318,7 +318,7 @@ describe("maruhi key generate recovery issuance", () => {
   it("key generation still succeeds when registration fails, and guides the re-issue command", async () => {
     const maruhi = await start([
       statusHandler(false),
-      onRequest("PUT", "/auth/recovery", () => ({ status: 500, bodyText: "boom" })),
+      onEndpoint("auth.recoveryPut", () => offSpec({ status: 500, bodyText: "boom" })),
     ]);
     const env = await loggedInEnv(maruhi.origin, "user-0001");
     expect(await runCli(["key", "generate"], env.layer)).toBe(1);
@@ -398,7 +398,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
     let put: PutBody | null = null;
     const maruhi = await start([
       statusHandler(true),
-      onRequest("GET", "/auth/recovery", () => {
+      onEndpoint("auth.recoveryGet", () => {
         fetched = true;
         return { status: 404, json: { _tag: "RecoveryWrapNotFound" } };
       }),
@@ -406,7 +406,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
         put = body;
       }),
       noProjectsHandler(),
-      onRequest("GET", "/auth/key-wraps", () => ({
+      onEndpoint("keyWraps.status", () => ({
         status: 200,
         json: {
           recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
@@ -447,7 +447,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
         put = body;
       }),
       noProjectsHandler(),
-      onRequest("GET", "/auth/key-wraps", () => ({
+      onEndpoint("keyWraps.status", () => ({
         status: 200,
         json: {
           recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
@@ -463,7 +463,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
           guardianGroups: [],
         },
       })),
-      onRequest("DELETE", `/auth/key-wraps/passkey/${wrapId}`, () => {
+      onEndpoint("keyWraps.passkeyDelete", { wrapId }, () => {
         deleted.push(wrapId);
         return { status: 204 };
       }),
@@ -495,7 +495,7 @@ describe("maruhi key recovery (issue / re-issue)", () => {
         put = body;
       }),
       noProjectsHandler(),
-      onRequest("GET", "/auth/key-wraps", () => ({ status: 500, json: { _tag: "Internal" } })),
+      onEndpoint("keyWraps.status", () => offSpec({ status: 500, json: { _tag: "Internal" } })),
     ]);
     const env = await loggedInEnv(maruhi.origin, user.userId);
     seedSession(env, maruhi.origin, user);
@@ -628,7 +628,7 @@ describe("maruhi key recover (restore)", () => {
     });
     if (!wrapped.ok) throw new Error("test wrap failed");
     const maruhi = await start([
-      onRequest("GET", "/auth/recovery", () => ({
+      onEndpoint("auth.recoveryGet", () => ({
         status: 200,
         json: {
           suite: "maruhi/v1",
@@ -690,7 +690,7 @@ describe("maruhi key recover (restore)", () => {
       });
       if (!wrapped.ok) throw new Error("test wrap failed");
       const maruhi = await start([
-        onRequest("GET", "/auth/recovery", () => ({
+        onEndpoint("auth.recoveryGet", () => ({
           status: 200,
           json: {
             suite: "maruhi/v1",
@@ -744,7 +744,7 @@ describe("maruhi key recover (restore)", () => {
     const tampered = wrapped.value.ciphertext.slice();
     tampered[0] = (tampered[0] ?? 0) ^ 0x01;
     const maruhi = await start([
-      onRequest("GET", "/auth/recovery", () => ({
+      onEndpoint("auth.recoveryGet", () => ({
         status: 200,
         json: {
           suite: "maruhi/v1",
@@ -772,7 +772,7 @@ describe("maruhi key recover (restore)", () => {
     const user = await generateIdentity("user-0001");
     let fetched = false;
     const maruhi = await start([
-      onRequest("GET", "/auth/recovery", () => {
+      onEndpoint("auth.recoveryGet", () => {
         fetched = true;
         return { status: 404, json: { _tag: "RecoveryWrapNotFound" } };
       }),
@@ -793,7 +793,7 @@ describe("maruhi key recover (restore)", () => {
       const user = await generateIdentity("user-0001");
       let fetched = false;
       const maruhi = await start([
-        onRequest("GET", "/auth/recovery", () => {
+        onEndpoint("auth.recoveryGet", () => {
           fetched = true;
           return { status: 404, json: { _tag: "RecoveryWrapNotFound" } };
         }),
@@ -829,7 +829,7 @@ describe("maruhi key recover (restore)", () => {
   it("guides the registration steps when unregistered (404)", async () => {
     const user = await generateIdentity("user-0001");
     const maruhi = await start([
-      onRequest("GET", "/auth/recovery", () => ({
+      onEndpoint("auth.recoveryGet", () => ({
         status: 404,
         json: { _tag: "RecoveryWrapNotFound" },
       })),
@@ -842,7 +842,7 @@ describe("maruhi key recover (restore)", () => {
   it("a rate limit (429) reports the seconds until retry", async () => {
     const user = await generateIdentity("user-0001");
     const maruhi = await start([
-      onRequest("GET", "/auth/recovery", () => ({
+      onEndpoint("auth.recoveryGet", () => ({
         status: 429,
         json: { _tag: "RecoveryRateLimited", retryAfterSeconds: 1800 },
       })),

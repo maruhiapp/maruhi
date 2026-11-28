@@ -23,10 +23,15 @@ import {
   type WireDistributedEnvironmentStatement,
   type WireRecipientDek,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { acceptAppendedEntry, injectedAppendResponse } from "./support/chain-handler.ts";
+import {
+  acceptAppendedEntry,
+  injectedAppendResponse,
+  servedChain,
+} from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   type AcceptanceFixture,
@@ -38,7 +43,7 @@ import {
   type IssuedInviteFixture,
   sshLineOf,
 } from "./support/invite.ts";
-import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockResponse, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -61,6 +66,7 @@ afterEach(async () => {
 });
 
 type Acceptance = AcceptanceFixture;
+type InvitationRow = ApiSuccess<"invites.list">["invitations"][number];
 
 const issuedByProject = new Map<string, IssuedInviteFixture>();
 
@@ -115,7 +121,7 @@ function onDeksRoute(
 
 async function makeAddServer(input: {
   readonly built: BuiltChain;
-  readonly invitation: Readonly<Record<string, unknown>>;
+  readonly invitation: InvitationRow;
   readonly ownDeks: readonly WireRecipientDek[];
   readonly currentEpoch?: number;
   readonly occupiedSlots?: readonly string[];
@@ -147,15 +153,9 @@ async function makeAddServer(input: {
   ];
 
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, entries, hashes),
     })),
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {
@@ -170,11 +170,11 @@ async function makeAddServer(input: {
       appendedEntries.push(body.entry);
       return acceptAppendedEntry(projectId, entries, hashes, body.entry);
     },
-    onRequest("GET", `/projects/${projectId}/invites`, () => ({
+    onEndpoint("invites.list", { projectId }, () => ({
       status: 200,
       json: { invitations: [input.invitation] },
     })),
-    onRequest("GET", `/projects/${projectId}/environments`, () => ({
+    onEndpoint("environments.list", { projectId }, () => ({
       status: 200,
       json: {
         environments: listedStatements.map((statement) => ({
@@ -243,8 +243,12 @@ async function makeAddServer(input: {
 function invitationRow(
   projectId: string,
   acceptance: Acceptance | null,
-  overrides?: Readonly<Record<string, unknown>>,
-): Record<string, unknown> {
+  overrides?: Partial<InvitationRow>,
+): InvitationRow {
+  const issued = issuedByProject.get(projectId);
+  if (issued === undefined) {
+    throw new Error("invitationRow: issue the invitation first");
+  }
   return {
     id: INVITE_ID,
     projectId,
@@ -253,7 +257,7 @@ function invitationRow(
     scopeEnvironmentIds: [],
     status: acceptance === null ? "pending" : "accepted",
     inviterUserId: inviter.userId,
-    issuance: issuedByProject.get(projectId)?.issuance ?? null,
+    issuance: issued.issuance,
     createdAtMs: 1755200000000,
     expiresAtMs: 1755993600000,
     acceptance,

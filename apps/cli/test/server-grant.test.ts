@@ -19,11 +19,13 @@ import {
   rotateEpochOp,
   testEnvironmentId,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "env-app-1";
 
@@ -71,7 +73,7 @@ async function makeGrantServer(input: {
   readonly deksByEnvironment: Readonly<
     Record<string, readonly Awaited<ReturnType<typeof distributedWrap>>[]>
   >;
-  readonly authConfig?: Record<string, unknown>;
+  readonly authConfig?: ApiSuccess<"auth.authConfig">;
 }): Promise<GrantServerState> {
   const projectId = input.built.projectId;
   const entries: ChainEntry[] = [...input.built.entries];
@@ -81,7 +83,7 @@ async function makeGrantServer(input: {
   const registerResponder: GrantServerState["registerResponder"] = { respond: null };
 
   const handlers: MockHandler[] = [
-    onRequest("GET", "/auth/config", () => ({
+    onEndpoint("auth.authConfig", () => ({
       status: 200,
       json: input.authConfig ?? {
         githubClientId: "dummy-client-id",
@@ -90,15 +92,9 @@ async function makeGrantServer(input: {
         serverEncPubHex: SERVER_ENC_PUB_HEX,
       },
     })),
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, entries, hashes),
     })),
     async (request) => {
       if (request.method !== "POST" || request.path !== `/projects/${projectId}/chain/entries`) {

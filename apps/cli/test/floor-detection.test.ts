@@ -20,6 +20,7 @@ import {
   testProjectId,
   valueSignedBytesHashOf,
   type WireDistributedEnvironmentStatement,
+  type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
   type WireRecipientDek,
@@ -30,8 +31,9 @@ import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
 import type { ProjectFloor } from "../src/floor.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "prod";
 
@@ -173,7 +175,7 @@ interface ManifestPayload {
   readonly prevManifestSigHashHex?: string;
 }
 
-async function manifestOf(payload: ManifestPayload): Promise<unknown> {
+async function manifestOf(payload: ManifestPayload): Promise<WireDistributedManifest> {
   const epoch = payload.currentEpoch ?? 1;
   return distributedManifest({
     projectId,
@@ -191,32 +193,23 @@ async function manifestOf(payload: ManifestPayload): Promise<unknown> {
 }
 
 async function prevOfPhase(payload: ManifestPayload): Promise<string> {
-  return distributedManifestHashOf(
-    projectId,
-    (await manifestOf(payload)) as Parameters<typeof distributedManifestHashOf>[1],
-  );
+  return distributedManifestHashOf(projectId, await manifestOf(payload));
 }
 
 function chainHandlerFor(chains: readonly BuiltChain[]): MockHandler {
   let call = 0;
-  return onRequest("GET", `/projects/${projectId}/chain`, () => {
+  return onEndpoint("membership.get", { projectId }, () => {
     const built = chains[Math.min(call, chains.length - 1)] as BuiltChain;
     call += 1;
     return {
       status: 200,
-      json: {
-        projectId,
-        entries: built.entries,
-        headSeq: built.entries.length,
-        headHashHex: built.hashes[built.hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, built.entries, built.hashes),
     };
   });
 }
 
 function pullHandlerFor(payload: PullPayload): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, async () => ({
+  return onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, async () => ({
     status: 200,
     json: {
       environmentId: ENV_ID,
@@ -235,29 +228,25 @@ function pullHandlerFor(payload: PullPayload): MockHandler {
 }
 
 function deksHandlerFor(deks: readonly WireRecipientDek[]): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/deks`, () => ({
+  return onEndpoint("deks.listMine", { projectId, environmentId: ENV_ID }, () => ({
     status: 200,
     json: { deks },
   }));
 }
 
 function pullMetadataHandlerFor(payload: ManifestPayload): MockHandler {
-  return onRequest(
-    "GET",
-    `/projects/${projectId}/environments/${ENV_ID}/pull/metadata`,
-    async () => ({
-      status: 200,
-      json: {
-        environmentId: ENV_ID,
-        currentEpoch: payload.currentEpoch ?? 1,
-        statement: envStatement,
-        variables: payload.variables,
-        deletedVariables: payload.deletedVariables ?? [],
-        manifest: await manifestOf(payload),
-        schemaPolicy: "enabled" as const,
-      },
-    }),
-  );
+  return onEndpoint("variables.pullMetadata", { projectId, environmentId: ENV_ID }, async () => ({
+    status: 200,
+    json: {
+      environmentId: ENV_ID,
+      currentEpoch: payload.currentEpoch ?? 1,
+      statement: envStatement,
+      variables: payload.variables,
+      deletedVariables: payload.deletedVariables ?? [],
+      manifest: await manifestOf(payload),
+      schemaPolicy: "enabled" as const,
+    },
+  }));
 }
 
 async function startPhase(env: TestEnv, handlers: readonly MockHandler[]): Promise<MockServer> {
@@ -981,11 +970,10 @@ describe("floor advancement after push acceptance (§6.3 — detecting rollback 
       pullMetadataHandlerFor({ variables: [statement] }),
       pullHandlerFor({ variables: [entry], deks: [wrap1] }),
       deksHandlerFor([wrap1]),
-      onRequest(
-        "POST",
-        `/projects/${projectId}/environments/${ENV_ID}/variables/vb/versions`,
-        () => ({ status: 200, json: { variableId: "vb", version: 2, epoch: 1 } }),
-      ),
+      onEndpoint("variables.push", { projectId, environmentId: ENV_ID, variableId: "vb" }, () => ({
+        status: 200,
+        json: { variableId: "vb", version: 2, epoch: 1 },
+      })),
     ]);
     env.setStdin(new TextEncoder().encode("updated"));
     expect(await runCli(["push", "BETA"], env.layer)).toBe(0);

@@ -39,7 +39,7 @@ import {
   startEnvWithoutKey,
 } from "./support/device.ts";
 import { makeTestEnv, seedConfig, type TestEnv } from "./support/env.ts";
-import { onRequest } from "./support/server.ts";
+import { onEndpoint } from "./support/server.ts";
 import { advanceUntilSettled, waitFor, withTestClock } from "./support/test-clock.ts";
 
 describe("maruhi device add", () => {
@@ -100,7 +100,7 @@ describe("maruhi device add", () => {
       built,
       withEnvironment: false,
       extra: [
-        onRequest("POST", "/auth/devices/requests", () => ({
+        onEndpoint("devices.requestCreate", () => ({
           status: 409,
           json: { _tag: "DeviceRegistryConflict", reason: "request-exists" },
         })),
@@ -638,7 +638,7 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
         built,
         withEnvironment: false,
         extra: [
-          onRequest("POST", "/auth/devices/requests", () => ({
+          onEndpoint("devices.requestCreate", () => ({
             status: 429,
             json: {
               _tag: "DeviceRegistryLimit",
@@ -675,7 +675,7 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       built,
       withEnvironment: false,
       extra: [
-        onRequest("POST", "/auth/devices/requests", () => ({
+        onEndpoint("devices.requestCreate", () => ({
           status: 429,
           json: { _tag: "DeviceRegistryLimit", reason: "add-requests", limit: 5 },
         })),
@@ -698,7 +698,7 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       built,
       withEnvironment: false,
       extra: [
-        onRequest("POST", "/auth/devices/requests", () => ({
+        onEndpoint("devices.requestCreate", () => ({
           status: 429,
           json: { _tag: "DeviceRegistryLimit", reason: "device-rows", limit: 32 },
         })),
@@ -722,7 +722,7 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       built,
       withEnvironment: false,
       extra: [
-        onRequest("POST", "/auth/devices/requests", () => {
+        onEndpoint("devices.requestCreate", () => {
           env?.keychain.set(entry, intruder);
           return { status: 200, json: { expiresAtMs: FAR_FUTURE_MS } };
         }),
@@ -749,7 +749,7 @@ describe("maruhi device add — an existing key's standing on the chain (DK K13)
       built,
       withEnvironment: false,
       extra: [
-        onRequest("POST", "/auth/devices/requests", () => {
+        onEndpoint("devices.requestCreate", () => {
           env?.keychain.set(entry, "written-by-another-process");
           return { status: 200, json: { expiresAtMs: FAR_FUTURE_MS } };
         }),

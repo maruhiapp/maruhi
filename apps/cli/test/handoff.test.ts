@@ -21,6 +21,7 @@ import {
   generateIdentity,
   genesisOp,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -34,7 +35,7 @@ import {
 } from "../src/keychain.ts";
 import { appendableProjectHandlers, projectListHandlerOf } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 import { advanceUntilSettled, waitFor, withTestClock } from "./support/test-clock.ts";
 
 let ward: GeneratedIdentity;
@@ -174,8 +175,10 @@ async function guardianApprovalFor(
   };
 }
 
-function statusHandler(groups: readonly unknown[]): MockHandler {
-  return onRequest("GET", "/auth/key-wraps", () => ({
+type GuardianGroups = ApiSuccess<"keyWraps.status">["guardianGroups"];
+
+function statusHandler(groups: GuardianGroups): MockHandler {
+  return onEndpoint("keyWraps.status", () => ({
     status: 200,
     json: {
       recoveryCode: { registered: false, updatedAtMs: null },
@@ -185,7 +188,7 @@ function statusHandler(groups: readonly unknown[]): MockHandler {
   }));
 }
 
-function aliceAnyGroup(): unknown {
+function aliceAnyGroup(): GuardianGroups[number] {
   return {
     groupId: GROUP_ID,
     mode: "any",
@@ -201,7 +204,7 @@ function aliceAnyGroup(): unknown {
 }
 
 function createHandler(record: (body: { requestId: string }) => void): MockHandler {
-  return onRequest("POST", "/auth/handoff", (request) => {
+  return onEndpoint("keyWraps.handoffCreate", (request) => {
     record(request.body as { requestId: string });
     return { status: 200, json: { expiresAtMs: FAR_FUTURE_MS } };
   });
@@ -218,7 +221,7 @@ function groupHandler(wrap: {
   readonly nonceHex: string;
   readonly ciphertextHex: string;
 }): MockHandler {
-  return onRequest("GET", `/auth/key-wraps/guardians/${GROUP_ID}`, () => ({
+  return onEndpoint("keyWraps.guardianGet", { groupId: GROUP_ID }, () => ({
     status: 200,
     json: {
       groupId: GROUP_ID,
@@ -229,7 +232,7 @@ function groupHandler(wrap: {
   }));
 }
 
-const noProjectsHandler: MockHandler = onRequest("GET", "/projects", () => ({
+const noProjectsHandler: MockHandler = onEndpoint("membership.list", () => ({
   status: 200,
   json: { projects: [] },
 }));
@@ -336,7 +339,7 @@ describe("maruhi key recover --handoff (the requester)", () => {
   it("ends the approval wait at the request's expiry with the full message (the round past the deadline never fetches)", async () => {
     let fetches = 0;
     const { env, server } = await start([
-      onRequest("POST", "/auth/handoff", () => ({
+      onEndpoint("keyWraps.handoffCreate", () => ({
         status: 200,
         json: { expiresAtMs: Date.now() + 2_000 },
       })),
@@ -407,7 +410,10 @@ interface ApproveBody {
   readonly ciphertextHex: string;
 }
 
-function lookupOf(wardUser: GeneratedIdentity, wardLogin: string | null): unknown {
+function lookupOf(
+  wardUser: GeneratedIdentity,
+  wardLogin: string | null,
+): ApiSuccess<"keyWraps.handoffLookup"> {
   return {
     wardUserId: wardUser.userId,
     wardLogin,
@@ -416,12 +422,12 @@ function lookupOf(wardUser: GeneratedIdentity, wardLogin: string | null): unknow
   };
 }
 
-function lookupHandler(requestId: string, json: unknown): MockHandler {
-  return onRequest("GET", `/auth/handoff/${requestId}`, () => ({ status: 200, json }));
+function lookupHandler(requestId: string, json: ApiSuccess<"keyWraps.handoffLookup">): MockHandler {
+  return onEndpoint("keyWraps.handoffLookup", { requestId }, () => ({ status: 200, json }));
 }
 
 function approveHandler(requestId: string, record: (body: ApproveBody) => void): MockHandler {
-  return onRequest("POST", `/auth/handoff/${requestId}/approvals`, (request) => {
+  return onEndpoint("keyWraps.handoffApprove", { requestId }, (request) => {
     record(request.body as ApproveBody);
     return { status: 204 };
   });
@@ -456,7 +462,7 @@ function myShareHandler(
     readonly ciphertextHex: string;
   }[],
 ): MockHandler {
-  return onRequest("GET", `/auth/guardian/shares/${GROUP_ID}`, () => ({
+  return onEndpoint("keyWraps.myShare", { groupId: GROUP_ID }, () => ({
     status: 200,
     json: {
       groupId: GROUP_ID,

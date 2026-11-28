@@ -12,7 +12,7 @@ import {
   unsupportedCryptoMessage,
 } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
-import { MockServer, onRequest } from "./support/server.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
@@ -122,7 +122,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   it("works without a keychain by resolving userId via /auth/me", async () => {
     const user = await generateIdentity("user-env-0001");
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", (request) => {
+      onEndpoint("auth.me", (request) => {
         expect(request.headers["authorization"]).toBe("Bearer maruhi_pat_env");
         return { status: 200, json: { userId: user.userId, orgs: [] } };
       }),
@@ -140,7 +140,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
     const user = await generateIdentity("user-env-0001");
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => ({
+      onEndpoint("auth.me", () => ({
         status: 200,
         json: { userId: user.userId, orgs: [], tokenExpiresAtMs: Date.now() + 5 * DAY_MS },
       })),
@@ -161,7 +161,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
     const user = await generateIdentity("user-env-0001");
     const DAY_MS = 24 * 60 * 60 * 1000;
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => ({
+      onEndpoint("auth.me", () => ({
         status: 200,
         json: { userId: user.userId, orgs: [], tokenExpiresAtMs: Date.now() + 60 * DAY_MS },
       })),
@@ -202,7 +202,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
     const user = await generateIdentity("user-env-0001");
     let presented = "";
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", (request) => {
+      onEndpoint("auth.me", (request) => {
         presented = String(request.headers["authorization"]);
         return { status: 200, json: { userId: user.userId, orgs: [] } };
       }),
@@ -227,7 +227,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
 
   it("fails with a guidance message when /auth/me returns 401", async () => {
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => ({ status: 401, json: { _tag: "Unauthorized" } })),
+      onEndpoint("auth.me", () => ({ status: 401, json: { _tag: "Unauthorized" } })),
     ]);
     servers.push(server);
     const env = await makeTestEnv();
@@ -244,7 +244,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   it("treats a whitespace-only MARUHI_TOKEN as unset (no round trip with an empty token)", async () => {
     let hit = false;
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => {
+      onEndpoint("auth.me", () => {
         hit = true;
         return { status: 200, json: { userId: "u", orgs: [] } };
       }),
@@ -261,7 +261,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
 
   it("does not use MARUHI_TOKEN and guides when MARUHI_TOKEN_ORIGIN is unset", async () => {
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => ({ status: 200, json: { userId: "u", orgs: [] } })),
+      onEndpoint("auth.me", () => ({ status: 200, json: { userId: "u", orgs: [] } })),
     ]);
     servers.push(server);
     const env = await makeTestEnv();
@@ -276,7 +276,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   it("a malformed MARUHI_TOKEN_ORIGIN is an execution failure (1) that shows where to fix", async () => {
     let hit = false;
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => {
+      onEndpoint("auth.me", () => {
         hit = true;
         return { status: 200, json: { userId: "u", orgs: [] } };
       }),
@@ -296,7 +296,7 @@ describe("the MARUHI_TOKEN env-var path", () => {
   it("does not send the token when MARUHI_TOKEN_ORIGIN does not match the connection target", async () => {
     let hit = false;
     const server = await MockServer.start([
-      onRequest("GET", "/auth/me", () => {
+      onEndpoint("auth.me", () => {
         hit = true;
         return { status: 200, json: { userId: "u", orgs: [] } };
       }),

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 let servers: MockServer[] = [];
 
@@ -33,7 +33,7 @@ async function startEnv(handlers: readonly MockHandler[]): Promise<{
 describe("maruhi token list", () => {
   it("orders ascending by createdAtMs, joins scopes, and renders null times as never", async () => {
     const { env } = await startEnv([
-      onRequest("GET", "/auth/tokens", () => ({
+      onEndpoint("auth.listTokens", () => ({
         status: 200,
         json: {
           tokens: [
@@ -73,7 +73,7 @@ describe("maruhi token list", () => {
 
   it("no tokens says No API tokens (exit 0)", async () => {
     const { env } = await startEnv([
-      onRequest("GET", "/auth/tokens", () => ({ status: 200, json: { tokens: [] } })),
+      onEndpoint("auth.listTokens", () => ({ status: 200, json: { tokens: [] } })),
     ]);
 
     expect(await runCli(["token", "list"], env.layer)).toBe(0);
@@ -82,7 +82,7 @@ describe("maruhi token list", () => {
 
   it("a 403 guides that an admin token / browser session is needed, exit 1", async () => {
     const { env } = await startEnv([
-      onRequest("GET", "/auth/tokens", () => ({
+      onEndpoint("auth.listTokens", () => ({
         status: 403,
         json: { _tag: "Forbidden", reason: "insufficient-scope" },
       })),
@@ -99,7 +99,7 @@ describe("maruhi token list", () => {
 
   it("an unexpected server error is exit 1 (no list emitted)", async () => {
     const { env } = await startEnv([
-      onRequest("GET", "/auth/tokens", () => ({ status: 500, json: { _tag: "Internal" } })),
+      onEndpoint("auth.listTokens", () => offSpec({ status: 500, json: { _tag: "Internal" } })),
     ]);
 
     expect(await runCli(["token", "list"], env.layer)).toBe(1);
@@ -111,7 +111,7 @@ describe("maruhi token list", () => {
 describe("maruhi token revoke", () => {
   it("sends DELETE /auth/tokens/:tokenId and reports the revocation", async () => {
     const { server, env } = await startEnv([
-      onRequest("DELETE", "/auth/tokens/tok_target", () => ({ status: 204 })),
+      onEndpoint("auth.revokeTokenById", { tokenId: "tok_target" }, () => ({ status: 204 })),
     ]);
 
     expect(await runCli(["token", "revoke", "tok_target"], env.layer)).toBe(0);
@@ -123,7 +123,7 @@ describe("maruhi token revoke", () => {
 
   it("a 404 (uniform — hides existence) guides toward token list, exit 1", async () => {
     const { env } = await startEnv([
-      onRequest("DELETE", "/auth/tokens/tok_missing", () => ({
+      onEndpoint("auth.revokeTokenById", { tokenId: "tok_missing" }, () => ({
         status: 404,
         json: { _tag: "TokenNotFound" },
       })),
@@ -140,7 +140,7 @@ describe("maruhi token revoke", () => {
 
   it("a 403 guides that an admin token / browser session is needed, exit 1", async () => {
     const { env } = await startEnv([
-      onRequest("DELETE", "/auth/tokens/tok_target", () => ({
+      onEndpoint("auth.revokeTokenById", { tokenId: "tok_target" }, () => ({
         status: 403,
         json: { _tag: "Forbidden", reason: "insufficient-scope" },
       })),
@@ -157,10 +157,9 @@ describe("maruhi token revoke", () => {
 
   it("an unexpected server error is exit 1 (no revocation reported)", async () => {
     const { env } = await startEnv([
-      onRequest("DELETE", "/auth/tokens/tok_target", () => ({
-        status: 500,
-        json: { _tag: "Internal" },
-      })),
+      onEndpoint("auth.revokeTokenById", { tokenId: "tok_target" }, () =>
+        offSpec({ status: 500, json: { _tag: "Internal" } }),
+      ),
     ]);
 
     expect(await runCli(["token", "revoke", "tok_target"], env.layer)).toBe(1);

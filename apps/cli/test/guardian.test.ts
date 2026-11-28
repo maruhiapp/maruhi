@@ -14,6 +14,7 @@ import {
   generateIdentity,
   genesisOp,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -26,7 +27,7 @@ import {
 import { formatRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { chainHandlerOf } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 let ward: GeneratedIdentity;
 let reserve: GeneratedIdentity;
@@ -73,7 +74,7 @@ interface CreateBody {
 }
 
 function createHandler(record: (body: CreateBody) => void): MockHandler {
-  return onRequest("POST", "/auth/key-wraps/guardians", (request) => {
+  return onEndpoint("keyWraps.guardianCreate", (request) => {
     const body = request.body as CreateBody;
     record(body);
     return { status: 200, json: { groupId: body.groupId } };
@@ -103,7 +104,7 @@ async function recoveryHandler(): Promise<{ handler: MockHandler; code: string }
     masterSecretBlob: new TextEncoder().encode(serializedReserve()),
   });
   if (!wrapped.ok) throw new Error("test wrap failed");
-  const handler = onRequest("GET", "/auth/recovery", () => ({
+  const handler = onEndpoint("auth.recoveryGet", () => ({
     status: 200,
     json: {
       suite: "maruhi/v1",
@@ -313,8 +314,10 @@ describe("maruhi guardian add", () => {
   });
 });
 
-function statusHandler(groups: readonly unknown[]): MockHandler {
-  return onRequest("GET", "/auth/key-wraps", () => ({
+type GuardianGroups = ApiSuccess<"keyWraps.status">["guardianGroups"];
+
+function statusHandler(groups: GuardianGroups): MockHandler {
+  return onEndpoint("keyWraps.status", () => ({
     status: 200,
     json: {
       recoveryCode: { registered: true, updatedAtMs: 1754006400000 },
@@ -374,7 +377,7 @@ describe("maruhi guardian list / remove / wards", () => {
     let deletes = 0;
     const { env } = await startEnv(
       [
-        onRequest("DELETE", `/auth/key-wraps/guardians/${GROUP_ID}`, () => {
+        onEndpoint("keyWraps.guardianDelete", { groupId: GROUP_ID }, () => {
           deletes += 1;
           return deletes === 1
             ? { status: 204 }
@@ -392,7 +395,7 @@ describe("maruhi guardian list / remove / wards", () => {
   it("wards lists the wards you are a guardian of", async () => {
     const { env } = await startEnv(
       [
-        onRequest("GET", "/auth/guardian/wards", () => ({
+        onEndpoint("keyWraps.wards", () => ({
           status: 200,
           json: {
             wards: [

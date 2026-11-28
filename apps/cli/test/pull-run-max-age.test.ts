@@ -10,16 +10,16 @@ import {
   servers,
   startEnv,
 } from "./support/pull-run.ts";
-import { type MockHandler, onRequest } from "./support/server.ts";
+import { type MockHandler, offSpec, onEndpoint } from "./support/server.ts";
 
 function historyHandler(variableId: string, pushedAtMs: number, status = 200): MockHandler {
   const { built, owner } = fixture;
-  return onRequest(
-    "GET",
-    `/projects/${built.projectId}/environments/${ENV_ID}/variables/${variableId}/versions`,
+  return onEndpoint(
+    "variables.history",
+    { projectId: built.projectId, environmentId: ENV_ID, variableId },
     () =>
       status !== 200
-        ? { status, json: { message: "injected history failure" } }
+        ? offSpec({ status, json: { message: "injected history failure" } })
         : {
             status: 200,
             json: {

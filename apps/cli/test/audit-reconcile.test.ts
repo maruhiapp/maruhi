@@ -1,4 +1,4 @@
-import type { AuditHeadRow, ChainEntry, ChainOperation } from "@maruhi/crypto";
+import type { AuditHeadRow, ChainOperation } from "@maruhi/crypto";
 import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/crypto";
 import {
   buildChain,
@@ -7,11 +7,13 @@ import {
   generateIdentity,
   genesisOp,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, MockServer, type MockResponse, onRequest } from "./support/server.ts";
+import { type EndpointAnswer, type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const BASE_TS = 1_756_000_000_000;
 
@@ -102,8 +104,8 @@ interface ReconcileServerInput {
   readonly built: BuiltChain;
   readonly served: readonly Record<string, unknown>[];
   readonly declaredHeadHex: string;
-  readonly tokenScopes?: readonly unknown[];
-  readonly onAuditHead?: (call: number) => MockResponse | undefined;
+  readonly tokenScopes?: NonNullable<ApiSuccess<"auth.me">["tokenScopes"]>;
+  readonly onAuditHead?: (call: number) => EndpointAnswer<"audit.auditHead"> | undefined;
 }
 
 interface ReconcileServerState {
@@ -117,17 +119,11 @@ function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState 
   let eventCalls = 0;
   let auditHeadCalls = 0;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId }, () => ({
       status: 200,
-      json: {
-        projectId,
-        entries: input.built.entries as readonly ChainEntry[],
-        headSeq: input.built.entries.length,
-        headHashHex: input.built.hashes[input.built.hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(projectId, input.built.entries, input.built.hashes),
     })),
-    onRequest("GET", "/auth/me", () => ({
+    onEndpoint("auth.me", () => ({
       status: 200,
       json: {
         userId: owner.userId,
@@ -135,7 +131,7 @@ function makeReconcileServer(input: ReconcileServerInput): ReconcileServerState 
         ...(input.tokenScopes === undefined ? {} : { tokenScopes: input.tokenScopes }),
       },
     })),
-    onRequest("GET", `/projects/${projectId}/audit-head`, () => {
+    onEndpoint("audit.auditHead", { projectId }, () => {
       const injected = input.onAuditHead?.(auditHeadCalls);
       auditHeadCalls += 1;
       if (injected !== undefined) {

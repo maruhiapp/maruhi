@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { lastHashOf } from "./support/chain-handler.ts";
+import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import {
   chainBase,
   chainRotated,
@@ -25,7 +25,7 @@ import {
   variableAt,
   type WireRotateBody,
 } from "./support/env-rotate.ts";
-import { type MockHandler, onRequest } from "./support/server.ts";
+import { type MockHandler, onEndpoint } from "./support/server.ts";
 
 describe("maruhi env rotate", () => {
   it("a reasonless re-run is a request to resume only (already re-encrypted variables are excluded and it exits successfully)", async () => {
@@ -397,7 +397,7 @@ describe("maruhi env rotate", () => {
     let chainCalls = 0;
     const rotateBodies: WireRotateBody[] = [];
     const handlers: MockHandler[] = [
-      onRequest("GET", `/projects/${projectId}/chain`, () => {
+      onEndpoint("membership.get", { projectId }, () => {
         if (chainCalls > 0 && entries.length === chainBase.entries.length) {
           entries.push(...chainRotated.entries.slice(chainBase.entries.length));
           hashes.push(...chainRotated.hashes.slice(chainBase.hashes.length));
@@ -405,16 +405,10 @@ describe("maruhi env rotate", () => {
         chainCalls += 1;
         return {
           status: 200,
-          json: {
-            projectId,
-            entries,
-            headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
-            attestations: [],
-          },
+          json: servedChain(projectId, entries, hashes),
         };
       }),
-      onRequest("GET", `/projects/${projectId}/environments/${ENV_ID}/pull`, async () => ({
+      onEndpoint("variables.pull", { projectId, environmentId: ENV_ID }, async () => ({
         status: 200,
         json: {
           environmentId: ENV_ID,
@@ -435,14 +429,14 @@ describe("maruhi env rotate", () => {
           schemaPolicy: "enabled" as const,
         },
       })),
-      onRequest("POST", `/projects/${projectId}/environments/${ENV_ID}/rotate`, (request) => {
+      onEndpoint("environments.rotate", { projectId, environmentId: ENV_ID }, (request) => {
         rotateBodies.push(request.body as WireRotateBody);
         return {
           status: 409,
           json: {
             _tag: "ChainHeadConflict",
             currentHeadSeq: chainRotated.entries.length,
-            currentHeadHashHex: chainRotated.hashes[chainRotated.hashes.length - 1],
+            currentHeadHashHex: lastHashOf(chainRotated.hashes),
           },
         };
       }),

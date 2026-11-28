@@ -1,4 +1,3 @@
-import type { WrappedDek } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import {
   computeChainEntryHash,
@@ -23,43 +22,27 @@ import {
   testEnvironmentId,
   testProjectId,
   testUserId,
+  type WireWrappedDek,
 } from "@maruhi/test-kit";
+import type { ApiPayload } from "@maruhi/test-kit/api";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { makeFileFloorStore } from "../src/floor-log.ts";
+import { lastHashOf, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockResponse, MockServer, onRequest } from "./support/server.ts";
+import {
+  type MockHandler,
+  type MockResponse,
+  MockServer,
+  offSpec,
+  onEndpoint,
+} from "./support/server.ts";
 
-interface CompositeCreateBody {
-  readonly parentHeadHashHex: string;
-  readonly entry: ChainEntry & { readonly op: "create_environment" };
-  readonly statement: {
-    readonly environmentId: string;
-    readonly name: string;
-    readonly status: string;
-    readonly metaVersion: number;
-    readonly prevMetaSigHashHex: string;
-    readonly chainHeadHashHex: string;
-    readonly chainHeadSeq: number;
-    readonly signatureHex: string;
-  };
-  readonly deks: WrappedDek[];
-  readonly manifest: {
-    readonly suite: string;
-    readonly environmentId: string;
-    readonly epoch: number;
-    readonly manifestVersion: number;
-    readonly variablesDigestHex: string;
-    readonly envMetaVersion: number;
-    readonly envMetaSigHashHex: string;
-    readonly prevManifestSigHashHex: string;
-    readonly chainHeadHashHex: string;
-    readonly chainHeadSeq: number;
-    readonly signatureHex: string;
-  };
-}
+type CompositeCreateBody = Omit<ApiPayload<"environments.create">, "entry"> & {
+  readonly entry: Extract<ChainEntry, { readonly op: "create_environment" }>;
+};
 
 let servers: MockServer[] = [];
 
@@ -85,15 +68,9 @@ function chainHandler(
   projectId: string,
   built: Awaited<ReturnType<typeof buildChain>>,
 ): MockHandler {
-  return onRequest("GET", `/projects/${projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId }, () => ({
     status: 200,
-    json: {
-      projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(projectId, built.entries, built.hashes),
   }));
 }
 
@@ -109,15 +86,9 @@ function acceptingCreateServer(input: {
   const bodies: CompositeCreateBody[] = [];
   let createCalls = 0;
   const handlers: MockHandler[] = [
-    onRequest("GET", `/projects/${input.projectId}/chain`, () => ({
+    onEndpoint("membership.get", { projectId: input.projectId }, () => ({
       status: 200,
-      json: {
-        projectId: input.projectId,
-        entries,
-        headSeq: entries.length,
-        headHashHex: hashes[hashes.length - 1],
-        attestations: [],
-      },
+      json: servedChain(input.projectId, entries, hashes),
     })),
     async (request) => {
       if (
@@ -142,7 +113,7 @@ function acceptingCreateServer(input: {
           json: {
             _tag: "ChainHeadConflict",
             currentHeadSeq: entries.length,
-            currentHeadHashHex: hashes[hashes.length - 1],
+            currentHeadHashHex: lastHashOf(hashes),
           },
         };
       }
@@ -155,7 +126,7 @@ function acceptingCreateServer(input: {
             environmentId: body.entry.payload.environmentId,
             currentEpoch: 1,
             headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
+            headHashHex: lastHashOf(hashes),
           },
         }
       );
@@ -165,7 +136,7 @@ function acceptingCreateServer(input: {
 }
 
 async function verifyAndUnwrapWrap(input: {
-  readonly wrap: WrappedDek;
+  readonly wrap: WireWrappedDek;
   readonly projectId: string;
   readonly signer: GeneratedIdentity;
   readonly recipient: GeneratedIdentity;
@@ -357,28 +328,22 @@ describe("maruhi env create", () => {
     const env = await startEnv(
       long.projectId,
       [
-        onRequest("GET", `/projects/${long.projectId}/chain`, () => {
+        onEndpoint("membership.get", { projectId: long.projectId }, () => {
           chainCalls += 1;
           const built = chainCalls === 1 ? long : short;
           return {
             status: 200,
-            json: {
-              projectId: long.projectId,
-              entries: built.entries,
-              headSeq: built.entries.length,
-              headHashHex: built.hashes[built.hashes.length - 1],
-              attestations: [],
-            },
+            json: servedChain(long.projectId, built.entries, built.hashes),
           };
         }),
-        onRequest("POST", `/projects/${long.projectId}/environments`, (request) => {
+        onEndpoint("environments.create", { projectId: long.projectId }, (request) => {
           bodies.push(request.body as CompositeCreateBody);
           return {
             status: 409,
             json: {
               _tag: "ChainHeadConflict",
               currentHeadSeq: short.entries.length,
-              currentHeadHashHex: short.hashes[short.hashes.length - 1],
+              currentHeadHashHex: lastHashOf(short.hashes),
             },
           };
         }),
@@ -639,20 +604,14 @@ describe("maruhi env create", () => {
     const hashes: string[] = [...built.hashes];
     let chainCalls = 0;
     const server = await MockServer.start([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => {
+      onEndpoint("membership.get", { projectId: built.projectId }, () => {
         chainCalls += 1;
         if (chainCalls > 1) {
-          return { status: 502, bodyText: "bad gateway" };
+          return offSpec({ status: 502, bodyText: "bad gateway" });
         }
         return {
           status: 200,
-          json: {
-            projectId: built.projectId,
-            entries,
-            headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
-            attestations: [],
-          },
+          json: servedChain(built.projectId, entries, hashes),
         };
       }),
       async (request) => {
@@ -671,7 +630,7 @@ describe("maruhi env create", () => {
             environmentId: "staging",
             currentEpoch: 1,
             headSeq: entries.length,
-            headHashHex: hashes[hashes.length - 1],
+            headHashHex: lastHashOf(hashes),
           },
         };
       },

@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  type ChainEntry,
   decodeHex,
   fingerprintToWords,
   SUITE_ID,
@@ -20,6 +21,7 @@ import {
   testProjectId,
   testUserId,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { Effect, Redacted } from "effect";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -27,6 +29,7 @@ import { runCli } from "../src/cli.ts";
 import { buildInviteLink, parseInviteAcceptInput } from "../src/invite-link.ts";
 import { verifyAcceptanceBlock } from "../src/invite.package/invite.ts";
 import { serializeStoredToken, tokenEntryName, type StoredToken } from "../src/keychain.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   acceptanceFixture,
@@ -39,7 +42,7 @@ import {
   LINK_SEED_HEX,
   sshLineOf,
 } from "./support/invite.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, offSpec, onEndpoint } from "./support/server.ts";
 
 let inviter: GeneratedIdentity;
 let acceptor: GeneratedIdentity;
@@ -69,18 +72,12 @@ async function start(handlers: readonly MockHandler[]): Promise<MockServer> {
 
 function chainHandler(built: {
   readonly projectId: string;
-  readonly entries: readonly unknown[];
+  readonly entries: readonly ChainEntry[];
   readonly hashes: readonly string[];
 }): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 
@@ -194,17 +191,19 @@ describe("invite link(§15-3 v2)", () => {
   });
 });
 
+type InvitationRow = ApiSuccess<"invites.list">["invitations"][number];
+
 describe("maruhi invite create", () => {
   function issueHandler(
     projectId: string,
     record: (body: IssueBody) => void,
     status = 200,
   ): MockHandler {
-    return onRequest("POST", `/projects/${projectId}/invites`, (request) => {
+    return onEndpoint("invites.issue", { projectId }, (request) => {
       record(request.body as IssueBody);
       return status === 200
         ? { status, json: { expiresAtMs: 1755993600000 } }
-        : { status, json: {} };
+        : offSpec({ status, json: {} });
     });
   }
 
@@ -295,7 +294,7 @@ describe("maruhi invite create", () => {
     const server = await start([
       chainHandler(built),
       issueHandler(built.projectId, () => undefined),
-      onRequest("GET", "/auth/me", () => ({
+      onEndpoint("auth.me", () => ({
         status: 200,
         json: { userId: inviter.userId, orgs: [], providerLogin: "alice" },
       })),
@@ -597,7 +596,7 @@ describe("maruhi invite create", () => {
     ] as const) {
       const server = await start([
         chainHandler(built),
-        onRequest("POST", `/projects/${built.projectId}/invites`, () => ({ status, json })),
+        onEndpoint("invites.issue", { projectId: built.projectId }, () => ({ status, json })),
       ]);
       const env = await makeTestEnv();
       seedSession(env, server.origin, inviter);
@@ -628,8 +627,11 @@ describe("maruhi invite accept", () => {
     return inviteLinkText("https://maruhi.example", await issuedFor(role));
   }
 
-  function acceptHandler(record: (body: AcceptBody) => void, role = "member"): MockHandler {
-    return onRequest("POST", "/invites/accept", (request) => {
+  function acceptHandler(
+    record: (body: AcceptBody) => void,
+    role: InvitationRow["role"] = "member",
+  ): MockHandler {
+    return onEndpoint("invites.accept", (request) => {
       record(request.body as AcceptBody);
       return {
         status: 200,
@@ -854,11 +856,11 @@ describe("maruhi invite accept", () => {
     const bodies: AcceptBody[] = [];
     const server = await start([
       acceptHandler((body) => bodies.push(body)),
-      onRequest("GET", "/auth/recovery/status", () => ({
+      onEndpoint("auth.recoveryStatus", () => ({
         status: 200,
         json: { registered: false, updatedAtMs: null },
       })),
-      onRequest("PUT", "/auth/recovery", () => ({ status: 204 })),
+      onEndpoint("auth.recoveryPut", () => ({ status: 204 })),
     ]);
     const env = await makeTestEnv();
     seedTokenOnly(env, server.origin, acceptor);
@@ -887,7 +889,7 @@ describe("maruhi invite accept", () => {
     const bodies: AcceptBody[] = [];
     const server = await start([
       acceptHandler((body) => bodies.push(body)),
-      onRequest("GET", "/auth/recovery/status", () => ({
+      onEndpoint("auth.recoveryStatus", () => ({
         status: 200,
         json: { registered: true, updatedAtMs: 1754006400000 },
       })),
@@ -1086,7 +1088,7 @@ describe("maruhi invite accept", () => {
         "The acceptance signature was rejected",
       ],
     ] as const) {
-      const server = await start([onRequest("POST", "/invites/accept", () => ({ status, json }))]);
+      const server = await start([onEndpoint("invites.accept", () => ({ status, json }))]);
       const env = await makeTestEnv();
       seedSession(env, server.origin, acceptor);
       await seedConfig(env, { server: server.origin });
@@ -1098,7 +1100,7 @@ describe("maruhi invite accept", () => {
 
   it("does not pin the anchor when acceptance fails (no pins file on 410)", async () => {
     const server = await start([
-      onRequest("POST", "/invites/accept", () => ({
+      onEndpoint("invites.accept", () => ({
         status: 410,
         json: { _tag: "InviteGone", reason: "expired" },
       })),
@@ -1191,7 +1193,7 @@ describe("maruhi invite accept", () => {
     );
 
     const server2 = await start([
-      onRequest("POST", "/invites/accept", () => ({
+      onEndpoint("invites.accept", () => ({
         status: 200,
         json: {
           id: INVITE_ID,
@@ -1228,9 +1230,9 @@ describe("maruhi invite list / revoke", () => {
   function listRow(
     projectId: string,
     issued: IssuedInviteFixture,
-    acceptance: unknown,
-    role = "member",
-  ): unknown {
+    acceptance: InvitationRow["acceptance"],
+    role: InvitationRow["role"] = "member",
+  ): InvitationRow {
     return {
       id: INVITE_ID,
       projectId,
@@ -1256,7 +1258,7 @@ describe("maruhi invite list / revoke", () => {
     });
     const server = await start([
       chainHandler(built),
-      onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
+      onEndpoint("invites.list", { projectId: built.projectId }, () => ({
         status: 200,
         json: { invitations: [listRow(built.projectId, issued, acceptance)] },
       })),
@@ -1301,7 +1303,7 @@ describe("maruhi invite list / revoke", () => {
     ] as const) {
       const server = await start([
         chainHandler(built),
-        onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
+        onEndpoint("invites.list", { projectId: built.projectId }, () => ({
           status: 200,
           json: { invitations: [row] },
         })),
@@ -1320,7 +1322,7 @@ describe("maruhi invite list / revoke", () => {
     const issued = await issuedFor(built);
     const server = await start([
       chainHandler(built),
-      onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
+      onEndpoint("invites.list", { projectId: built.projectId }, () => ({
         status: 200,
         json: { invitations: [listRow(built.projectId, issued, null)] },
       })),
@@ -1356,7 +1358,7 @@ describe("maruhi invite list / revoke", () => {
     const issued = await issuedFor(built);
     const server = await start([
       chainHandler(built),
-      onRequest("GET", `/projects/${built.projectId}/invites`, () => ({
+      onEndpoint("invites.list", { projectId: built.projectId }, () => ({
         status: 200,
         json: { invitations: [listRow(built.projectId, issued, null)] },
       })),
@@ -1400,10 +1402,10 @@ describe("maruhi invite list / revoke", () => {
     const built = await buildChain([{ actor: inviter, operation: genesisOp(inviter) }]);
     const server = await start([
       chainHandler(built),
-      onRequest("DELETE", `/projects/${built.projectId}/invites/${INVITE_ID}`, () => ({
+      onEndpoint("invites.revoke", { projectId: built.projectId, id: INVITE_ID }, () => ({
         status: 204,
       })),
-      onRequest("DELETE", `/projects/${built.projectId}/invites/inv-0002`, () => ({
+      onEndpoint("invites.revoke", { projectId: built.projectId, id: "inv-0002" }, () => ({
         status: 410,
         json: { _tag: "InviteGone", reason: "completed" },
       })),

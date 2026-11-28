@@ -6,18 +6,21 @@ import {
   type GeneratedIdentity,
   generateIdentity,
   genesisOp,
+  headOf,
   removeMemberOp,
   rotateEpochOp,
   testEnvironmentId,
   testProjectId,
 } from "@maruhi/test-kit";
+import type { ApiReply } from "@maruhi/test-kit/api";
 import { Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { makeApiClient } from "../src/api.ts";
 import { syncProject } from "../src/chain-sync.ts";
-import { type MockResponse, MockServer, onRequest } from "./support/server.ts";
+import { servedChain } from "./support/chain-handler.ts";
+import { MockServer, onEndpoint } from "./support/server.ts";
 
 let owner: GeneratedIdentity;
 let member: GeneratedIdentity;
@@ -39,16 +42,10 @@ async function startServer(handlers: Parameters<typeof MockServer.start>[0]): Pr
   return server;
 }
 
-function chainResponse(projectId: string, built: BuiltChain): MockResponse {
+function chainResponse(projectId: string, built: BuiltChain): ApiReply<"membership.get"> {
   return {
     status: 200,
-    json: {
-      projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(projectId, built.entries, built.hashes),
   };
 }
 
@@ -80,7 +77,7 @@ describe("syncProject (§6.3)", () => {
       { actor: owner, operation: removeMemberOp(member) },
     ]);
     const server = await startServer([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () =>
+      onEndpoint("membership.get", { projectId: built.projectId }, () =>
         chainResponse(built.projectId, built),
       ),
     ]);
@@ -112,15 +109,18 @@ describe("syncProject (§6.3)", () => {
     if (second === undefined) {
       throw new Error("fixture");
     }
-    const tampered = [built.entries[0], { ...second, timestampMs: second.timestampMs + 1 }];
+    const tampered = [
+      ...built.entries.slice(0, 1),
+      { ...second, timestampMs: second.timestampMs + 1 },
+    ];
     const server = await startServer([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
         json: {
           projectId: built.projectId,
           entries: tampered,
           headSeq: 2,
-          headHashHex: built.hashes[1],
+          headHashHex: headOf(built, 2).hashHex,
           attestations: [],
         },
       })),
@@ -142,7 +142,7 @@ describe("syncProject (§6.3)", () => {
     const other = await buildChain([{ actor: member, operation: genesisOp(member) }]);
     expect(other.projectId).not.toBe(built.projectId);
     const server = await startServer([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () =>
+      onEndpoint("membership.get", { projectId: built.projectId }, () =>
         chainResponse(built.projectId, other),
       ),
     ]);
@@ -157,13 +157,13 @@ describe("syncProject (§6.3)", () => {
       { actor: owner, operation: addMemberOp(member, "member") },
     ]);
     const server = await startServer([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
         json: {
           projectId: built.projectId,
           entries: built.entries,
           headSeq: 1,
-          headHashHex: built.hashes[0],
+          headHashHex: headOf(built, 1).hashHex,
           attestations: [],
         },
       })),
@@ -179,7 +179,7 @@ describe("syncProject (§6.3)", () => {
       { actor: owner, operation: addMemberOp(member, "member") },
     ]);
     const server = await startServer([
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
         json: {
           projectId: built.projectId,

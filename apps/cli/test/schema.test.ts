@@ -13,17 +13,20 @@ import {
   genesisOp,
   headOf,
   type WireDistributedEnvironmentStatement,
-  type WireDistributedManifest,
   type WireDistributedValue,
   type WireDistributedVariableStatement,
+  type WireEnvironmentManifest,
   type WireRecipientDek,
+  type WireVariableMetaStatement,
 } from "@maruhi/test-kit";
+import type { ApiSuccess } from "@maruhi/test-kit/api";
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
 import { findHighEntropySubstring } from "../src/entropy.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
-import { type MockHandler, type MockRequest, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, type MockRequest, MockServer, onEndpoint } from "./support/server.ts";
 
 const ENV_ID = "dev";
 
@@ -137,20 +140,14 @@ afterEach(async () => {
 });
 
 function chainHandler(): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 
 function deksHandler(): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/deks`, () => ({
+  return onEndpoint("deks.listMine", { projectId: built.projectId, environmentId: ENV_ID }, () => ({
     status: 200,
     json: { deks: [wrap1] },
   }));
@@ -177,41 +174,53 @@ function pullHandler(overrides?: {
   readonly declaredVariables?: readonly WireDistributedVariableStatement[];
   readonly digestStatements?: readonly WireDistributedVariableStatement[];
 }): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/environments/${ENV_ID}/pull`, async () => {
-    const variables = overrides?.variables ?? [activeV3, activeV1];
-    const declaredVariables = overrides?.declaredVariables ?? [declaredRequired, declaredOptional];
-    const manifest = await distributedManifest({
-      projectId: built.projectId,
-      environmentId: ENV_ID,
-      epoch: 1,
-      issuer: owner,
-      head: headOf(built, 2),
-      envStatement,
-      statements:
-        overrides?.digestStatements ?? digestStatementsOf({ variables, declaredVariables }),
-    });
-    return {
-      status: 200,
-      json: {
+  return onEndpoint(
+    "variables.pull",
+    { projectId: built.projectId, environmentId: ENV_ID },
+    async () => {
+      const variables = overrides?.variables ?? [activeV3, activeV1];
+      const declaredVariables = overrides?.declaredVariables ?? [
+        declaredRequired,
+        declaredOptional,
+      ];
+      const manifest = await distributedManifest({
+        projectId: built.projectId,
         environmentId: ENV_ID,
-        currentEpoch: 1,
-        statement: envStatement,
-        variables,
-        deletedVariables: [],
-        ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
-        deks: [wrap1],
-        manifest,
-        schemaPolicy: "enabled" as const,
-      },
-    };
-  });
+        epoch: 1,
+        issuer: owner,
+        head: headOf(built, 2),
+        envStatement,
+        statements:
+          overrides?.digestStatements ?? digestStatementsOf({ variables, declaredVariables }),
+      });
+      return {
+        status: 200,
+        json: {
+          environmentId: ENV_ID,
+          currentEpoch: 1,
+          statement: envStatement,
+          variables,
+          deletedVariables: [],
+          ...(declaredVariables.length === 0 ? {} : { declaredVariables }),
+          deks: [wrap1],
+          manifest,
+          schemaPolicy: "enabled" as const,
+        },
+      };
+    },
+  );
+}
+
+interface MutationBody {
+  readonly statement: WireVariableMetaStatement;
+  readonly manifest: WireEnvironmentManifest;
 }
 
 interface MetadataOverrides {
   readonly variables?: readonly WireDistributedVariableStatement[];
   readonly schemaPolicy?: "enabled" | "locked";
   readonly echo?: {
-    body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
+    body: MutationBody | null;
     readonly base: readonly WireDistributedVariableStatement[];
   };
 }
@@ -221,7 +230,7 @@ function echoMetadataJson(
     body: NonNullable<NonNullable<MetadataOverrides["echo"]>["body"]>;
   },
   overrides?: MetadataOverrides,
-): unknown {
+): ApiSuccess<"variables.pullMetadata"> {
   const accepted = {
     ...echo.body.statement,
     authorUserId: owner.userId,
@@ -245,7 +254,9 @@ function echoMetadataJson(
   };
 }
 
-async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unknown> {
+async function defaultMetadataJson(
+  overrides?: MetadataOverrides,
+): Promise<ApiSuccess<"variables.pullMetadata">> {
   const variables = overrides?.variables ?? [
     activeV3.statement,
     activeV1.statement,
@@ -273,9 +284,9 @@ async function defaultMetadataJson(overrides?: MetadataOverrides): Promise<unkno
 }
 
 function metadataHandler(overrides?: MetadataOverrides): MockHandler {
-  return onRequest(
-    "GET",
-    `/projects/${built.projectId}/environments/${ENV_ID}/pull/metadata`,
+  return onEndpoint(
+    "variables.pullMetadata",
+    { projectId: built.projectId, environmentId: ENV_ID },
     async () => {
       const echo = overrides?.echo;
       const body = echo?.body ?? null;
@@ -543,26 +554,23 @@ describe("maruhi run's fail-fast (§1-4 — hard presence / soft type)", () => {
 });
 
 interface MutationEcho {
-  body: { statement: WireDistributedVariableStatement; manifest: WireDistributedManifest } | null;
+  body: MutationBody | null;
   readonly base: readonly WireDistributedVariableStatement[];
 }
 
 function captureCreate(echo: MutationEcho, calls: MockRequest[]): MockHandler {
-  return onRequest(
-    "POST",
-    `/projects/${built.projectId}/environments/${ENV_ID}/variables`,
+  return onEndpoint(
+    "variables.create",
+    { projectId: built.projectId, environmentId: ENV_ID },
     (request) => {
       calls.push(request);
-      echo.body = request.body as MutationEcho["body"];
-      const body = request.body as {
-        statement: WireDistributedVariableStatement;
-        value?: unknown;
-      };
+      echo.body = request.body;
+      const body = request.body;
       return {
         status: 200,
         json: {
           variableId: body.statement.variableId,
-          version: body.value === undefined ? 0 : 1,
+          version: "value" in body ? 1 : 0,
           epoch: 1,
         },
       };
@@ -571,13 +579,13 @@ function captureCreate(echo: MutationEcho, calls: MockRequest[]): MockHandler {
 }
 
 function captureRename(echo: MutationEcho, calls: MockRequest[], variableId: string): MockHandler {
-  return onRequest(
-    "PATCH",
-    `/projects/${built.projectId}/environments/${ENV_ID}/variables/${variableId}`,
+  return onEndpoint(
+    "variables.rename",
+    { projectId: built.projectId, environmentId: ENV_ID, variableId },
     (request) => {
       calls.push(request);
-      echo.body = request.body as MutationEcho["body"];
-      return { status: 204, bodyText: "" };
+      echo.body = request.body;
+      return { status: 204 };
     },
   );
 }
@@ -832,12 +840,12 @@ describe("maruhi push's activation (the first value push onto a declared — §1
       chainHandler(),
       deksHandler(),
       metadataHandler({ variables: [declaredRequired], echo }),
-      onRequest(
-        "POST",
-        `/projects/${built.projectId}/environments/${ENV_ID}/variables/v-declared/activate`,
+      onEndpoint(
+        "variables.activate",
+        { projectId: built.projectId, environmentId: ENV_ID, variableId: "v-declared" },
         (request) => {
           activateCalls.push(request);
-          echo.body = request.body as MutationEcho["body"];
+          echo.body = request.body;
           return { status: 200, json: { variableId: "v-declared", version: 1, epoch: 1 } };
         },
       ),
@@ -890,9 +898,9 @@ describe("maruhi push's activation (the first value push onto a declared — §1
     const env = await startEnv([
       chainHandler(),
       deksHandler(),
-      onRequest(
-        "GET",
-        `/projects/${built.projectId}/environments/${ENV_ID}/pull/metadata`,
+      onEndpoint(
+        "variables.pullMetadata",
+        { projectId: built.projectId, environmentId: ENV_ID },
         async () => {
           if (echo.body !== null) {
             return {
@@ -934,16 +942,16 @@ describe("maruhi push's activation (the first value push onto a declared — §1
           };
         },
       ),
-      onRequest("POST", `/projects/${built.projectId}/environments/${ENV_ID}/variables`, () => ({
+      onEndpoint("variables.create", { projectId: built.projectId, environmentId: ENV_ID }, () => ({
         status: 409,
         json: { _tag: "VariableConflict", variableId: "v-declared", reason: "duplicate-name" },
       })),
-      onRequest(
-        "POST",
-        `/projects/${built.projectId}/environments/${ENV_ID}/variables/v-declared/activate`,
+      onEndpoint(
+        "variables.activate",
+        { projectId: built.projectId, environmentId: ENV_ID, variableId: "v-declared" },
         (request) => {
           activateCalls.push(request);
-          echo.body = request.body as MutationEcho["body"];
+          echo.body = request.body;
           return { status: 200, json: { variableId: "v-declared", version: 1, epoch: 1 } };
         },
       ),

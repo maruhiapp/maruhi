@@ -22,6 +22,7 @@ import { verifyChainSnapshot } from "../src/chain-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { NoticeLedger } from "../src/notice.ts";
 import { noteServerDisclosure } from "../src/server-disclosure.ts";
+import { servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession, type TestEnv } from "./support/env.ts";
 import {
   chainHandler as pullChainHandler,
@@ -29,7 +30,7 @@ import {
   fixture,
   pullHandler,
 } from "./support/pull-run.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 
 const SERVER_ENC_PUB_HEX = "5a".repeat(32);
 const MIRROR_ENC_PUB_HEX = "a5".repeat(32);
@@ -82,16 +83,10 @@ async function grantProd(): Promise<ChainStep> {
   };
 }
 
-function servedChain(built: BuiltChain): MockHandler {
-  return onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+function chainRouteOf(built: BuiltChain): MockHandler {
+  return onEndpoint("membership.get", { projectId: built.projectId }, () => ({
     status: 200,
-    json: {
-      projectId: built.projectId,
-      entries: built.entries,
-      headSeq: built.entries.length,
-      headHashHex: built.hashes[built.hashes.length - 1],
-      attestations: [],
-    },
+    json: servedChain(built.projectId, built.entries, built.hashes),
   }));
 }
 
@@ -108,7 +103,7 @@ async function listHandler(built: BuiltChain, environmentIds: readonly string[])
       }),
     );
   }
-  return onRequest("GET", `/projects/${built.projectId}/environments`, () => ({
+  return onEndpoint("environments.list", { projectId: built.projectId }, () => ({
     status: 200,
     json: {
       environments: statements.map((statement) => ({
@@ -125,7 +120,7 @@ async function startEnv(
   built: BuiltChain,
   live: readonly string[] = ["env-dev", "env-prod"],
 ): Promise<TestEnv> {
-  const server = await MockServer.start([servedChain(built), await listHandler(built, live)]);
+  const server = await MockServer.start([chainRouteOf(built), await listHandler(built, live)]);
   servers.push(server);
   const env = await makeTestEnv();
   seedSession(env, server.origin, owner);
@@ -219,7 +214,7 @@ describe("the prologue's server-disclosure Note (§9)", () => {
       },
     ]);
     expect(granted.projectId).toBe(fixture.built.projectId);
-    const server = await MockServer.start([servedChain(granted), pullHandler()]);
+    const server = await MockServer.start([chainRouteOf(granted), pullHandler()]);
     servers.push(server);
     const env = await makeTestEnv();
     seedSession(env, server.origin, fixture.owner);

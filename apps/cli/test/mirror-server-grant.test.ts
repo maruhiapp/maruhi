@@ -2,10 +2,10 @@ import { type ChainEntry, computeServerKeyFingerprint, encodeHex } from "@maruhi
 import { describe, expect, it } from "vite-plus/test";
 
 import { runCli } from "../src/cli.ts";
-import { acceptAppendedEntry } from "./support/chain-handler.ts";
+import { acceptAppendedEntry, servedChain } from "./support/chain-handler.ts";
 import { makeTestEnv, seedConfig, seedSession } from "./support/env.ts";
 import { built, ENV_ID, owner, start, wrap } from "./support/mirror.ts";
-import { type MockRequest, onRequest } from "./support/server.ts";
+import { type MockRequest, onEndpoint } from "./support/server.ts";
 
 describe("maruhi server grant --key-from (PF2)", () => {
   it("reads the server key from the named deployment and appends the grant on the server", async () => {
@@ -17,7 +17,7 @@ describe("maruhi server grant --key-from (PF2)", () => {
     const entries = [...built.entries];
     const hashes = [...built.hashes];
     const source = await start([
-      onRequest("GET", "/auth/config", () => ({
+      onEndpoint("auth.authConfig", () => ({
         status: 200,
         json: {
           githubClientId: "dummy",
@@ -26,20 +26,14 @@ describe("maruhi server grant --key-from (PF2)", () => {
           serverEncPubHex: "11".repeat(32),
         },
       })),
-      onRequest("GET", `/projects/${built.projectId}/chain`, () => ({
+      onEndpoint("membership.get", { projectId: built.projectId }, () => ({
         status: 200,
-        json: {
-          projectId: built.projectId,
-          entries,
-          headSeq: entries.length,
-          headHashHex: hashes[hashes.length - 1],
-          attestations: [],
-        },
+        json: servedChain(built.projectId, entries, hashes),
       })),
-      onRequest("POST", `/projects/${built.projectId}/chain/entries`, (request) => {
-        const body = request.body as { readonly entry: ChainEntry };
-        appended.push(body.entry.payload);
-        return acceptAppendedEntry(built.projectId, entries, hashes, body.entry);
+      onEndpoint("membership.append", { projectId: built.projectId }, (request) => {
+        const entry = request.body.entry as ChainEntry;
+        appended.push(entry.payload);
+        return acceptAppendedEntry(built.projectId, entries, hashes, entry);
       }),
       (request: MockRequest) =>
         /\/environments\/[^/]+\/deks$/.test(request.path)
@@ -49,7 +43,7 @@ describe("maruhi server grant --key-from (PF2)", () => {
           : null,
     ]);
     const keyServer = await start([
-      onRequest("GET", "/auth/config", () => ({
+      onEndpoint("auth.authConfig", () => ({
         status: 200,
         json: {
           githubClientId: "dummy",

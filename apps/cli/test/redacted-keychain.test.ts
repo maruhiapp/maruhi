@@ -24,7 +24,7 @@ import {
 import { formatRecoveryCode, parseRecoveryCode } from "../src/reserve.package/recovery-code.ts";
 import { ensureNoStoredMasterKey, loadMasterKeys, resolveSession } from "../src/session.ts";
 import { makeTestEnv, seedConfig } from "./support/env.ts";
-import { type MockHandler, MockServer, onRequest } from "./support/server.ts";
+import { type MockHandler, MockServer, onEndpoint } from "./support/server.ts";
 import { runCliWithClock } from "./support/test-clock.ts";
 
 const EXPIRES_AT_MS = Date.UTC(2099, 0, 1);
@@ -108,7 +108,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
   it("login's save → resolveSession's read-back → real use as a Bearer header", async () => {
     const authorizations: (string | undefined)[] = [];
     const maruhi = await start([
-      onRequest("POST", "/auth/cli/start", () => ({
+      onEndpoint("authCli.cliStart", () => ({
         status: 200,
         json: {
           flowId: "0123456789abcdef0123456789abcdef",
@@ -119,7 +119,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
           pollIntervalSeconds: 0,
         },
       })),
-      onRequest("POST", "/auth/cli/poll", () => ({
+      onEndpoint("authCli.cliPoll", () => ({
         status: 200,
         json: {
           status: "approved",
@@ -129,7 +129,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
           expiresAtMs: EXPIRES_AT_MS,
         },
       })),
-      onRequest("GET", "/auth/me", (request) => {
+      onEndpoint("auth.me", (request) => {
         const header = request.headers["authorization"];
         authorizations.push(typeof header === "string" ? header : undefined);
         return { status: 200, json: { userId: "user-0001", orgs: [] } };
@@ -417,11 +417,11 @@ describe("the keychain round trip is not broken by redacted serialization", () =
 
   it("key generate's save → loadMasterKeys' read-back → usable as a key", async () => {
     const maruhi = await start([
-      onRequest("GET", "/auth/recovery/status", () => ({
+      onEndpoint("auth.recoveryStatus", () => ({
         status: 200,
         json: { registered: false, updatedAtMs: null },
       })),
-      onRequest("PUT", "/auth/recovery", () => ({ status: 204 })),
+      onEndpoint("auth.recoveryPut", () => ({ status: 204 })),
     ]);
     const env = await makeTestEnv();
     await seedConfig(env, { server: maruhi.origin });
@@ -463,7 +463,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
   it("if MARUHI_TOKEN holds a redaction, it names the reason before any communication", async () => {
     const requests: string[] = [];
     const maruhi = await start([
-      onRequest("GET", "/auth/me", (request) => {
+      onEndpoint("auth.me", (request) => {
         requests.push(request.path);
         return { status: 200, json: { userId: "u", orgs: [] } };
       }),
@@ -484,7 +484,7 @@ describe("the keychain round trip is not broken by redacted serialization", () =
   it("a token via the MARUHI_TOKEN path is also wrapped, and sent as the raw value", async () => {
     const authorizations: (string | undefined)[] = [];
     const maruhi = await start([
-      onRequest("GET", "/auth/me", (request) => {
+      onEndpoint("auth.me", (request) => {
         const header = request.headers["authorization"];
         authorizations.push(typeof header === "string" ? header : undefined);
         return { status: 200, json: { userId: "user-env", orgs: [] } };
