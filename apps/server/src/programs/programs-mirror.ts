@@ -12,19 +12,18 @@ import { AuditStore } from "../audit-store.ts";
 import type { DataActor, DataRejectedError } from "../data.package/index.ts";
 import { rejectData, requireMemberState, roleAtLeast } from "../data.package/index.ts";
 import type { ChainStore, StateCache } from "../do/chain-store.ts";
+import { verifyStagedAuditHeads } from "../do/do-mirror-audit-verify.ts";
+import { commitMirrorReplica, type MirrorCommit } from "../do/do-mirror-commit.ts";
 import {
-  commitMirrorReplica,
-  verifyStagedAuditHeads,
   discardMirrorStaging,
   markMirror,
-  remarkMirror,
-  type MirrorCommit,
   MirrorPageRefusedError,
   readMirrorState,
+  remarkMirror,
   stagedChainRows,
-  stageMirrorPage,
   unmarkMirror,
-} from "../do/do-mirror.ts";
+} from "../do/do-mirror-state.ts";
+import { stageMirrorPage } from "../do/do-mirror.ts";
 import { PROJECT_DO_TABLES, readProjectDoSchemaVersion } from "../do/do-schema.ts";
 import { readWatermarks } from "../do/do-snapshot.ts";
 import {
