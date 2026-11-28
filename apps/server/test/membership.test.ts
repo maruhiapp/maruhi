@@ -1,5 +1,6 @@
 import type { ChainEntry } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
+import { signEntryAt } from "@maruhi/test-kit";
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -11,7 +12,7 @@ import {
   vectorExtendedChains,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
-import { signEntryAt } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   appendEntry,
   getChain,
@@ -292,7 +293,7 @@ describe("the chain's incremental-load cache (chain-store.ts StateCache.chain)",
     const { entry } = await signEntryAt({
       seq: warm.headSeq + 1,
       prevHashHex: warm.headHashHex,
-      actorUserId: "user-owner-0001",
+      actor: identityOf("user-owner-0001"),
       operation: { op: "remove_member", payload: { targetUserId: testUserId(target) } },
     });
     const appended = await appendEntry(vectorProjectId, warm.headHashHex, entry);

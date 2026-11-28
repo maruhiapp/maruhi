@@ -4,32 +4,33 @@ import {
   encodeHex,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
+  generateDek,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
   unwrapDek,
 } from "@maruhi/crypto";
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
+import {
+  checkpointOp,
+  hexBytes,
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
+  signEntryAt,
+  signManifest,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  unwrapAndDecrypt,
+  valuesDigestOf,
+  variablesDigestOf,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_DEK_WRAPS_PER_REQUEST } from "../src/policy.ts";
 import { bearer, cliToken, JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
-import {
-  checkpointOperation,
-  digestOf,
-  hexBytes,
-  makeDek,
-  manifestSignedBytesHashOf,
-  metaSignedBytesHashOf,
-  signEntryAt,
-  signEnvManifestAs,
-  unwrapAndDecrypt,
-  valuesDigestOf,
-  vectorKeyOf,
-  wrapDekForAll,
-  wrapDekTo,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -97,9 +98,8 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: STRANGER,
-      recipientEncPubHex: encPubHex,
-      signerUserId: OWNER,
+      recipient: { userId: STRANGER, encPubHex },
+      signer: identityOf(OWNER),
     });
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [backfill],
@@ -145,7 +145,7 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
 
   it("rejects session-principal data writes uniformly (the §5 capability restriction)", async () => {
     const session = await loginSession(9001);
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -157,7 +157,7 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
     const { entry, hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "create_environment",
         payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
@@ -169,12 +169,12 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
       name: "App",
       head: fixture.head,
     });
-    const manifest = await signEnvManifestAs(OWNER, projectId, {
+    const manifest = await signManifest(identityOf(OWNER), projectId, {
       suite: "maruhi/v1",
       environmentId: ENV,
       epoch: 1,
       manifestVersion: 1,
-      variablesDigestHex: await digestOf([]),
+      variablesDigestHex: await variablesDigestOf([]),
       envMetaVersion: statement.metaVersion,
       envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, OWNER),
       prevManifestSigHashHex: "",
@@ -184,8 +184,8 @@ describe("DEK distribution and backfill for new members (§12-6 / CRYPTO_SPEC §
     const { entry: checkpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
-      actorUserId: OWNER,
-      operation: checkpointOperation({
+      actor: identityOf(OWNER),
+      operation: checkpointOp({
         environmentId: ENV,
         epoch: 1,
         manifestVersion: 1,
@@ -255,8 +255,8 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: READER,
-      signerUserId: MEMBER,
+      recipient: identityOf(READER),
+      signer: identityOf(MEMBER),
     });
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: [reWrap],
@@ -274,7 +274,7 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     expect(pulled.value.ciphertextHex).toBe(payload.ciphertextHex);
     await expect(
       unwrapAndDecrypt({
-        recipientUserId: READER,
+        recipient: identityOf(READER),
         wrapped: wrap,
         projectId,
         environmentId: ENV,
@@ -398,8 +398,8 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
           environmentId: ENV,
           epoch: 1,
           dek,
-          recipientUserId: OWNER,
-          signerUserId: MEMBER,
+          recipient: identityOf(OWNER),
+          signer: identityOf(MEMBER),
         }),
       ],
     });
@@ -426,7 +426,7 @@ describe("the DEK-wrap repair path (§12-6: delete → re-register the shortfall
     if (wrap === undefined || pulled === undefined) throw new Error("missing pull data");
     await expect(
       unwrapAndDecrypt({
-        recipientUserId: READER,
+        recipient: identityOf(READER),
         wrapped: wrap,
         projectId,
         environmentId: ENV,

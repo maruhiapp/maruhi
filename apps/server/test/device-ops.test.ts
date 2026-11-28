@@ -3,6 +3,7 @@ import {
   encodeHex,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
+  generateDek,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
   importSigningKeyPair,
@@ -10,27 +11,31 @@ import {
   signHeadAttestation,
 } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import type { WireWrappedDek } from "@maruhi/test-kit";
+import {
+  encryptValue,
+  hexBytes,
+  signEntryAt,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_DEVICES_PER_MEMBER } from "../src/policy.ts";
 import { bearer, cliToken, JSON_HEADERS, BASE } from "./support/auth.ts";
-import type { WireWrappedDek } from "./support/data-crypto.ts";
 import {
-  commitmentOf,
-  encryptValue,
-  hexBytes,
-  makeDek,
+  identityOf,
   resetDeviceKeys,
-  signEntryAt,
   useDeviceKey,
-  valueSignedBytesHashOf,
   vectorKeyNamed,
   vectorKeyOf,
   wrapDekForAll,
-  wrapDekTo,
 } from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -139,7 +144,7 @@ async function appendWith(
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId,
+    actor: identityOf(actorUserId),
     operation,
   });
   return SELF.fetch(`${BASE}/projects/${projectId}/chain/entries`, {
@@ -169,9 +174,8 @@ async function wrapSlots(
         environmentId,
         epoch,
         dek,
-        recipientUserId: slot.userId,
-        recipientEncPubHex: slot.encPubHex,
-        signerUserId,
+        recipient: { userId: slot.userId, encPubHex: slot.encPubHex },
+        signer: identityOf(signerUserId),
       }),
     );
   }
@@ -185,13 +189,13 @@ async function createEnvironmentWithSlots(
   environmentId: string,
   slots: readonly Slot[],
 ): Promise<{ readonly dek: Uint8Array; readonly response: Response }> {
-  const dek = makeDek();
+  const dek = generateDek();
   const deks = await wrapSlots(environmentId, 1, dek, slots, OWNER);
   const response = await createEnvironmentComposite(fixture, {
     environmentId,
     name: environmentId,
     deks,
-    dekCommitmentHex: await commitmentOf(projectId, environmentId, 1, dek),
+    dekCommitmentHex: await testDekCommitmentHex(projectId, environmentId, 1, dek),
   });
   return { dek, response };
 }
@@ -216,18 +220,18 @@ async function pushValue(
   prevValueSigHashHex: string,
   rawToken: string = token(writerUserId),
 ): Promise<Response> {
-  const value = await encryptValue(
+  const value = await encryptValue({
     dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: 1,
-      variableId: testVariableId(VAR),
-      version,
-    },
-    `postgres://v${version}`,
-    { writerUserId, head: fixture.head, prevValueSigHashHex },
-  );
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: 1,
+    variableId: testVariableId(VAR),
+    version,
+    plaintext: `postgres://v${version}`,
+    writer: identityOf(writerUserId),
+    head: fixture.head,
+    prevValueSigHashHex,
+  });
   return requestJson("POST", `/environments/${ENV}/variables/${VAR}/versions`, rawToken, {
     value,
   });
@@ -555,9 +559,8 @@ describe("revoke_device acceptance side effects (AUDIT_SPEC §3.4 / §4.1)", () 
       environmentId: ENV,
       epoch: 1,
       dek: created.dek,
-      recipientUserId: OWNER,
-      recipientEncPubHex: phone.encPubHex,
-      signerUserId: OWNER,
+      recipient: { userId: OWNER, encPubHex: phone.encPubHex },
+      signer: identityOf(OWNER),
     });
     const rejected = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [toRevoked],
@@ -586,9 +589,8 @@ describe("two-stage authorization — a device's effective permissions (design r
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: READER,
-      recipientEncPubHex: second.encPubHex,
-      signerUserId: READER,
+      recipient: { userId: READER, encPubHex: second.encPubHex },
+      signer: identityOf(READER),
     });
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(READER), {
       deks: [own],
@@ -614,8 +616,8 @@ describe("two-stage authorization — a device's effective permissions (design r
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: MEMBER,
-      signerUserId: READER,
+      recipient: identityOf(MEMBER),
+      signer: identityOf(READER),
     });
     const denied = await requestJson("POST", `/environments/${ENV}/deks`, token(READER), {
       deks: [other],
@@ -713,7 +715,7 @@ describe("two-stage authorization — a device's effective permissions (design r
 
 describe("version skew — a single-device chain (input equivalent to a pre-K2 client) is unchanged", () => {
   it("accepts single-device wrap sets, device-keyed delete references, attestations and pushes exactly as before", async () => {
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -726,7 +728,7 @@ describe("version skew — a single-device chain (input equivalent to a pre-K2 c
       environmentId: ENV,
       name: "App",
       deks,
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 1, dek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 1, dek),
     });
     expect(created.status).toBe(200);
     const mine = await listMyDeks(READER);
@@ -749,8 +751,8 @@ describe("version skew — a single-device chain (input equivalent to a pre-K2 c
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: READER,
-      signerUserId: MEMBER,
+      recipient: identityOf(READER),
+      signer: identityOf(MEMBER),
     });
     const backfilled = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: [reWrap],

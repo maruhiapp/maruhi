@@ -2,24 +2,23 @@ import {
   encodeHex,
   exportEncryptionPublicKey,
   exportSigningPublicKey,
+  generateDek,
   generateEncryptionKeyPair,
   generateSigningKeyPair,
 } from "@maruhi/crypto";
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
+import {
+  signEntryAt,
+  signWrap,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  unwrapAndDecrypt,
+  verifyWrapSignature,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
-import {
-  commitmentOf,
-  makeDek,
-  signEntryAt,
-  signWrapAs,
-  unwrapAndDecrypt,
-  vectorKeyOf,
-  verifyDistributedWrapSignature,
-  wrapDekForAll,
-  wrapDekTo,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -108,7 +107,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "create_environment",
         payload: { environmentId: testEnvironmentId(ENV), dekCommitmentHex: "ab".repeat(32) },
@@ -167,8 +166,8 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: READER,
-      signerUserId: MEMBER,
+      recipient: identityOf(READER),
+      signer: identityOf(MEMBER),
     });
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: [reWrap],
@@ -217,7 +216,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     const { entry } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "add_member",
         payload: {
@@ -241,7 +240,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
   });
 
   it("accepts the original signer re-registering the identical wrap and signature (the counterpart of §5.1's semantics)", async () => {
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -255,7 +254,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
       ENV,
       "App",
       deks,
-      await commitmentOf(projectId, ENV, 1, dek),
+      await testDekCommitmentHex(projectId, ENV, 1, dek),
     );
     expect(created.status).toBe(200);
     const readerWrap = deks.find((wrap) => wrap.recipientUserId === READER);
@@ -318,30 +317,30 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
       expect(wrap.signerUserId).toBe(OWNER);
       expect(wrap.signerKeyFingerprintHex).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
       await expect(
-        verifyDistributedWrapSignature({
+        verifyWrapSignature({
           projectId,
           environmentId: ENV,
-          recipientUserId: READER,
-          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+          recipient: identityOf(READER),
           wrap,
+          signer: identityOf(wrap.signerUserId),
         }),
       ).resolves.toBe(true);
       await expect(
-        verifyDistributedWrapSignature({
+        verifyWrapSignature({
           projectId,
           environmentId: "env-forged-0001",
-          recipientUserId: READER,
-          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+          recipient: identityOf(READER),
           wrap,
+          signer: identityOf(wrap.signerUserId),
         }),
       ).resolves.toBe(false);
       await expect(
-        verifyDistributedWrapSignature({
+        verifyWrapSignature({
           projectId,
           environmentId: ENV,
-          recipientUserId: READER,
-          recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
-          wrap: { ...wrap, signerUserId: MEMBER },
+          recipient: identityOf(READER),
+          wrap,
+          signer: identityOf(MEMBER),
         }),
       ).resolves.toBe(false);
     }
@@ -360,7 +359,7 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
       ],
     });
     expect(removed.status).toBe(204);
-    const poison = await signWrapAs(MEMBER, projectId, ENV, {
+    const poison = await signWrap(identityOf(MEMBER), projectId, ENV, {
       suite: "maruhi/v1",
       epoch: 1,
       recipientClass: "member",
@@ -402,8 +401,8 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: READER,
-      signerUserId: MEMBER,
+      recipient: identityOf(READER),
+      signer: identityOf(MEMBER),
     });
     const registered = await requestJson("POST", `/environments/${ENV}/deks`, token(MEMBER), {
       deks: [reWrap],
@@ -456,18 +455,18 @@ describe("the registration signature on DEK wraps (§12-6 / CRYPTO_SPEC §5.1)",
     if (wrap === undefined || pulled === undefined) throw new Error("missing pull data");
     expect(wrap.signerUserId).toBe(MEMBER);
     await expect(
-      verifyDistributedWrapSignature({
+      verifyWrapSignature({
         projectId,
         environmentId: ENV,
-        recipientUserId: READER,
-        recipientEncPubHex: vectorKeyOf(READER).enc_pub_hex,
+        recipient: identityOf(READER),
         wrap,
+        signer: identityOf(wrap.signerUserId),
       }),
     ).resolves.toBe(true);
     expect(pulled.value.ciphertextHex).toBe(payload.ciphertextHex);
     await expect(
       unwrapAndDecrypt({
-        recipientUserId: READER,
+        recipient: identityOf(READER),
         wrapped: wrap,
         projectId,
         environmentId: ENV,

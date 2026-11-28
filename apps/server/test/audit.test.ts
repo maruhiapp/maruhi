@@ -1,6 +1,25 @@
 import { decodeKeyFingerprintHex } from "@maruhi/core";
-import { computeServerKeyFingerprint, encodeHex } from "@maruhi/crypto";
+import { computeServerKeyFingerprint, encodeHex, generateDek } from "@maruhi/crypto";
 import { testKeyFingerprintHex } from "@maruhi/crypto/test-support";
+import type { WireEnvironmentManifest, WireVariableMetaStatement } from "@maruhi/test-kit";
+import {
+  checkpointOp,
+  createVariableStatement,
+  encryptValue,
+  hexBytes,
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
+  signEntryAt,
+  signManifest,
+  signMetaStatement,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valuesDigestOf,
+  variablesDigestOf,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { env, evictDurableObject, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -8,26 +27,7 @@ import { brandOrNull, toAuditHeadRow } from "../src/audit-store-rows.ts";
 import { type AuditEventInput, makeAuditStore } from "../src/audit-store.ts";
 import { dataEvent } from "../src/data.package/index.ts";
 import { JSON_HEADERS, loginSession, sessionHeaders } from "./support/auth.ts";
-import type { WireEnvironmentManifest, WireVariableMetaStatement } from "./support/data-crypto.ts";
-import {
-  checkpointOperation,
-  commitmentOf,
-  createVariableStatement,
-  digestOf,
-  encryptValue,
-  hexBytes,
-  makeDek,
-  manifestSignedBytesHashOf,
-  metaSignedBytesHashOf,
-  signEntryAt,
-  signEnvManifestAs,
-  signMetaStatementAs,
-  valuesDigestOf,
-  vectorKeyOf,
-  wrapDekForAll,
-  wrapDekTo,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import type { DataFixture } from "./support/data-fixture.ts";
 import {
   ALL_MEMBERS,
@@ -63,20 +63,19 @@ beforeEach(async () => {
 const token = (userId: string): string => tokenOf(fixture.tokens, userId);
 
 async function createVariableOk(dek: Uint8Array, variableId: string, name: string): Promise<void> {
-  const value = await encryptValue(
+  const value = await encryptValue({
     dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: 1,
-      variableId: testVariableId(variableId),
-      version: 1,
-    },
-    `secret-${variableId}`,
-    { writerUserId: MEMBER, head: fixture.head },
-  );
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: 1,
+    variableId: testVariableId(variableId),
+    version: 1,
+    plaintext: `secret-${variableId}`,
+    writer: identityOf(MEMBER),
+    head: fixture.head,
+  });
   const statement = await createVariableStatement({
-    authorUserId: MEMBER,
+    author: identityOf(MEMBER),
     projectId,
     environmentId: ENV,
     variableId,
@@ -129,7 +128,7 @@ async function nextVariableStatement(input: {
 }): Promise<WireVariableMetaStatement> {
   const last = varStatements.get(input.variableId);
   if (last === undefined) throw new Error(`no recorded statement for ${input.variableId}`);
-  const statement = await signMetaStatementAs(input.authorUserId, projectId, {
+  const statement = await signMetaStatement(identityOf(input.authorUserId), projectId, {
     suite: "maruhi/v1" as const,
     environmentId: ENV,
     variableId: input.variableId,
@@ -200,8 +199,8 @@ describe("chain mirror (§3.4)", () => {
   it("mirrors create_environment / rotate_epoch with the dek commitment (§3.4)", async () => {
     const dek1 = await createEnvironmentOk(fixture, ENV, "App");
     const dek2 = await rotateEnvironmentOk(fixture, MEMBER, ENV, 2);
-    const commitment1 = await commitmentOf(projectId, ENV, 1, dek1);
-    const commitment2 = await commitmentOf(projectId, ENV, 2, dek2);
+    const commitment1 = await testDekCommitmentHex(projectId, ENV, 1, dek1);
+    const commitment2 = await testDekCommitmentHex(projectId, ENV, 2, dek2);
     const events = await readAuditEvents(projectId);
     const rotated = events.find((event) => event["event"] === "chain.epoch_rotated");
     const created = events.find((event) => event["event"] === "chain.environment_created");
@@ -570,7 +569,7 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     expect(envCreated["actor_key_fingerprint"]).toBe(vectorKeyOf(OWNER).key_fingerprint_hex);
 
     const session = await loginSession(9002);
-    const dek = makeDek();
+    const dek = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: "env-audit-0002",
@@ -582,12 +581,12 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     const { entry, hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: MEMBER,
+      actor: identityOf(MEMBER),
       operation: {
         op: "create_environment",
         payload: {
           environmentId: testEnvironmentId("env-audit-0002"),
-          dekCommitmentHex: await commitmentOf(projectId, "env-audit-0002", 1, dek),
+          dekCommitmentHex: await testDekCommitmentHex(projectId, "env-audit-0002", 1, dek),
         },
       },
     });
@@ -597,12 +596,12 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       name: "Session",
       head: fixture.head,
     });
-    const sessionManifest = await signEnvManifestAs(MEMBER, projectId, {
+    const sessionManifest = await signManifest(identityOf(MEMBER), projectId, {
       suite: "maruhi/v1",
       environmentId: "env-audit-0002",
       epoch: 1,
       manifestVersion: 1,
-      variablesDigestHex: await digestOf([]),
+      variablesDigestHex: await variablesDigestOf([]),
       envMetaVersion: sessionStatement.metaVersion,
       envMetaSigHashHex: await metaSignedBytesHashOf(projectId, sessionStatement, MEMBER),
       prevManifestSigHashHex: "",
@@ -612,8 +611,8 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
     const { entry: sessionCheckpoint } = await signEntryAt({
       seq: entry.seq + 1,
       prevHashHex: hash,
-      actorUserId: MEMBER,
-      operation: checkpointOperation({
+      actor: identityOf(MEMBER),
+      operation: checkpointOp({
         environmentId: "env-audit-0002",
         epoch: 1,
         manifestVersion: 1,
@@ -697,8 +696,8 @@ describe("data events (§3.3) and gapless seq (§5.1)", () => {
       environmentId: ENV,
       epoch: 1,
       dek,
-      recipientUserId: READER,
-      signerUserId: MEMBER,
+      recipient: identityOf(READER),
+      signer: identityOf(MEMBER),
     });
     const reRegistered = await requestJson(
       "POST",

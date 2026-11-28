@@ -1,4 +1,5 @@
 import type { ChainEntry } from "@maruhi/crypto";
+import { resignEntryAt } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -7,7 +8,7 @@ import {
   vectorEntries,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
-import { resignEntryAt } from "./support/data-crypto.ts";
+import { signerOf } from "./support/data-crypto.ts";
 import {
   appendEntry,
   registerMembershipScenario,
@@ -93,11 +94,8 @@ function registerConsensusRejectTest(negative: AuthzNegative): void {
     : `rejects ${negative.name} with 422 (${negative.expected_reason})`;
   it(label, async () => {
     const { head } = await replayNegativePrefix(negative);
-    const { entry } = await resignEntryAt(
-      remapProposalRef(toWireEntry(negative.entry)),
-      head.seq + 1,
-      head.hashHex,
-    );
+    const base = remapProposalRef(toWireEntry(negative.entry));
+    const { entry } = await resignEntryAt(base, head.seq + 1, head.hashHex, signerOf(base));
     const response = await appendEntry(vectorProjectId, entry.prevHashHex, entry);
     if (expectsConcealment) {
       expect(response.status).toBe(404);

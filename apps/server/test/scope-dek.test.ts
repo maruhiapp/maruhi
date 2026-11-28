@@ -1,16 +1,11 @@
 import type { ChainState, MemberScope } from "@maruhi/crypto";
+import { generateDek } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import { addMemberOp, testDekCommitmentHex, testEnvironmentId, wrapDekTo } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { expectedWrapRecipientCount } from "../src/dek-wraps.ts";
-import {
-  addMemberOperation,
-  commitmentOf,
-  makeDek,
-  wrapDekForAll,
-  wrapDekTo,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -39,14 +34,14 @@ async function setupListed(): Promise<{ envDek: Uint8Array; otherDek: Uint8Array
   const envDek = await createEnvironmentOk(fixture, ENV, "App");
   const otherDek = await createEnvironmentOk(fixture, OTHER, "Other");
   await seedMemberToken(fixture, DEV, 9010);
-  await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [ENV]));
+  await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", [ENV]));
   return { envDek, otherDek };
 }
 
 describe("R(E) — the complete set (environment creation / rotate compound — §12-4)", () => {
   it("the complete set at environment creation is only members whose scope contains E: including a non-listed member is 422 scope-out-of-range, excluding them is 200", async () => {
     await setupListed();
-    const withDev = makeDek();
+    const withDev = generateDek();
     const overfull = await createEnvironmentComposite(fixture, {
       environmentId: "env-new-0003",
       name: "New",
@@ -58,10 +53,10 @@ describe("R(E) — the complete set (environment creation / rotate compound — 
         recipientUserIds: [...ALL_MEMBERS, DEV],
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, "env-new-0003", 1, withDev),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, "env-new-0003", 1, withDev),
     });
     await expectDekRejected(overfull, "scope-out-of-range");
-    const dek = makeDek();
+    const dek = generateDek();
     const exact = await createEnvironmentComposite(fixture, {
       environmentId: "env-new-0003",
       name: "New",
@@ -73,14 +68,14 @@ describe("R(E) — the complete set (environment creation / rotate compound — 
         recipientUserIds: ALL_MEMBERS,
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, "env-new-0003", 1, dek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, "env-new-0003", 1, dek),
     });
     expect(exact.status).toBe(200);
   });
 
   it("the complete set of a rotate compound is R(E): omitting an in-scope member is 422 recipient-missing, including all is 200", async () => {
     await setupListed();
-    const dek = makeDek();
+    const dek = generateDek();
     const missing = await rotateEnvironmentComposite(fixture, {
       environmentId: ENV,
       newEpoch: 2,
@@ -92,7 +87,7 @@ describe("R(E) — the complete set (environment creation / rotate compound — 
         recipientUserIds: ALL_MEMBERS,
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek),
       actorUserId: OWNER,
     });
     await expectDekRejected(missing, "recipient-missing");
@@ -107,11 +102,11 @@ describe("R(E) — the complete set (environment creation / rotate compound — 
         recipientUserIds: [...ALL_MEMBERS, DEV],
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek),
       actorUserId: OWNER,
     });
     expect(complete.status).toBe(200);
-    const otherDek = makeDek();
+    const otherDek = generateDek();
     const other = await rotateEnvironmentComposite(fixture, {
       environmentId: OTHER,
       newEpoch: 2,
@@ -123,7 +118,7 @@ describe("R(E) — the complete set (environment creation / rotate compound — 
         recipientUserIds: ALL_MEMBERS,
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, OTHER, 2, otherDek),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, OTHER, 2, otherDek),
       actorUserId: OWNER,
     });
     expect(other.status).toBe(200);
@@ -140,8 +135,8 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
           environmentId: OTHER,
           epoch: 1,
           dek: otherDek,
-          recipientUserId: DEV,
-          signerUserId: OWNER,
+          recipient: identityOf(DEV),
+          signer: identityOf(OWNER),
         }),
       ],
     });
@@ -153,8 +148,8 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
           environmentId: ENV,
           epoch: 1,
           dek: envDek,
-          recipientUserId: DEV,
-          signerUserId: OWNER,
+          recipient: identityOf(DEV),
+          signer: identityOf(OWNER),
         }),
       ],
     });
@@ -173,9 +168,8 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
           environmentId: OTHER,
           epoch: 1,
           dek: otherDek,
-          recipientUserId: DEV,
-          recipientEncPubHex: "ee".repeat(32),
-          signerUserId: OWNER,
+          recipient: { userId: DEV, encPubHex: "ee".repeat(32) },
+          signer: identityOf(OWNER),
         }),
       ],
     });
@@ -191,8 +185,8 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
           environmentId: OTHER,
           epoch: 1,
           dek: otherDek,
-          recipientUserId: OWNER,
-          signerUserId: DEV,
+          recipient: identityOf(OWNER),
+          signer: identityOf(DEV),
         }),
       ],
     });
@@ -202,7 +196,7 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
 
   it("a listed{} member is a recipient of no environment (not in the complete set, nor an addressable target)", async () => {
     const envDek = await createEnvironmentOk(fixture, ENV, "App");
-    await appendOperation(fixture, OWNER, addMemberOperation(NOBODY, "reader", []));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(NOBODY), "reader", []));
     await createEnvironmentOk(fixture, OTHER, "Other");
     const wrap = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [
@@ -211,8 +205,8 @@ describe("R(E) — the append path (backfill — §12-6)", () => {
           environmentId: ENV,
           epoch: 1,
           dek: envDek,
-          recipientUserId: NOBODY,
-          signerUserId: OWNER,
+          recipient: identityOf(NOBODY),
+          signer: identityOf(OWNER),
         }),
       ],
     });

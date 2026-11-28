@@ -1,3 +1,4 @@
+import { changeRoleOp, signEntryAt } from "@maruhi/test-kit";
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -9,7 +10,7 @@ import {
 } from "../src/do/do-schema.ts";
 import { restoreSnapshot, type RestoreFailureCode } from "../src/do/do-snapshot-restore.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
-import { changeRoleOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -186,8 +187,8 @@ async function rawAppend(actorUserId: string): Promise<Response> {
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId,
-    operation: changeRoleOperation(READER, "member"),
+    actor: identityOf(actorUserId),
+    operation: changeRoleOp({ userId: READER }, "member"),
   });
   return requestJson("POST", "/chain/entries", token(actorUserId), {
     parentHeadHashHex: fixture.head.hashHex,
@@ -206,7 +207,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const older = await exportAll();
     const olderTrailer = parsedLine(older[older.length - 1]);
-    await appendOperation(fixture, OWNER, changeRoleOperation(READER, "member"));
+    await appendOperation(fixture, OWNER, changeRoleOp({ userId: READER }, "member"));
     await createVariableOk(dek, "var-second", "SECOND", "two");
     expect((await requestJson("GET", `/environments/${ENV}/pull`, token(READER))).status).toBe(200);
     await queryProjectDo(
@@ -454,7 +455,7 @@ describe("mirrors (AUTH_SPEC §11-7)", () => {
       seq: Number(newerTrailer["chainHeadSeq"]),
       hashHex: String(newerTrailer["chainHeadHashHex"]),
     };
-    await appendOperation(fixture, OWNER, changeRoleOperation(READER, "reader"));
+    await appendOperation(fixture, OWNER, changeRoleOp({ userId: READER }, "reader"));
   });
 
   it("a frozen former primary syncs back from the destination: the rows its export carried are not re-appended (ruling J revision, round 4)", async () => {

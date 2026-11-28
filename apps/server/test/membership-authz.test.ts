@@ -1,6 +1,7 @@
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import { resignEntryAt, signEntryAt, testProjectId } from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -19,8 +20,7 @@ import {
   vectorEntries,
   vectorProjectId,
 } from "./support/chain-vectors.ts";
-import { resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
+import { identityOf, signerOf } from "./support/data-crypto.ts";
 import {
   appendEntry,
   getChain,
@@ -91,7 +91,8 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     const nonmember = vectorAuthzNegatives.find((n) => n.name === "authz-nonmember-actor");
     if (nonmember === undefined) throw new Error("missing authz-nonmember-actor vector");
     const { head } = await replayVectorChain(nonmember.entry.seq - 1);
-    const { entry } = await resignEntryAt(toWireEntry(nonmember.entry), head.seq + 1, head.hashHex);
+    const base = toWireEntry(nonmember.entry);
+    const { entry } = await resignEntryAt(base, head.seq + 1, head.hashHex, signerOf(base));
     if (entry.op !== "rotate_epoch") throw new Error("expected a rotate_epoch negative");
     const response = await submitComposite(entry, ["user-owner-0001", "user-admin-0003"]);
     expect(response.status).toBe(404);
@@ -170,10 +171,12 @@ describe("chain-API authorization (AUTH_SPEC §11)", () => {
     });
     expect(created.status).toBe(200);
     const createdHead = (await created.json()) as { headSeq: number; headHashHex: string };
+    const base4 = toWireEntry(vector4);
     const { entry: entry4 } = await resignEntryAt(
-      toWireEntry(vector4),
+      base4,
       createdHead.headSeq + 1,
       createdHead.headHashHex,
+      signerOf(base4),
     );
     if (entry4.op !== "rotate_epoch") {
       throw new Error("unexpected vector ops");
@@ -273,7 +276,7 @@ describe("CAS (the §6.4 optimistic lock)", () => {
     const { entry } = await signEntryAt({
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
-      actorUserId: "user-owner-0001",
+      actor: identityOf("user-owner-0001"),
       operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
 
@@ -294,7 +297,7 @@ describe("CAS (the §6.4 optimistic lock)", () => {
     const { entry } = await signEntryAt({
       seq: 3,
       prevHashHex: entry2.entry_hash_hex,
-      actorUserId: "user-owner-0001",
+      actor: identityOf("user-owner-0001"),
       operation: { op: "remove_member", payload: { targetUserId: testUserId("user-member-0002") } },
     });
     for (const bad of ["ab".repeat(31), "AB".repeat(32), "not-hex"]) {

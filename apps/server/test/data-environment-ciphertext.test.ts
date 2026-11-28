@@ -1,3 +1,11 @@
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
+import {
+  encryptValue,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -6,14 +14,7 @@ import {
   MAX_VALUE_CIPHERTEXT_BYTES,
 } from "../src/policy.ts";
 import { environmentBytesExceeded } from "../src/quotas.ts";
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
-import {
-  encryptValue,
-  testEnvironmentId,
-  testProjectId,
-  testVariableId,
-  valueSignedBytesHashOf,
-} from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,
@@ -290,18 +291,17 @@ describe("the per-environment current-ciphertext cap (§12-8 — Sc-3)", () => {
 
 async function creationBody(dek: Uint8Array) {
   const variableId = "var-created-01";
-  const value = await encryptValue(
+  const value = await encryptValue({
     dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: 1,
-      variableId: testVariableId(variableId),
-      version: 1,
-    },
-    "x",
-    { writerUserId: MEMBER, head: fixture.head },
-  );
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: 1,
+    variableId: testVariableId(variableId),
+    version: 1,
+    plaintext: "x",
+    writer: identityOf(MEMBER),
+    head: fixture.head,
+  });
   const statement = await variableStatementFor(MEMBER, variableId, "CREATED");
   const { manifest } = await manifestForStatement(statement, MEMBER);
   return { statement, value, manifest };

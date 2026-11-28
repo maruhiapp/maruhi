@@ -1,32 +1,32 @@
-import { encodeHex, exportEncryptionPublicKey, generateEncryptionKeyPair } from "@maruhi/crypto";
+import {
+  encodeHex,
+  exportEncryptionPublicKey,
+  generateDek,
+  generateEncryptionKeyPair,
+} from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
+import {
+  createVariableStatement,
+  encryptValue,
+  metaSignedBytesHashOf,
+  signMetaStatement,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testKeyFingerprintHex,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
+  type WireVariableMetaStatement,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_VERSION_VALUES_PAGE_BYTES } from "../src/policy.ts";
 import { withinByteBudget } from "../src/programs/programs-history.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
-import {
-  createVariableStatement,
-  encryptValue,
-  makeDek,
-  metaSignedBytesHashOf,
-  signMetaStatementAs,
-  valueSignedBytesHashOf,
-  vectorKeyOf,
-  wrapDekForAll,
-  wrapDekTo,
-  wrapDekToServer,
-  type WireEncryptedPayload,
-  type WireVariableMetaStatement,
-} from "./support/data-crypto.ts";
-import { commitmentOf } from "./support/data-crypto.ts";
-import {
-  testEnvironmentId,
-  testKeyFingerprintHex,
-  testProjectId,
-  testVariableId,
-} from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -109,20 +109,19 @@ async function createVariableAsOwner(input: {
   readonly variableId: string;
   readonly name: string;
 }): Promise<WireVariableMetaStatement> {
-  const value = await encryptValue(
-    input.dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(input.environmentId),
-      epoch: 1,
-      variableId: testVariableId(input.variableId),
-      version: 1,
-    },
-    `${input.name}-plaintext`,
-    { writerUserId: OWNER, head: fixture.head },
-  );
+  const value = await encryptValue({
+    dek: input.dek,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(input.environmentId),
+    epoch: 1,
+    variableId: testVariableId(input.variableId),
+    version: 1,
+    plaintext: `${input.name}-plaintext`,
+    writer: identityOf(OWNER),
+    head: fixture.head,
+  });
   const statement = await createVariableStatement({
-    authorUserId: OWNER,
+    author: identityOf(OWNER),
     projectId,
     environmentId: input.environmentId,
     variableId: input.variableId,
@@ -157,18 +156,18 @@ async function pushNextVersion(input: {
   readonly sameValueAs?: number;
   readonly epoch?: number;
 }): Promise<WireEncryptedPayload> {
-  const value = await encryptValue(
-    input.dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(ENV),
-      epoch: input.epoch ?? 1,
-      variableId: testVariableId(VAR),
-      version: input.version,
-    },
-    `value-v${input.version}`,
-    { writerUserId: OWNER, head: fixture.head, prevValueSigHashHex: input.prevValueSigHashHex },
-  );
+  const value = await encryptValue({
+    dek: input.dek,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(ENV),
+    epoch: input.epoch ?? 1,
+    variableId: testVariableId(VAR),
+    version: input.version,
+    plaintext: `value-v${input.version}`,
+    writer: identityOf(OWNER),
+    head: fixture.head,
+    prevValueSigHashHex: input.prevValueSigHashHex,
+  });
   const response = await requestJson(
     "POST",
     `/environments/${ENV}/variables/${VAR}/versions`,
@@ -183,7 +182,7 @@ async function rotateTo(
   newEpoch: number,
   recipientUserIds: readonly string[],
 ): Promise<Uint8Array> {
-  const dek = makeDek();
+  const dek = generateDek();
   const response = await rotateEnvironmentComposite(fixture, {
     environmentId: ENV,
     newEpoch,
@@ -195,7 +194,7 @@ async function rotateTo(
       recipientUserIds,
       signerUserId: OWNER,
     }),
-    dekCommitmentHex: await commitmentOf(projectId, ENV, newEpoch, dek),
+    dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, newEpoch, dek),
     actorUserId: OWNER,
   });
   expect(response.status).toBe(200);
@@ -293,7 +292,7 @@ describe("rotation-needed detection: remove_member (AUDIT_SPEC §4.1)", () => {
       variableId: gapVar,
       name: "GAP_SECRET",
     });
-    const gapDeleteStatement = await signMetaStatementAs(OWNER, projectId, {
+    const gapDeleteStatement = await signMetaStatement(identityOf(OWNER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: ENV,
       variableId: gapVar,
@@ -433,7 +432,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const outEnv = "env-out-of-scope";
-    const outDek = makeDek();
+    const outDek = generateDek();
     const outDeks = await wrapDekForAll({
       projectId,
       environmentId: outEnv,
@@ -448,7 +447,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
           environmentId: outEnv,
           name: "Out",
           deks: outDeks,
-          dekCommitmentHex: await commitmentOf(projectId, outEnv, 1, outDek),
+          dekCommitmentHex: await testDekCommitmentHex(projectId, outEnv, 1, outDek),
         })
       ).status,
     ).toBe(200);
@@ -476,14 +475,14 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
         ],
       },
     });
-    const serverWrap = await wrapDekToServer({
+    const serverWrap = await wrapDekTo({
       projectId,
       environmentId: ENV,
       epoch: 1,
       dek,
-      serverKeyFingerprintHex: key.fingerprintHex,
-      serverEncPubHex: key.encPubHex,
-      signerUserId: OWNER,
+      recipient: { userId: key.fingerprintHex, encPubHex: key.encPubHex },
+      recipientClass: "server",
+      signer: identityOf(OWNER),
     });
     expect(
       (await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), { deks: [serverWrap] }))
@@ -531,7 +530,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     const widenEnv = "env-widened";
-    const widenDek = makeDek();
+    const widenDek = generateDek();
     const widenDeks = await wrapDekForAll({
       projectId,
       environmentId: widenEnv,
@@ -546,7 +545,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
           environmentId: widenEnv,
           name: "Widened",
           deks: widenDeks,
-          dekCommitmentHex: await commitmentOf(projectId, widenEnv, 1, widenDek),
+          dekCommitmentHex: await testDekCommitmentHex(projectId, widenEnv, 1, widenDek),
         })
       ).status,
     ).toBe(200);
@@ -575,7 +574,7 @@ describe("rotation-needed detection: the revoke_server variant (AUDIT_SPEC §4.1
         leasePolicy,
       },
     });
-    const preDelete = await signMetaStatementAs(OWNER, projectId, {
+    const preDelete = await signMetaStatement(identityOf(OWNER), projectId, {
       suite: "maruhi/v1" as const,
       environmentId: widenEnv,
       variableId: preVar,
@@ -645,9 +644,9 @@ describe("recipient-key consistency (AUTH_SPEC §12-6 — the B1a addendum)", ()
       projectId,
       environmentId: ENV,
       epoch: 1,
-      dek: makeDek(),
-      recipientUserId: MEMBER,
-      signerUserId: OWNER,
+      dek: generateDek(),
+      recipient: identityOf(MEMBER),
+      signer: identityOf(OWNER),
     });
     const response = await requestJson("POST", `/environments/${ENV}/deks`, token(OWNER), {
       deks: [duplicate],
@@ -883,22 +882,18 @@ describe("value history and rollback (AUTH_SPEC §12-5 / §12-7, AUDIT_SPEC §4.
   it("sameValueAs must name an earlier version (422 payload-mismatch — §12-5)", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     const v1 = await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
-    const value = await encryptValue(
+    const value = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 2,
-      },
-      "value-v2",
-      {
-        writerUserId: OWNER,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-      },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 2,
+      plaintext: "value-v2",
+      writer: identityOf(OWNER),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+    });
     const response = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,

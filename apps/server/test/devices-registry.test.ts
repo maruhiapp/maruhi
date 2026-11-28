@@ -7,6 +7,7 @@ import {
   generateEncryptionKeyPair,
   generateSigningKeyPair,
 } from "@maruhi/crypto";
+import { testProjectId } from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -20,7 +21,6 @@ import {
   sessionHeaders,
 } from "./support/auth.ts";
 import { vectorKeyNamed } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
 
 beforeEach(async () => {
   await resetAuthDb();

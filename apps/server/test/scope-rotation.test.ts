@@ -1,4 +1,17 @@
+import { generateDek } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId } from "@maruhi/crypto/test-support";
+import {
+  addMemberOp,
+  changeRoleOp,
+  createVariableStatement,
+  encryptValue,
+  metaSignedBytesHashOf,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import type {
@@ -14,18 +27,7 @@ import {
   detectServerRevocation,
   type RecommendedEvent,
 } from "../src/rotation-detect.ts";
-import {
-  addMemberOperation,
-  changeRoleOperation,
-  commitmentOf,
-  createVariableStatement,
-  encryptValue,
-  makeDek,
-  metaSignedBytesHashOf,
-  valueSignedBytesHashOf,
-  wrapDekForAll,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   appendOperation,
@@ -75,20 +77,19 @@ async function createVariableAsOwner(input: {
   readonly variableId: string;
   readonly name: string;
 }): Promise<Awaited<ReturnType<typeof encryptValue>>> {
-  const value = await encryptValue(
-    input.dek,
-    {
-      projectId: testProjectId(projectId),
-      environmentId: testEnvironmentId(input.environmentId),
-      epoch: 1,
-      variableId: testVariableId(input.variableId),
-      version: 1,
-    },
-    `${input.name}-plaintext`,
-    { writerUserId: OWNER, head: fixture.head },
-  );
+  const value = await encryptValue({
+    dek: input.dek,
+    projectId: testProjectId(projectId),
+    environmentId: testEnvironmentId(input.environmentId),
+    epoch: 1,
+    variableId: testVariableId(input.variableId),
+    version: 1,
+    plaintext: `${input.name}-plaintext`,
+    writer: identityOf(OWNER),
+    head: fixture.head,
+  });
   const statement = await createVariableStatement({
-    authorUserId: OWNER,
+    author: identityOf(OWNER),
     projectId,
     environmentId: input.environmentId,
     variableId: input.variableId,
@@ -127,7 +128,7 @@ async function setupTwoEnvironments(scope: readonly string[]): Promise<number> {
     name: "O",
   });
   await seedMemberToken(fixture, DEV, 9010);
-  await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", scope));
+  await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", scope));
   return fixture.head.seq;
 }
 
@@ -135,7 +136,7 @@ async function changeRole(
   role: "owner" | "admin" | "member" | "reader",
   scope?: readonly string[],
 ): Promise<number> {
-  await appendOperation(fixture, OWNER, changeRoleOperation(DEV, role, scope));
+  await appendOperation(fixture, OWNER, changeRoleOp({ userId: DEV }, role, scope));
   return fixture.head.seq;
 }
 
@@ -198,9 +199,9 @@ describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subje
       name: "O",
     });
     await seedMemberToken(fixture, DEV, 9010);
-    await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [ENV, OTHER]));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", [ENV, OTHER]));
     await changeRole("member", [ENV]);
-    const otherDek2 = makeDek();
+    const otherDek2 = generateDek();
     const rotated = await rotateEnvironmentComposite(fixture, {
       environmentId: OTHER,
       newEpoch: 2,
@@ -212,26 +213,22 @@ describe("the exposure bound (§4.1-5 — VH): the epoch at the end of the subje
         recipientUserIds: ALL_MEMBERS,
         signerUserId: OWNER,
       }),
-      dekCommitmentHex: await commitmentOf(projectId, OTHER, 2, otherDek2),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, OTHER, 2, otherDek2),
       actorUserId: OWNER,
     });
     expect(rotated.status).toBe(200);
-    const fresh = await encryptValue(
-      otherDek2,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(OTHER),
-        epoch: 2,
-        variableId: testVariableId(VAR_OTHER),
-        version: 2,
-      },
-      "rotated-upstream",
-      {
-        writerUserId: OWNER,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(otherV1, OWNER),
-      },
-    );
+    const fresh = await encryptValue({
+      dek: otherDek2,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(OTHER),
+      epoch: 2,
+      variableId: testVariableId(VAR_OTHER),
+      version: 2,
+      plaintext: "rotated-upstream",
+      writer: identityOf(OWNER),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(otherV1, OWNER),
+    });
     const pushed = await requestJson(
       "POST",
       `/environments/${OTHER}/variables/${VAR_OTHER}/versions`,

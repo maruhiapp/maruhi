@@ -1,13 +1,12 @@
 import type { ApprovalTargetOp, ChainOperation, ProposableOperation } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
-import { vectorKeys } from "@maruhi/crypto/test-support";
+import { testUserId, vectorKeys } from "@maruhi/crypto/test-support";
+import { addMemberOp, hexBytes, signEntryAt, testProjectId } from "@maruhi/test-kit";
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MAX_PENDING_PROPOSALS, MAX_PROPOSAL_LIFETIME_MS } from "../src/policy.ts";
-import { addMemberOperation, hexBytes, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -56,7 +55,7 @@ async function appendRaw(
   const { entry, hash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId,
+    actor: identityOf(actorUserId),
     operation,
   });
   const response = await requestJson("POST", "/chain/entries", token(actorUserId), {
@@ -71,7 +70,7 @@ async function appendRaw(
 
 async function enableFourEyes(ops: readonly ApprovalTargetOp[]): Promise<void> {
   await seedMemberToken(fixture, OWNER2, 9014);
-  await appendOperation(fixture, OWNER, addMemberOperation(OWNER2, "owner"));
+  await appendOperation(fixture, OWNER, addMemberOp(identityOf(OWNER2), "owner"));
   await appendOperation(fixture, OWNER, {
     op: "set_approval_policy",
     payload: { ops, requiredApprovals: 2 },

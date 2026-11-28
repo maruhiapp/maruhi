@@ -1,16 +1,15 @@
 import type { TokenScope } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
 import { importSigningKeyPair, signHeadAttestation } from "@maruhi/crypto";
-import { testUserId } from "@maruhi/crypto/test-support";
-import { vectorKeys } from "@maruhi/crypto/test-support";
+import { testUserId, vectorKeys } from "@maruhi/crypto/test-support";
+import { hexBytes, resignEntryAt, signEntryAt, testProjectId } from "@maruhi/test-kit";
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { MAX_ATTESTATIONS_PER_MEMBER_PER_WINDOW } from "../src/policy.ts";
 import { BASE, bearer, cliToken, JSON_HEADERS, reseedAuthDb, seedUser } from "./support/auth.ts";
 import { toWireEntry, vectorEntries, vectorProjectId } from "./support/chain-vectors.ts";
-import { hexBytes, resignEntryAt, signEntryAt } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
+import { identityOf, signerOf } from "./support/data-crypto.ts";
 import { resetProjectDo } from "./support/project-do.ts";
 
 const ORG = "org-attest-0001";
@@ -49,7 +48,8 @@ async function setupChain(): Promise<Head> {
   expect(init.status).toBe(200);
   const second = await appendEntry(genesis.entry_hash_hex, toWireEntry(addMember));
   expect(second.status).toBe(200);
-  const reader = await resignEntryAt(toWireEntry(addReader), 3, addMember.entry_hash_hex);
+  const readerBase = toWireEntry(addReader);
+  const reader = await resignEntryAt(readerBase, 3, addMember.entry_hash_hex, signerOf(readerBase));
   const third = await appendEntry(addMember.entry_hash_hex, reader.entry);
   expect(third.status).toBe(200);
   return { seq: 3, hashHex: reader.hash };
@@ -289,7 +289,7 @@ describe("distribution and cleanup on remove (§6.4 / §16-1)", () => {
     const removal = await signEntryAt({
       seq: 4,
       prevHashHex: head.hashHex,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: { op: "remove_member", payload: { targetUserId: MEMBER } },
     });
     expect((await appendEntry(head.hashHex, removal.entry)).status).toBe(200);

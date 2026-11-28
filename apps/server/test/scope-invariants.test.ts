@@ -1,8 +1,9 @@
 import { testUserId } from "@maruhi/crypto/test-support";
+import { addMemberOp } from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
 import { fetchEvents } from "./support/audit-read-scenario.ts";
-import { addMemberOperation } from "./support/data-crypto.ts";
+import { identityOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -37,7 +38,7 @@ describe("the lease path is unchanged (AUTH_SPEC §14-1)", () => {
   it("a lease is decided by the grant's scope alone even with members in listed{} / listed{OTHER}", async () => {
     const dek = await createEnvironmentOk(fixture, ENV, "App");
     await createEnvironmentOk(fixture, OTHER, "Other");
-    await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [OTHER]));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", [OTHER]));
     await grantServer({ scope: [ENV] });
     await backfillServerWrap(1, dek);
     const workload = await workloadKeyPair();
@@ -55,7 +56,7 @@ describe("visibility classes are unchanged (AUDIT_SPEC §6)", () => {
     await createEnvironmentOk(fixture, OTHER, "Other");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await seedMemberToken(fixture, DEV, 9010);
-    await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", [OTHER]));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", [OTHER]));
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },
@@ -87,7 +88,7 @@ describe("visibility classes are unchanged (AUDIT_SPEC §6)", () => {
     await createEnvironmentOk(fixture, OTHER, "Other");
     await createVariableOk(dek, VAR, "DATABASE_URL", "postgres://alpha");
     await seedMemberToken(fixture, DEVADMIN, 9011);
-    await appendOperation(fixture, OWNER, addMemberOperation(DEVADMIN, "admin", [OTHER]));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEVADMIN), "admin", [OTHER]));
     await appendOperation(fixture, OWNER, {
       op: "remove_member",
       payload: { targetUserId: MEMBER },

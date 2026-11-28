@@ -1,3 +1,4 @@
+import { testEnvironmentId } from "@maruhi/test-kit";
 import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -8,7 +9,6 @@ import { MAX_LEASES_PER_WINDOW } from "../src/policy.ts";
 import { leaseProgram } from "../src/programs/programs-lease.ts";
 import { makeServerKey, ServerKey } from "../src/server-key.ts";
 import { StorageMeter } from "../src/storage-guard.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,

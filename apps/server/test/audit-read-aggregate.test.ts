@@ -1,5 +1,6 @@
 import { auditReadPayload, auditReadVariablesOf } from "@maruhi/core";
 import { testUserId } from "@maruhi/crypto/test-support";
+import { testEnvironmentId, testVariableId } from "@maruhi/test-kit";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -12,7 +13,6 @@ import {
 } from "../src/policy.ts";
 import { detectMemberRemoval } from "../src/rotation-detect.ts";
 import { fetchEvents, type WireAuditEvent } from "./support/audit-read-scenario.ts";
-import { testEnvironmentId, testVariableId } from "./support/data-crypto.ts";
 import {
   createEnvironmentOk,
   MEMBER,

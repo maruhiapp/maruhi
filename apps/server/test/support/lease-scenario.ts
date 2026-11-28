@@ -7,12 +7,12 @@ import {
   type KeyFingerprintHex,
   unwrapLeaseDek,
 } from "@maruhi/crypto";
+import { hexBytes, testEnvironmentId, testProjectId, wrapDekTo } from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { expect } from "vite-plus/test";
 
 import { JSON_HEADERS } from "./auth.ts";
-import { hexBytes, wrapDekToServer } from "./data-crypto.ts";
-import { testEnvironmentId, testProjectId } from "./data-crypto.ts";
+import { identityOf } from "./data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -65,14 +65,14 @@ export async function backfillServerWrap(
   environmentId: string = ENV,
 ): Promise<void> {
   const key = await deploymentKey();
-  const wrap = await wrapDekToServer({
+  const wrap = await wrapDekTo({
     projectId,
     environmentId,
     epoch,
     dek,
-    serverKeyFingerprintHex: key.fingerprintHex,
-    serverEncPubHex: key.encPubHex,
-    signerUserId: OWNER,
+    recipient: { userId: key.fingerprintHex, encPubHex: key.encPubHex },
+    recipientClass: "server",
+    signer: identityOf(OWNER),
   });
   const response = await requestJson("POST", `/environments/${environmentId}/deks`, token(OWNER), {
     deks: [wrap],

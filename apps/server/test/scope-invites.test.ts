@@ -1,8 +1,8 @@
+import { testEnvironmentId } from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vite-plus/test";
 
 import { BASE, bearer, JSON_HEADERS } from "./support/auth.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
 import { OWNER, projectId, STRANGER, tokenOf } from "./support/data-fixture.ts";
 import {
   acceptAs,

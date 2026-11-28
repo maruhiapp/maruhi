@@ -6,6 +6,15 @@ import {
   sealProposedValue,
 } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
+import {
+  addMemberOp,
+  encryptValue,
+  hexBytes,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -14,15 +23,7 @@ import {
   MAX_ROTATION_PROPOSALS_PER_WINDOW,
 } from "../src/policy.ts";
 import { JSON_HEADERS } from "./support/auth.ts";
-import {
-  addMemberOperation,
-  encryptValue,
-  hexBytes,
-  valueSignedBytesHashOf,
-  vectorKeyNamed,
-  vectorKeyOf,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyNamed, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -298,22 +299,18 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     expect((await listAs(STRANGER)).status).toBe(404);
     expect(await openAs(OWNER, PROPOSAL_ID, VAR, wrap)).toBeNull();
 
-    const v2 = await encryptValue(
+    const v2 = await encryptValue({
       dek,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 1,
-        variableId: testVariableId(VAR),
-        version: 2,
-      },
-      NEW_VALUE,
-      {
-        writerUserId: MEMBER,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
-      },
-    );
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 1,
+      variableId: testVariableId(VAR),
+      version: 2,
+      plaintext: NEW_VALUE,
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(v1, MEMBER),
+    });
     const pushed = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -696,7 +693,7 @@ describe("sealed value proposals: mint, list, accept (AUTH_SPEC §14-5 / CRYPTO_
     const DEV = testUserId("user-devmember-0010");
     await createEnvironmentOk(fixture, "env-other", "Other");
     await seedMemberToken(fixture, DEV, 9010);
-    await appendOperation(fixture, OWNER, addMemberOperation(DEV, "member", ["env-other"]));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf(DEV), "member", ["env-other"]));
     await expectStatus(await mint({ proposal: await proposalFor() }), 200);
     expect(await proposalsOf(DEV)).toEqual([]);
     expect(await proposalsOf(MEMBER)).toHaveLength(1);

@@ -1,35 +1,41 @@
 import type { ChainEntry, ChainOperation, EnvValuesDigestEntry } from "@maruhi/crypto";
+import { generateDek } from "@maruhi/crypto";
 import { testUserId } from "@maruhi/crypto/test-support";
+import type {
+  WireDigestEntry,
+  WireEnvironmentManifest,
+  WireVariableMetaStatement,
+  WireWrappedDek,
+} from "@maruhi/test-kit";
+import {
+  addMemberOp,
+  buildChain,
+  checkpointOp,
+  createEnvironmentOp,
+  genesisOp,
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
+  rotateEpochOp,
+  signEntryAt,
+  signManifest,
+  signMetaStatement,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testVariableId,
+  valuesDigestOf,
+  variablesDigestOf,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { expect } from "vite-plus/test";
 
 import { BASE, bearer, cliToken, JSON_HEADERS, reseedAuthDb, seedUser } from "./auth.ts";
-import type {
-  WireDigestEntry,
-  WireEnvironmentManifest,
-  WireEnvironmentMetaStatement,
-  WireWrappedDek,
-} from "./data-crypto.ts";
-import {
-  addMemberOperation,
-  buildChain,
-  checkpointOperation,
-  commitmentOf,
-  createEnvironmentOperation,
-  digestOf,
-  genesisOperation,
-  makeDek,
-  manifestSignedBytesHashOf,
-  metaSignedBytesHashOf,
-  rotateEpochOperation,
-  signEntryAt,
-  signEnvManifestAs,
-  signMetaStatementAs,
-  valuesDigestOf,
-  wrapDekForAll,
-} from "./data-crypto.ts";
-import { testEnvironmentId, testVariableId } from "./data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./data-crypto.ts";
 import { queryProjectDo, resetProjectDo } from "./project-do.ts";
+
+type WireEnvironmentMetaStatement = Omit<
+  WireVariableMetaStatement,
+  "variableId" | "layoutVersion" | "varType" | "required" | "description" | "maxAgeDays" | "status"
+> & { readonly status: "active" | "deleted" };
 
 export const OWNER = testUserId("user-owner-0001");
 export const MEMBER = testUserId("user-member-0002");
@@ -45,9 +51,9 @@ const GITHUB_IDS: Record<string, number> = {
 };
 
 const baseChain = await buildChain([
-  { actorUserId: OWNER, operation: genesisOperation(OWNER) },
-  { actorUserId: OWNER, operation: addMemberOperation(MEMBER, "member") },
-  { actorUserId: OWNER, operation: addMemberOperation(READER, "reader") },
+  { actor: identityOf(OWNER), operation: genesisOp(identityOf(OWNER)) },
+  { actor: identityOf(OWNER), operation: addMemberOp(identityOf(MEMBER), "member") },
+  { actor: identityOf(OWNER), operation: addMemberOp(identityOf(READER), "reader") },
 ]);
 
 export const projectId = baseChain.projectId;
@@ -127,7 +133,7 @@ export async function appendOperation(
   const { entry, hash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId,
+    actor: identityOf(actorUserId),
     operation,
   });
   const response = await SELF.fetch(`${BASE}/projects/${projectId}/chain/entries`, {
@@ -164,7 +170,7 @@ export async function createEnvironmentStatement(input: {
   readonly name: string;
   readonly head: { readonly seq: number; readonly hashHex: string };
 }): Promise<WireEnvironmentMetaStatement> {
-  return signMetaStatementAs(input.authorUserId, projectId, {
+  return signMetaStatement(identityOf(input.authorUserId), projectId, {
     suite: "maruhi/v1",
     environmentId: input.environmentId,
     name: input.name,
@@ -192,12 +198,12 @@ export async function nextEnvironmentManifest(
     last === undefined
       ? ""
       : await manifestSignedBytesHashOf(projectId, last.manifest, last.issuerUserId);
-  return signEnvManifestAs(input.issuerUserId, projectId, {
+  return signManifest(identityOf(input.issuerUserId), projectId, {
     suite: "maruhi/v1",
     environmentId: input.environmentId,
     epoch: input.epoch,
     manifestVersion: (last?.manifest.manifestVersion ?? 0) + 1,
-    variablesDigestHex: await digestOf(input.entries),
+    variablesDigestHex: await variablesDigestOf(input.entries),
     envMetaVersion: input.envMeta.metaVersion,
     envMetaSigHashHex: input.envMeta.sigHashHex,
     prevManifestSigHashHex,
@@ -285,8 +291,8 @@ async function signBoundaryCheckpointEntry(input: {
   const { entry } = await signEntryAt({
     seq: input.compositeSeq + 1,
     prevHashHex: input.compositeHashHex,
-    actorUserId: input.actorUserId,
-    operation: checkpointOperation({
+    actor: identityOf(input.actorUserId),
+    operation: checkpointOp({
       environmentId: input.environmentId,
       epoch: input.epoch,
       manifestVersion: input.manifest.manifestVersion,
@@ -320,8 +326,8 @@ export async function createEnvironmentComposite(
   const { entry, hash: entryHash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
-    actorUserId,
-    operation: createEnvironmentOperation(input.environmentId, input.dekCommitmentHex),
+    actor: identityOf(actorUserId),
+    operation: createEnvironmentOp(input.environmentId, input.dekCommitmentHex),
   });
   const statement =
     input.statement ??
@@ -336,12 +342,12 @@ export async function createEnvironmentComposite(
     }));
   const manifest =
     input.manifest ??
-    (await signEnvManifestAs(actorUserId, projectId, {
+    (await signManifest(identityOf(actorUserId), projectId, {
       suite: "maruhi/v1",
       environmentId: input.environmentId,
       epoch: 1,
       manifestVersion: 1,
-      variablesDigestHex: await digestOf([]),
+      variablesDigestHex: await variablesDigestOf([]),
       envMetaVersion: statement.metaVersion,
       envMetaSigHashHex: await metaSignedBytesHashOf(projectId, statement, actorUserId),
       prevManifestSigHashHex: "",
@@ -406,7 +412,7 @@ async function nextEnvironmentStatement(
     last.statement,
     last.authorUserId,
   );
-  return signMetaStatementAs(input.authorUserId, projectId, {
+  return signMetaStatement(identityOf(input.authorUserId), projectId, {
     suite: "maruhi/v1",
     environmentId: input.environmentId,
     name: input.name,
@@ -498,7 +504,7 @@ export async function deleteEnvironmentRequest(
   const { entry, hash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: options.entryPrevHashHex ?? parentHeadHashHex,
-    actorUserId,
+    actor: identityOf(actorUserId),
     operation: {
       op: "delete_environment",
       payload: { environmentId: testEnvironmentId(options.entryEnvironmentId ?? environmentId) },
@@ -521,7 +527,7 @@ export async function createEnvironmentOk(
   environmentId: string,
   name: string,
 ): Promise<Uint8Array> {
-  const dek = makeDek();
+  const dek = generateDek();
   const deks = await wrapDekForAll({
     projectId,
     environmentId,
@@ -534,7 +540,7 @@ export async function createEnvironmentOk(
     environmentId,
     name,
     deks,
-    dekCommitmentHex: await commitmentOf(projectId, environmentId, 1, dek),
+    dekCommitmentHex: await testDekCommitmentHex(projectId, environmentId, 1, dek),
   });
   expect(response.status).toBe(200);
   return dek;
@@ -552,7 +558,7 @@ export async function createEnvironmentWith(
     name,
     deks,
     dekCommitmentHex:
-      dekCommitmentHex ?? (await commitmentOf(projectId, environmentId, 1, makeDek())),
+      dekCommitmentHex ?? (await testDekCommitmentHex(projectId, environmentId, 1, generateDek())),
   });
 }
 
@@ -575,8 +581,8 @@ export async function rotateCompositeBody(fixture: DataFixture, input: RotateCom
   const { entry, hash: entryHash } = await signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: input.parentHeadHashHex ?? fixture.head.hashHex,
-    actorUserId,
-    operation: rotateEpochOperation(input.environmentId, input.newEpoch, input.dekCommitmentHex),
+    actor: identityOf(actorUserId),
+    operation: rotateEpochOp(input.environmentId, input.newEpoch, input.dekCommitmentHex),
   });
   const last = fixture.manifests.get(input.environmentId);
   const manifest =
@@ -651,7 +657,7 @@ export async function rotateEnvironmentOk(
   environmentId: string,
   newEpoch: number,
 ): Promise<Uint8Array> {
-  const dek = makeDek();
+  const dek = generateDek();
   const deks = await wrapDekForAll({
     projectId,
     environmentId,
@@ -664,7 +670,7 @@ export async function rotateEnvironmentOk(
     environmentId,
     newEpoch,
     deks,
-    dekCommitmentHex: await commitmentOf(projectId, environmentId, newEpoch, dek),
+    dekCommitmentHex: await testDekCommitmentHex(projectId, environmentId, newEpoch, dek),
     actorUserId,
   });
   expect(response.status).toBe(200);

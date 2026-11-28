@@ -9,6 +9,7 @@ import {
 } from "@maruhi/api-schema";
 import type { ChainEntry } from "@maruhi/crypto";
 import { testKeyFingerprintHex, testUserId, testVariableId } from "@maruhi/crypto/test-support";
+import { addMemberOp, signEntryAt, testEnvironmentId, testProjectId } from "@maruhi/test-kit";
 import { env, runInDurableObject } from "cloudflare:test";
 import { Cause, Effect, Exit, Layer, Redacted } from "effect";
 import type { HttpApiEndpoint } from "effect/http-api";
@@ -77,9 +78,7 @@ import {
 import { makeServerKey, ServerKey } from "../src/server-key.ts";
 import { ServerLoggerLive } from "../src/server-logger.ts";
 import { makeStorageMeter, StorageMeter, storageGuardDecision } from "../src/storage-guard.ts";
-import { addMemberOperation, signEntryAt, vectorKeyOf } from "./support/data-crypto.ts";
-import { testEnvironmentId } from "./support/data-crypto.ts";
-import { testProjectId } from "./support/data-crypto.ts";
+import { identityOf, vectorKeyOf } from "./support/data-crypto.ts";
 import {
   appendOperation,
   createEnvironmentOk,
@@ -217,7 +216,7 @@ const signedEntry = (operation: Parameters<typeof signEntryAt>[0]["operation"]) 
   signEntryAt({
     seq: fixture.head.seq + 1,
     prevHashHex: fixture.head.hashHex,
-    actorUserId: OWNER,
+    actor: identityOf(OWNER),
     operation,
   });
 
@@ -462,7 +461,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
 
   it("guards the four-eyes path at the entry that first carries the growth intent (propose / approve of add_member or grant_server) and leaves remove / withdraw open", async () => {
     await seedMemberToken(fixture, "user-owner-0014", 9014);
-    await appendOperation(fixture, OWNER, addMemberOperation("user-owner-0014", "owner"));
+    await appendOperation(fixture, OWNER, addMemberOp(identityOf("user-owner-0014"), "owner"));
     await appendOperation(fixture, OWNER, {
       op: "set_approval_policy",
       payload: { ops: ["add_member", "grant_server", "remove_member"], requiredApprovals: 2 },
@@ -540,7 +539,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
       const resigned = await signEntryAt({
         seq: removeProposed.value.headSeq + 1,
         prevHashHex: removeProposed.value.headHashHex,
-        actorUserId: OWNER,
+        actor: identityOf(OWNER),
         operation: withdrawAdd.entry,
       });
       expect(
@@ -579,7 +578,7 @@ describe("acceptance-path wiring â€” a DO at or above the rejection threshold (Â
     const deleteEnv = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: staleParent,
-      actorUserId: OWNER,
+      actor: identityOf(OWNER),
       operation: {
         op: "delete_environment",
         payload: { environmentId: testEnvironmentId(ENV) },

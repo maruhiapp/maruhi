@@ -1,19 +1,21 @@
+import { generateDek } from "@maruhi/crypto";
+import type { WireEncryptedPayload } from "@maruhi/test-kit";
+import {
+  checkpointOp,
+  createEnvironmentOp,
+  encryptValue,
+  signEntryAt,
+  testDekCommitmentHex,
+  testEnvironmentId,
+  testProjectId,
+  testVariableId,
+  unwrapAndDecrypt,
+  valuesDigestOf,
+  valueSignedBytesHashOf,
+} from "@maruhi/test-kit";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { WireEncryptedPayload } from "./support/data-crypto.ts";
-import {
-  checkpointOperation,
-  commitmentOf,
-  createEnvironmentOperation,
-  encryptValue,
-  makeDek,
-  signEntryAt,
-  unwrapAndDecrypt,
-  valueSignedBytesHashOf,
-  valuesDigestOf,
-  wrapDekForAll,
-} from "./support/data-crypto.ts";
-import { testEnvironmentId, testProjectId, testVariableId } from "./support/data-crypto.ts";
+import { identityOf, wrapDekForAll } from "./support/data-crypto.ts";
 import {
   ALL_MEMBERS,
   createEnvironmentComposite,
@@ -54,7 +56,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     expect(early.status).toBe(409);
     await expect(early.json()).resolves.toMatchObject({ currentEpoch: 1 });
 
-    const dek2 = makeDek();
+    const dek2 = generateDek();
     const headBefore = fixture.head;
     const partial = await wrapDekForAll({
       projectId,
@@ -89,7 +91,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       environmentId: ENV,
       newEpoch: 2,
       deks: complete,
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, dek2),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, dek2),
     });
     expect(rotation.status).toBe(200);
     await expect(rotation.clone().json()).resolves.toMatchObject({
@@ -112,7 +114,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
         projectId,
         environmentId: ENV,
         epoch: 2,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: [READER],
         signerUserId: MEMBER,
       }),
@@ -126,7 +128,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
         projectId,
         environmentId: ENV,
         epoch: 3,
-        dek: makeDek(),
+        dek: generateDek(),
         recipientUserIds: ALL_MEMBERS,
         signerUserId: MEMBER,
       }),
@@ -134,22 +136,18 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     expect(future.status).toBe(422);
     expect(((await future.json()) as { reason: string }).reason).toBe("epoch-out-of-range");
 
-    const v2 = await encryptValue(
-      dek2,
-      {
-        projectId: testProjectId(projectId),
-        environmentId: testEnvironmentId(ENV),
-        epoch: 2,
-        variableId: testVariableId(VAR),
-        version: 2,
-      },
-      "postgres://rotated",
-      {
-        writerUserId: MEMBER,
-        head: fixture.head,
-        prevValueSigHashHex: await valueSignedBytesHashOf(varV1, MEMBER),
-      },
-    );
+    const v2 = await encryptValue({
+      dek: dek2,
+      projectId: testProjectId(projectId),
+      environmentId: testEnvironmentId(ENV),
+      epoch: 2,
+      variableId: testVariableId(VAR),
+      version: 2,
+      plaintext: "postgres://rotated",
+      writer: identityOf(MEMBER),
+      head: fixture.head,
+      prevValueSigHashHex: await valueSignedBytesHashOf(varV1, MEMBER),
+    });
     const pushed = await requestJson(
       "POST",
       `/environments/${ENV}/variables/${VAR}/versions`,
@@ -179,7 +177,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     if (wrap1 === undefined || wrap2 === undefined) throw new Error("missing dek wraps");
     await expect(
       unwrapAndDecrypt({
-        recipientUserId: READER,
+        recipient: identityOf(READER),
         wrapped: wrap2,
         projectId,
         environmentId: ENV,
@@ -188,7 +186,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
     ).resolves.toBe("postgres://rotated");
     await expect(
       unwrapAndDecrypt({
-        recipientUserId: READER,
+        recipient: identityOf(READER),
         wrapped: wrap1,
         projectId,
         environmentId: ENV,
@@ -205,7 +203,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       projectId,
       environmentId: ENV,
       epoch: 2,
-      dek: makeDek(),
+      dek: generateDek(),
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
@@ -224,7 +222,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       projectId,
       environmentId: "env-ghost-9999",
       epoch: 2,
-      dek: makeDek(),
+      dek: generateDek(),
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
@@ -243,7 +241,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       projectId,
       environmentId: ENV,
       epoch: 3,
-      dek: makeDek(),
+      dek: generateDek(),
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
@@ -264,7 +262,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       projectId,
       environmentId: ENV,
       epoch: 2,
-      dek: makeDek(),
+      dek: generateDek(),
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
@@ -286,7 +284,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
       projectId,
       environmentId: ENV,
       epoch: 1,
-      dek: makeDek(),
+      dek: generateDek(),
       recipientUserIds: ALL_MEMBERS,
       signerUserId: MEMBER,
     });
@@ -307,7 +305,7 @@ describe("epochs and rotation (§12-4 composite / §12-5 / §12-6 / CRYPTO_SPEC 
 
   it("retries a composite rotation after a head CAS conflict (the §12-4 re-sign retry)", async () => {
     await createEnvironmentOk(fixture, ENV, "App");
-    const dek2 = makeDek();
+    const dek2 = generateDek();
     const deks = await wrapDekForAll({
       projectId,
       environmentId: ENV,
@@ -345,8 +343,8 @@ const shapeCheckpoint = async (tuple: {
   const { entry } = await signEntryAt({
     seq: fixture.head.seq + 2,
     prevHashHex: "ab".repeat(32),
-    actorUserId: OWNER,
-    operation: checkpointOperation({
+    actor: identityOf(OWNER),
+    operation: checkpointOp({
       ...tuple,
       manifestSigHashHex: "cd".repeat(32),
       valuesDigestHex: await valuesDigestOf([]),
@@ -360,7 +358,7 @@ const createWithCheckpoint = async (checkpoint: Awaited<ReturnType<typeof shapeC
     environmentId: ENV,
     name: "App",
     deks: await wrapsFor(ENV, [...ALL_MEMBERS]),
-    dekCommitmentHex: await commitmentOf(projectId, ENV, 1, makeDek()),
+    dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 1, generateDek()),
     checkpoint,
   });
 
@@ -408,8 +406,8 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
     const { entry: checkpoint } = await signEntryAt({
       seq: fixture.head.seq + 2,
       prevHashHex: "ab".repeat(32),
-      actorUserId: MEMBER,
-      operation: checkpointOperation({
+      actor: identityOf(MEMBER),
+      operation: checkpointOp({
         environmentId: ENV,
         epoch: 1,
         manifestVersion: 1,
@@ -423,18 +421,18 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
   });
 
   it("rejects a binding whose manifest hash differs from the bundled manifest (422 checkpoint-binding-mismatch)", async () => {
-    const commitment = await commitmentOf(projectId, ENV, 1, makeDek());
+    const commitment = await testDekCommitmentHex(projectId, ENV, 1, generateDek());
     const { hash } = await signEntryAt({
       seq: fixture.head.seq + 1,
       prevHashHex: fixture.head.hashHex,
-      actorUserId: OWNER,
-      operation: createEnvironmentOperation(ENV, commitment),
+      actor: identityOf(OWNER),
+      operation: createEnvironmentOp(ENV, commitment),
     });
     const { entry: checkpoint } = await signEntryAt({
       seq: fixture.head.seq + 2,
       prevHashHex: hash,
-      actorUserId: OWNER,
-      operation: checkpointOperation({
+      actor: identityOf(OWNER),
+      operation: checkpointOp({
         environmentId: ENV,
         epoch: 1,
         manifestVersion: 1,
@@ -464,7 +462,7 @@ describe("in-composite consistency of a boundary checkpoint (§12-4 / CRYPTO_SPE
       environmentId: ENV,
       newEpoch: 2,
       deks: await wrapsFor(ENV, [...ALL_MEMBERS], 2, MEMBER),
-      dekCommitmentHex: await commitmentOf(projectId, ENV, 2, makeDek()),
+      dekCommitmentHex: await testDekCommitmentHex(projectId, ENV, 2, generateDek()),
       checkpointValues: [
         {
           variableId: testVariableId("var-phantom-0001"),

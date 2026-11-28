@@ -1,6 +1,20 @@
 import type { ChainEntry } from "@maruhi/crypto";
-import { computeChainEntryHash } from "@maruhi/crypto";
+import { computeChainEntryHash, generateDek } from "@maruhi/crypto";
 import { vectorEnvironmentDeks } from "@maruhi/crypto/test-support";
+import type { WireEnvironmentManifest } from "@maruhi/test-kit";
+import {
+  checkpointOp,
+  hexBytes,
+  manifestSignedBytesHashOf,
+  metaSignedBytesHashOf,
+  resignEntryAt,
+  signEntryAt,
+  signManifest,
+  signMetaStatement,
+  valuesDigestOf,
+  variablesDigestOf,
+  wrapDekTo,
+} from "@maruhi/test-kit";
 import { SELF } from "cloudflare:test";
 import { beforeEach, expect } from "vite-plus/test";
 
@@ -12,22 +26,7 @@ import {
   vectorProjectId,
   type VectorEntry,
 } from "./chain-vectors.ts";
-import type { WireEnvironmentManifest } from "./data-crypto.ts";
-import {
-  checkpointOperation,
-  digestOf,
-  hexBytes,
-  makeDek,
-  manifestSignedBytesHashOf,
-  metaSignedBytesHashOf,
-  resignEntryAt,
-  signEntryAt,
-  signEnvManifestAs,
-  signMetaStatementAs,
-  valuesDigestOf,
-  wrapDekForAll,
-  wrapDekToServer,
-} from "./data-crypto.ts";
+import { identityOf, signerOf, wrapDekForAll } from "./data-crypto.ts";
 import { resetProjectDo } from "./project-do.ts";
 
 export const VECTOR_ORG = "org-vector-0001";
@@ -83,7 +82,7 @@ export const getChain = (projectId: string, headers?: Record<string, string>): P
 
 function vectorDek(environmentId: string, epoch: number): Uint8Array {
   const dekHex = vectorEnvironmentDeks[environmentId]?.[String(epoch)]?.dek_hex;
-  return dekHex === undefined ? makeDek() : hexBytes(dekHex);
+  return dekHex === undefined ? generateDek() : hexBytes(dekHex);
 }
 
 interface TrackedServerGrant {
@@ -118,14 +117,14 @@ async function compositeWraps(
   });
   for (const server of serverRecipients) {
     deks.push(
-      await wrapDekToServer({
+      await wrapDekTo({
         projectId: vectorProjectId,
         environmentId,
         epoch,
         dek,
-        serverKeyFingerprintHex: server.fpHex,
-        serverEncPubHex: server.encPubHex,
-        signerUserId: entry.actor.userId,
+        recipient: { userId: server.fpHex, encPubHex: server.encPubHex },
+        recipientClass: "server",
+        signer: identityOf(entry.actor.userId),
       }),
     );
   }
@@ -140,7 +139,7 @@ async function compositeManifestParts(
   const tracked = replayManifests.get(environmentId);
   const statement =
     entry.op === "create_environment"
-      ? await signMetaStatementAs(entry.actor.userId, vectorProjectId, {
+      ? await signMetaStatement(identityOf(entry.actor.userId), vectorProjectId, {
           suite: "maruhi/v1" as const,
           environmentId,
           name: environmentId,
@@ -172,12 +171,12 @@ async function compositeManifestParts(
                   tracked.issuerUserId,
                 ),
         };
-  const manifest = await signEnvManifestAs(entry.actor.userId, vectorProjectId, {
+  const manifest = await signManifest(identityOf(entry.actor.userId), vectorProjectId, {
     suite: "maruhi/v1",
     environmentId,
     epoch,
     ...chainlike,
-    variablesDigestHex: await digestOf([]),
+    variablesDigestHex: await variablesDigestOf([]),
     envMetaVersion: envMeta.metaVersion,
     envMetaSigHashHex: envMeta.sigHashHex,
     chainHeadHashHex: entry.prevHashHex,
@@ -215,8 +214,8 @@ export async function submitComposite(
   const { entry: checkpoint } = await signEntryAt({
     seq: entry.seq + 1,
     prevHashHex: await computeChainEntryHash(entry),
-    actorUserId: entry.actor.userId,
-    operation: checkpointOperation({
+    actor: identityOf(entry.actor.userId),
+    operation: checkpointOp({
       environmentId,
       epoch,
       manifestVersion: manifest.manifestVersion,
@@ -309,7 +308,7 @@ async function resignForReplay(
   const signed =
     head.seq === vector.seq - 1 && head.hashHex === vector.prev_hash_hex
       ? { entry: wire, hash: vector.entry_hash_hex }
-      : await resignEntryAt(wire, head.seq + 1, head.hashHex);
+      : await resignEntryAt(wire, head.seq + 1, head.hashHex, signerOf(wire));
   if (signed.entry.op === "propose") {
     replayProposalHashes.set(vector.entry_hash_hex, signed.hash);
   }
