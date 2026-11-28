@@ -2,6 +2,12 @@ import { Data, Effect } from "effect";
 
 import { auditRowShapeViolations, deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
 import { OPS_RESTORE_BATCH_ROWS } from "../ops/ops-policy.ts";
+import {
+  type ChainRow,
+  type CheckpointTuple,
+  checkpointRowsMatchLatest,
+  foldChainAnchors,
+} from "./chain-anchors.ts";
 import type {
   SnapshotHeader,
   SnapshotLine,
@@ -153,160 +159,32 @@ export function acceptColumns(
   return live;
 }
 
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-const intField = (record: Record<string, unknown>, key: string): number | null => {
-  const value = record[key];
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
-};
-
-const strField = (record: Record<string, unknown>, key: string): string | null => {
-  const value = record[key];
-  return typeof value === "string" ? value : null;
-};
-
-const strArrayField = (record: Record<string, unknown>, key: string): readonly string[] | null => {
-  const value = record[key];
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? (value as string[])
-    : null;
-};
-
-interface ChainCheckpointTuple {
-  readonly seq: number;
-  readonly entryHashHex: string;
-  readonly epoch: number;
-  readonly manifestVersion: number;
-  readonly manifestSigHashHex: string;
-  readonly valuesDigestHex: string;
-}
-
 interface StagedChainAnchors {
   readonly created: ReadonlySet<string>;
   readonly live: ReadonlySet<string>;
   readonly deleted: ReadonlySet<string>;
   readonly currentEpoch: ReadonlyMap<string, number>;
-  readonly latest: ReadonlyMap<string, ChainCheckpointTuple>;
+  readonly latest: ReadonlyMap<string, CheckpointTuple>;
   readonly grantScopes: ReadonlyMap<number, readonly string[]>;
 }
 
-// fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
-// fallow-ignore-next-line complexity -- the restore-side per-op fold over the chain's entry taxonomy in seq order; the branches are the entry kinds the anchors are read from
 function stagedChainAnchors(sql: SqlStorage): StagedChainAnchors {
-  const epochStarts = new Map<string, [number, number][]>();
-  const deletedSeq = new Map<string, number>();
-  const latest = new Map<string, ChainCheckpointTuple>();
-  const grantScopes = new Map<number, readonly string[]>();
-  const proposedGrants = new Map<string, readonly string[]>();
-  const rows = sql
+  const rows: ChainRow[] = [];
+  for (const row of sql
     .exec(`SELECT seq, entry_json, entry_hash_hex FROM ${CHAIN_STAGING_TABLE} ORDER BY seq`)
-    .toArray();
-  for (const row of rows) {
+    .toArray()) {
     const seq = row["seq"];
     if (typeof seq !== "number" || !Number.isSafeInteger(seq)) {
       continue;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(String(row["entry_json"]));
-    } catch {
-      continue;
-    }
-    const entry = asRecord(parsed);
-    const payload = entry === null ? null : asRecord(entry["payload"]);
-    if (entry === null || payload === null) {
-      continue;
-    }
-    const op = strField(entry, "op");
-    if (op === "create_environment" || op === "rotate_epoch" || op === "delete_environment") {
-      const environmentId = strField(payload, "environmentId");
-      if (environmentId === null) {
-        continue;
-      }
-      if (op === "create_environment") {
-        epochStarts.set(environmentId, [[seq, 1]]);
-      } else if (op === "rotate_epoch") {
-        const newEpoch = intField(payload, "newEpoch");
-        const starts = epochStarts.get(environmentId);
-        if (newEpoch !== null && starts !== undefined) {
-          starts.push([seq, newEpoch]);
-        }
-      } else if (!deletedSeq.has(environmentId)) {
-        deletedSeq.set(environmentId, seq);
-        latest.delete(environmentId);
-      }
-      continue;
-    }
-    if (op === "grant_server") {
-      const scope = strArrayField(payload, "scopeEnvironmentIds");
-      if (scope !== null) {
-        grantScopes.set(seq, scope);
-      }
-      continue;
-    }
-    if (op === "propose") {
-      const inner = asRecord(payload["inner"]);
-      const innerPayload = inner === null ? null : asRecord(inner["payload"]);
-      if (inner !== null && innerPayload !== null && strField(inner, "op") === "grant_server") {
-        const scope = strArrayField(innerPayload, "scopeEnvironmentIds");
-        const hash = row["entry_hash_hex"];
-        if (scope !== null && typeof hash === "string") {
-          proposedGrants.set(hash, scope);
-        }
-      }
-      continue;
-    }
-    if (op === "approve") {
-      const hash = strField(payload, "proposalHashHex");
-      const scope = hash === null ? undefined : proposedGrants.get(hash);
-      if (scope !== undefined) {
-        grantScopes.set(seq, scope);
-      }
-      continue;
-    }
-    if (op !== "checkpoint" || !Array.isArray(payload["environments"])) {
-      continue;
-    }
     const entryHashHex = row["entry_hash_hex"];
-    if (typeof entryHashHex !== "string") {
-      continue;
-    }
-    for (const raw of payload["environments"]) {
-      const tuple = asRecord(raw);
-      if (tuple === null) {
-        continue;
-      }
-      const environmentId = strField(tuple, "environmentId");
-      const epoch = intField(tuple, "epoch");
-      const manifestVersion = intField(tuple, "manifestVersion");
-      const manifestSigHashHex = strField(tuple, "manifestSigHashHex");
-      const valuesDigestHex = strField(tuple, "valuesDigestHex");
-      if (
-        environmentId === null ||
-        epoch === null ||
-        manifestVersion === null ||
-        manifestSigHashHex === null ||
-        valuesDigestHex === null
-      ) {
-        continue;
-      }
-      const deletedAt = deletedSeq.get(environmentId);
-      if (deletedAt !== undefined && deletedAt < seq) {
-        continue;
-      }
-      latest.set(environmentId, {
-        seq,
-        entryHashHex,
-        epoch,
-        manifestVersion,
-        manifestSigHashHex,
-        valuesDigestHex,
-      });
-    }
+    rows.push({
+      seq,
+      entryJson: String(row["entry_json"]),
+      entryHashHex: typeof entryHashHex === "string" ? entryHashHex : null,
+    });
   }
+  const { epochStarts, deletedSeq, latest, grantScopes } = foldChainAnchors(rows);
   const created = new Set(epochStarts.keys());
   const deleted = new Set(deletedSeq.keys());
   const live = new Set([...created].filter((environmentId) => !deleted.has(environmentId)));
@@ -495,31 +373,10 @@ class RestoreReader {
     }
   }
 
-  // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
-  // fallow-ignore-next-line complexity -- the restored-checkpoint binding checked in both directions in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
   #verifyRestoredCheckpoints(anchors: StagedChainAnchors): void {
-    const sql = this.storage.sql;
-    const seen = new Set<string>();
-    for (const row of sql.exec("SELECT * FROM environment_checkpoints").toArray()) {
-      const environmentId = String(row["environment_id"]);
-      seen.add(environmentId);
-      const tuple = anchors.latest.get(environmentId);
-      if (
-        tuple === undefined ||
-        Number(row["chain_seq"]) !== tuple.seq ||
-        String(row["entry_hash_hex"]) !== tuple.entryHashHex ||
-        Number(row["epoch"]) !== tuple.epoch ||
-        Number(row["manifest_version"]) !== tuple.manifestVersion ||
-        String(row["manifest_sig_hash_hex"]) !== tuple.manifestSigHashHex ||
-        String(row["values_digest_hex"]) !== tuple.valuesDigestHex
-      ) {
-        throw new RestoreRefusedError({ code: "malformed" });
-      }
-    }
-    for (const environmentId of anchors.latest.keys()) {
-      if (!seen.has(environmentId)) {
-        throw new RestoreRefusedError({ code: "malformed" });
-      }
+    const rows = this.storage.sql.exec("SELECT * FROM environment_checkpoints").toArray();
+    if (!checkpointRowsMatchLatest(rows, anchors.latest)) {
+      throw new RestoreRefusedError({ code: "malformed" });
     }
   }
 

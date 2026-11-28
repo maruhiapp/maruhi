@@ -1,4 +1,9 @@
-import { epochAt, stagedChainAnchors, type StagedChainAnchors } from "./do-mirror-anchors.ts";
+import {
+  type ChainAnchors,
+  checkpointRowsMatchLatest,
+  epochAt,
+  foldChainAnchors,
+} from "./chain-anchors.ts";
 import { verifyAuditAnchoredState } from "./do-mirror-audit-verify.ts";
 import {
   CHECKPOINT_TABLE,
@@ -31,7 +36,16 @@ export function verifyChainAnchoredProjections(sql: SqlStorage): void {
   if (!hasTable(sql, stagingOf(CHAIN_TABLE))) {
     return;
   }
-  const anchors = stagedChainAnchors(sql);
+  const anchors = foldChainAnchors(
+    sql
+      .exec(`SELECT seq, entry_json, entry_hash_hex FROM ${stagingOf(CHAIN_TABLE)} ORDER BY seq`)
+      .toArray()
+      .map((row) => ({
+        seq: Number(row["seq"]),
+        entryJson: String(row["entry_json"]),
+        entryHashHex: String(row["entry_hash_hex"]),
+      })),
+  );
   if (!anchors.complete) {
     return;
   }
@@ -43,38 +57,17 @@ export function verifyChainAnchoredProjections(sql: SqlStorage): void {
   verifyAuditAnchoredState(sql, anchors);
 }
 
-// fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
-// fallow-ignore-next-line complexity -- the checkpoint binding checked in both directions in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
-function verifyStagedCheckpoints(sql: SqlStorage, anchors: StagedChainAnchors): void {
+function verifyStagedCheckpoints(sql: SqlStorage, anchors: ChainAnchors): void {
   const staging = stagingOf(CHECKPOINT_TABLE);
   const staged = hasTable(sql, staging) ? sql.exec(`SELECT * FROM ${staging}`).toArray() : [];
-  const seen = new Set<string>();
-  for (const row of staged) {
-    const environmentId = String(row["environment_id"]);
-    seen.add(environmentId);
-    const tuple = anchors.latest.get(environmentId);
-    if (
-      tuple === undefined ||
-      Number(row["chain_seq"]) !== tuple.seq ||
-      String(row["entry_hash_hex"]) !== tuple.entryHashHex ||
-      Number(row["epoch"]) !== tuple.epoch ||
-      Number(row["manifest_version"]) !== tuple.manifestVersion ||
-      String(row["manifest_sig_hash_hex"]) !== tuple.manifestSigHashHex ||
-      String(row["values_digest_hex"]) !== tuple.valuesDigestHex
-    ) {
-      throw malformed();
-    }
-  }
-  for (const environmentId of anchors.latest.keys()) {
-    if (!seen.has(environmentId)) {
-      throw malformed();
-    }
+  if (!checkpointRowsMatchLatest(staged, anchors.latest)) {
+    throw malformed();
   }
 }
 
 // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
 // fallow-ignore-next-line complexity -- the manifest binding's checks in the order the manifest's own fields are bound; each branch is one refusal condition, and splitting the checklist would obscure it
-function verifyStagedManifests(sql: SqlStorage, anchors: StagedChainAnchors): void {
+function verifyStagedManifests(sql: SqlStorage, anchors: ChainAnchors): void {
   const staging = stagingOf(MANIFEST_TABLE);
   const staged = hasTable(sql, staging) ? sql.exec(`SELECT * FROM ${staging}`).toArray() : [];
   const seen = new Set<string>();
@@ -155,7 +148,7 @@ function verifyStagedManifests(sql: SqlStorage, anchors: StagedChainAnchors): vo
 
 // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
 // fallow-ignore-next-line complexity -- the tombstone exemptions in one pass over the staged rows; each branch is one refusal condition, and splitting the checklist would obscure it
-function verifyStagedTombstones(sql: SqlStorage, anchors: StagedChainAnchors): void {
+function verifyStagedTombstones(sql: SqlStorage, anchors: ChainAnchors): void {
   const envStaging = stagingOf(ENVIRONMENTS_TABLE);
   if (hasTable(sql, envStaging)) {
     for (const row of sql.exec(`SELECT * FROM ${envStaging}`).toArray()) {
@@ -195,7 +188,7 @@ function verifyStagedTombstones(sql: SqlStorage, anchors: StagedChainAnchors): v
 
 // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
 // fallow-ignore-next-line complexity -- the wrap preservation and admission checks in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
-function verifyStagedWraps(sql: SqlStorage, anchors: StagedChainAnchors): void {
+function verifyStagedWraps(sql: SqlStorage, anchors: ChainAnchors): void {
   const table = "dek_wraps";
   const keyColumns = ["environment_id", "epoch", "recipient_user_id", "recipient_enc_pub_hex"];
   const staged = rowsByKey(sql, table, true, keyColumns);
@@ -235,7 +228,7 @@ function verifyStagedWraps(sql: SqlStorage, anchors: StagedChainAnchors): void {
 
 // fallow-ignore-next-line added-suppression -- deliberate: the checklist's complexity is inherent and reviewed unsplit; the next line states the function's own reason
 // fallow-ignore-next-line complexity -- the attestation preservation and head-resolution checks in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
-function verifyStagedAttestations(sql: SqlStorage, anchors: StagedChainAnchors): void {
+function verifyStagedAttestations(sql: SqlStorage, anchors: ChainAnchors): void {
   const table = "head_attestations";
   const keyColumns = ["attester_user_id", "attester_key_fingerprint"];
   const staged = rowsByKey(sql, table, true, keyColumns);

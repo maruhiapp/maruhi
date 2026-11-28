@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 
 import { deriveAuditHeads, isAuditHeadHex } from "../audit-store.ts";
-import { asRecord, intField, type StagedChainAnchors, strField } from "./do-mirror-anchors.ts";
+import { asRecord, type ChainAnchors, intField, strField } from "./chain-anchors.ts";
 import {
   AUDIT_HEAD_TABLE,
   AUDIT_TABLE,
@@ -98,7 +98,7 @@ function safeParseJson(text: string): unknown {
   }
 }
 
-export function verifyAuditAnchoredState(sql: SqlStorage, anchors: StagedChainAnchors): void {
+export function verifyAuditAnchoredState(sql: SqlStorage, anchors: ChainAnchors): void {
   const audit = stagedAuditAnchors(sql);
   verifyStagedSettings(sql, audit);
   verifyStagedProposals(sql, anchors, audit);
@@ -130,7 +130,7 @@ function verifyStagedSettings(sql: SqlStorage, audit: StagedAuditAnchors | null)
 // fallow-ignore-next-line complexity -- the proposal binding and preservation checks in one pass; each branch is one refusal condition, and splitting the checklist would obscure it
 function verifyStagedProposals(
   sql: SqlStorage,
-  anchors: StagedChainAnchors,
+  anchors: ChainAnchors,
   audit: StagedAuditAnchors | null,
 ): void {
   const proposalKey = ["proposal_id"] as const;
