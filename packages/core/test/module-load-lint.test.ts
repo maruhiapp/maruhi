@@ -44,6 +44,13 @@ export const created = createRequire(import.meta.url)("effect/http").FetchHttpCl
 export const meta = import.meta.require("effect/http").FetchHttpClient;
 `;
 
+const NODE_MODULE_SHAPES = `import nodeModule from "node:module";
+import * as bareModule from "module";
+
+export const fromDefault = nodeModule.createRequire(import.meta.url)("effect/http");
+export const fromNamespace = bareModule.createRequire(import.meta.url)("effect/http");
+`;
+
 const ASTRO = `---
 const frontmatter = await import("effect/http");
 ---
@@ -87,6 +94,8 @@ const PROBES: readonly Probe[] = [
     source: REQUIRE_SHAPES,
     bans: [REQUIRE, REQUIRE, REQUIRE],
   },
+  { path: "apps/cli/src/node-module.ts", source: NODE_MODULE_SHAPES, bans: [REQUIRE, REQUIRE] },
+  { path: "apps/server/src/node-module.ts", source: NODE_MODULE_SHAPES, bans: [REQUIRE, REQUIRE] },
   { path: "apps/server/src/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
   { path: "apps/server/src/do/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
   { path: "packages/core/src/probe.ts", source: PACKAGE_SPECIFIER, bans: [DYNAMIC_IMPORT] },
