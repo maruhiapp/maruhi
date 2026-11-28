@@ -332,13 +332,6 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L261: For a project brokered on this machine, real values go only to a person at a terminal: deleting the config or changing directory is not a way around the rules (R-13).
 - L269: Environment-variable names go through verified statements (§4.2/§12-7); the execution-control variable-name denylist is a defense layer applied to the verified name.
 
-### `apps/cli/src/commands/rotation.ts`
-
-- L52: The dismiss variable argument is not taken on a --all run; atMost(1) expresses 'omitted under --all' in the declaration.
-- L173: A single dismissal names the pair <variableId> --env <environmentId>; --env without a variableId only narrows --all.
-- L186: Neither rotation list nor dismiss requires the master key (non-secret metadata, the same keyless class as project verify); dismiss's authority (admin or above × admin scope) is enforced server-side.
-- L235: The proposal decides the environment: it is looked up through a keyless project context first, then the environment context (device key) is opened for its environment.
-
 ### `apps/cli/src/commands/shared.ts`
 
 - L1: commands/shared.ts is a leaf: of the other commands/ files it imports only lazy.ts, itself a leaf.
@@ -1356,8 +1349,21 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L546: The epoch began after the baseline, but whether that round's *re-encryption completed** is not knowable from the chain (§12-7's
 - L560: Resumed (or a partial completion remains) — the display and exit code are derived from RotationSummary by the caller's reportRotation
 
-### `apps/cli/src/rotation.ts`
+### `apps/cli/src/rotation.package/command.ts`
 
+- Moved 2026-11-28 from `apps/cli/src/commands/rotation.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
+- L52: The dismiss variable argument is not taken on a --all run; atMost(1) expresses 'omitted under --all' in the declaration.
+- L173: A single dismissal names the pair <variableId> --env <environmentId>; --env without a variableId only narrows --all.
+- L186: Neither rotation list nor dismiss requires the master key (non-secret metadata, the same keyless class as project verify); dismiss's authority (admin or above × admin scope) is enforced server-side.
+- L235: The proposal decides the environment: it is looked up through a keyless project context first, then the environment context (device key) is opened for its environment.
+
+### `apps/cli/src/rotation.package/index.ts`
+
+- Added 2026-11-28 (after the audit; no base line): `rotation.package` holds the `rotation` command group (`command.ts`, which was `commands/rotation.ts`), `rotation.ts` and `rotation-proposals.ts`. The index re-exports from `rotation.ts` what other files use: `resolveNames` and the `NameIndex` type, with which `audit list` names variables as `rotation list` does; `flaggedVariablesOf`, with which `env rm` reads the variables still flagged for rotation; and `reportRotationChecklist`, which the command layer loads lazily for the `member` and `server` groups. Two rotation files stay at the src root. `rotation-report.ts` is imported by `commands/shared.ts` and `env.package/command.ts`, so through this index parsing, help and version would load `rotation.ts` and the files it imports. `sweep-rotate.ts` imports the index of `env.package`, so through this index `audit list`, `env rm` and the rotation checklist would load the environment rotation. `rotation-sweep.ts` is part of the open pipeline and stays where its zone in `.fallowrc.json` names it
+
+### `apps/cli/src/rotation.package/rotation.ts`
+
+- Moved 2026-11-28 from `apps/cli/src/rotation.ts`, the path at the audit base commit `0f036bef` that the L numbers below refer to
 - L1: `maruhi rotation list|dismiss` (AUDIT_SPEC §4.1 / §6 / §7). - list: fetches and displays the server's derived view (currently active
 - L53: One flag of the derived view (the received form of api-schema's RotationFlagSchema).
 - L62: AUDIT_SPEC §3.3's trigger (2026-09-14 ES. `revoke_device` is 2026-09-19 DK K3's device-revocation variant — a mechanical follow of the wire

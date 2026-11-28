@@ -3,26 +3,32 @@ import { type EnvironmentId, type VariableId, cryptoEffect } from "@maruhi/core"
 import { decodeHex, openProposedValue } from "@maruhi/crypto";
 import { Effect, Redacted } from "effect";
 
-import type { CliServices } from "./cli.ts";
+import type { CliServices } from "../cli.ts";
 import {
   describeShape,
   lineCountWarning,
   shapeOf,
   type ValueShape,
-} from "./connector.package/index.ts";
-import type { EnvironmentContext, ProjectContextBase } from "./context.ts";
-import { cryptoErrorKind } from "./crypto-error-kind.ts";
-import { environmentKeysFor } from "./deks.ts";
-import { countNoun, displayText, formatUtcDate, formatUtcMinutes, logWarnings } from "./display.ts";
-import { cliError, type CliError } from "./errors.ts";
-import { toCliError } from "./failure.ts";
-import { CliIo } from "./io.ts";
-import { decryptVerifiedValue } from "./pull.ts";
-import { type PushedVersion, pushVariable } from "./push.package/index.ts";
+} from "../connector.package/index.ts";
+import type { EnvironmentContext, ProjectContextBase } from "../context.ts";
+import { cryptoErrorKind } from "../crypto-error-kind.ts";
+import { environmentKeysFor } from "../deks.ts";
+import {
+  countNoun,
+  displayText,
+  formatUtcDate,
+  formatUtcMinutes,
+  logWarnings,
+} from "../display.ts";
+import { cliError, type CliError } from "../errors.ts";
+import { toCliError } from "../failure.ts";
+import { CliIo } from "../io.ts";
+import { decryptVerifiedValue } from "../pull.ts";
+import { type PushedVersion, pushVariable } from "../push.package/index.ts";
+import type { VerifiedPulledValue } from "../values-verify.ts";
+import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
+import { ensureConfirmed } from "../var.package/index.ts";
 import { fetchRotationProposals, resolveVariableStates, type StateIndex } from "./rotation.ts";
-import type { VerifiedPulledValue } from "./values-verify.ts";
-import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "./values.ts";
-import { ensureConfirmed } from "./var.package/index.ts";
 
 function describeVariables(proposal: RotationProposal, states: StateIndex | undefined): string {
   return proposal.variables
