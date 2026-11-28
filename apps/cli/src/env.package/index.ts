@@ -1,1 +1,1 @@
-export { envRotateOp, type ReencryptedVariable, type RotationSummary } from "./env-rotate.ts";
+export { envRotateOp } from "./env-rotate.ts";

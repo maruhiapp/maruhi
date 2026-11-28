@@ -4,7 +4,7 @@ import { ALL_SCOPE } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
-import type { CliServices } from "../context.ts";
+import type { CliServices } from "../cli.ts";
 import type { DeviceRevokeSummary, ProjectRevokeOutcome } from "../device-revoke.ts";
 import { displayText } from "../display.ts";
 import { CliError } from "../errors.ts";

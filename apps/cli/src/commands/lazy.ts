@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 
+import type { CliServices } from "../cli.ts";
 import type * as Context from "../context.ts";
 import type { CliError } from "../errors.ts";
 import type * as Rotation from "../rotation.ts";
@@ -128,8 +129,8 @@ const lazyResolveProjectId = (
 
 const lazyWithMirrorFallback = <A>(
   flags: Context.CommonFlags,
-  read: (flags: Context.CommonFlags) => Effect.Effect<A, CliError, Context.CliServices>,
-): Effect.Effect<A, CliError, Context.CliServices> =>
+  read: (flags: Context.CommonFlags) => Effect.Effect<A, CliError, CliServices>,
+): Effect.Effect<A, CliError, CliServices> =>
   Effect.flatMap(
     Effect.promise(() =>
       import("../context.ts").then((m) => ({ withMirrorFallback: m.withMirrorFallback })),

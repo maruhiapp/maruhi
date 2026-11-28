@@ -6,6 +6,7 @@ import { buildRepositoryAnchor, formatRepositoryAnchor } from "../anchor.ts";
 import { DEFAULT_POLICY_OPS, describePolicy, proposalViews } from "../approval-rules.ts";
 import type { PolicyRequest } from "../approval.package/index.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
+import type { CliServices } from "../cli.ts";
 import {
   invalidFlagCombination,
   projectFlags,
@@ -26,7 +27,7 @@ import {
   resolveProjectId,
 } from "../commands/lazy.ts";
 import { proposalInputOf, reportProposed } from "../commands/shared.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
+import type { CommonFlags } from "../context.ts";
 import { chainEnvironmentIds } from "../deks.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, cliError, usageError } from "../errors.ts";

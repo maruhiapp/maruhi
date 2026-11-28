@@ -11,6 +11,7 @@ import { CliError, cliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";
 import type { ManifestDigestEntry } from "../manifest.ts";
 import { logWarning } from "../notice.ts";
+import type { RotationSummary } from "../rotation-sweep.ts";
 import type { VerifiedPulledValue } from "../values-verify.ts";
 import { pullVerifiedEnvironment, type VerifiedEnvironmentPull } from "../values.ts";
 import {
@@ -23,24 +24,6 @@ import { appendRotation, type RotateValuesConflictError } from "./env-rotate-sen
 import { ensureRotatable, type RotateInput, dedupeWarnings } from "./env-rotate-shared.ts";
 
 const MAX_REASON_BYTES = 1024;
-
-export interface RotationSummary {
-  readonly mode: "rotated" | "resumed" | "up-to-date";
-  readonly previousEpoch: number;
-  readonly epoch: number;
-  readonly reencrypted: number;
-  readonly alreadyCurrent: number;
-  readonly remaining: number;
-  readonly remainingExact: boolean;
-  readonly failure: string | null;
-  readonly written: readonly ReencryptedVariable[];
-  readonly warnings: readonly string[];
-}
-
-export interface ReencryptedVariable {
-  readonly name: string;
-  readonly version: number;
-}
 
 function checkReasonLength(reason: string | undefined): Effect.Effect<string | null, CliError> {
   if (reason === undefined) {

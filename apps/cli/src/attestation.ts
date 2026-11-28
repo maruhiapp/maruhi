@@ -5,11 +5,11 @@ import { Clock, Effect } from "effect";
 import type { MaruhiClient } from "./api.ts";
 import type { DistributedAttestationWire, VerifiedProject } from "./chain-sync.ts";
 import { resyncExtended } from "./chain-sync.ts";
-import type { CliServices } from "./context.ts";
 import { type CliError, evidenceError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";
 import { formatAttestationEvidence } from "./floor-evidence.ts";
 import { type AttestationEvidenceRecord, FloorStore } from "./floor.ts";
+import type { CliIo } from "./io.ts";
 import { logNote, logWarning } from "./notice.ts";
 
 type MatchOutcome =
@@ -113,7 +113,7 @@ const failWithEvidence = Effect.fn("attestation.failWithEvidence")(function* (
     attestation: DistributedAttestationWire;
     kind: AttestationEvidenceRecord["kind"];
   }[],
-): Effect.fn.Return<never, CliError, CliServices> {
+): Effect.fn.Return<never, CliError, FloorStore | CliIo> {
   const store = yield* FloorStore;
   const detectedAtMs = yield* Clock.currentTimeMillis;
   const evidence = records.map((record) =>
@@ -139,7 +139,7 @@ export const reconcileDistributedAttestations = Effect.fn(
   readonly projectId: ProjectId;
   readonly view: VerifiedProject;
   readonly resync: Effect.Effect<VerifiedProject, CliError>;
-}): Effect.fn.Return<VerifiedProject, CliError, CliServices> {
+}): Effect.fn.Return<VerifiedProject, CliError, FloorStore | CliIo> {
   const first = yield* classifyAll(input.view, input.view.attestations);
   if (first.evidence.length > 0) {
     return yield* failWithEvidence(
@@ -185,7 +185,7 @@ export const submitHeadAttestationIfAdvanced = Effect.fn(
   readonly view: VerifiedProject;
   readonly attesterUserId: UserId;
   readonly signingKey: CryptoKey;
-}): Effect.fn.Return<void, never, CliServices> {
+}): Effect.fn.Return<void, never, FloorStore | CliIo> {
   const store = yield* FloorStore;
   const head = { seq: input.view.state.headSeq, hashHex: input.view.state.headHashHex };
   const attested = yield* store

@@ -4,7 +4,8 @@ import { Effect } from "effect";
 
 import { BODY_TIMEOUT, makeApiClient, type MaruhiClient } from "../api.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
-import { type CliServices, openSession } from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import { openSession } from "../context.ts";
 import { countNoun } from "../display.ts";
 import { CliError, cliError } from "../errors.ts";
 import { toCliError } from "../failure.ts";

@@ -10,7 +10,8 @@ import { Clock, Effect } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import { resyncExtended, type VerifiedProject } from "./chain-sync.ts";
-import { type CliServices, openProject, type ProjectContext } from "./context.ts";
+import type { CliServices } from "./cli.ts";
+import { openProject, type ProjectContext } from "./context.ts";
 import { ROLE_RANK } from "./dek-wrap.ts";
 import { chainEnvironmentIds } from "./deks.ts";
 import { describeCap, describeDevice, devicesOf, findOwnDevice } from "./device-key.ts";

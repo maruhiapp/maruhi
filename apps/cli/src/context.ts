@@ -8,9 +8,7 @@ import {
   type UserId,
 } from "@maruhi/core";
 import type { ChainEntry } from "@maruhi/crypto";
-import { Duration, Effect, type Stdio } from "effect";
-import type { Digest, SecureRandom } from "effect/crypto";
-import type { HttpClient } from "effect/http";
+import { Duration, Effect } from "effect";
 
 import { makeApiClient, type MaruhiClient } from "./api.ts";
 import {
@@ -18,9 +16,9 @@ import {
   submitHeadAttestationIfAdvanced,
 } from "./attestation.ts";
 import { resyncExtended, syncProject, type VerifiedProject } from "./chain-sync.ts";
+import type { CliServices } from "./cli.ts";
 import type { CliConfig } from "./config.ts";
-import { ConfigStore, loadCliConfig } from "./config.ts";
-import type { SqlRunner } from "./connector.package/index.ts";
+import { loadCliConfig } from "./config.ts";
 import type { DekRecipient } from "./deks.ts";
 import { ownDeviceOrFail } from "./device-key.ts";
 import { syncOwnDevices } from "./device-sync.ts";
@@ -38,14 +36,9 @@ import {
   type ProjectFloor,
 } from "./floor.ts";
 import { CliIo } from "./io.ts";
-import type { Keychain } from "./keychain.ts";
-import type { FingerprintBook } from "./known-fingerprints.ts";
 import { logNote, logWarning } from "./notice.ts";
-import type { OwnDeviceStore } from "./own-devices.ts";
 import { type InviteAnchor, PinStore } from "./pins.ts";
-import type { ProxyAcceptStore } from "./proxy.package/index.ts";
 import { warnUnconvergedMandates } from "./rotation-sweep.ts";
-import type { ProcessRunner } from "./run.ts";
 import { refuseChainDeletedEnvironment, requireEnvironmentInScope } from "./scope.ts";
 import { noteServerDisclosure } from "./server-disclosure.ts";
 import {
@@ -57,22 +50,6 @@ import {
   resolveSession,
   type SessionCredential,
 } from "./session.ts";
-
-export type CliServices =
-  | Keychain
-  | ConfigStore
-  | FloorStore
-  | PinStore
-  | FingerprintBook
-  | CliIo
-  | ProcessRunner
-  | Stdio.Stdio
-  | HttpClient.HttpClient
-  | OwnDeviceStore
-  | ProxyAcceptStore
-  | SqlRunner
-  | SecureRandom.SecureRandom
-  | Digest.Digest;
 
 export interface CommonFlags {
   readonly server?: string | undefined;

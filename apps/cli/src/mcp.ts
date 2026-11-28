@@ -14,7 +14,8 @@ import {
 } from "effect";
 import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
-import { type CommonFlags, type CliServices, openMetadataEnvironment } from "./context.ts";
+import type { CliServices } from "./cli.ts";
+import { type CommonFlags, openMetadataEnvironment } from "./context.ts";
 import { displayText, logWarnings } from "./display.ts";
 import { cliError, CliError } from "./errors.ts";
 import { internalErrorKind } from "./failure.ts";

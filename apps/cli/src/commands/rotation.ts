@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
-import type { CliServices } from "../context.ts";
+import type { CliServices } from "../cli.ts";
 import { logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";

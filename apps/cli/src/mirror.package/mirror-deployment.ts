@@ -1,7 +1,7 @@
 import { Duration, Effect } from "effect";
 
 import { makeApiClient } from "../api.ts";
-import type { CliServices } from "../context.ts";
+import type { CliServices } from "../cli.ts";
 
 export function sameDeployment(a: string, b: string): Effect.Effect<boolean, never, CliServices> {
   if (a === b) {

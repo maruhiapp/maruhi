@@ -124,7 +124,8 @@
       },
       {
         "from": "cli-commands",
-        "allow": ["cli-commands", "cli-domain", "crypto", "core", "api-schema"]
+        "allow": ["cli-commands", "cli-domain", "crypto", "core", "api-schema"],
+        "allowTypeOnly": ["cli-entry"]
       },
       {
         "from": "cli-domain",

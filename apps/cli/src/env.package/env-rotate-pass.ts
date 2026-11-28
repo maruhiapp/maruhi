@@ -6,6 +6,7 @@ import type { VerifiedProject } from "../chain-sync.ts";
 import { countNoun, displayText } from "../display.ts";
 import { CliError, cliError } from "../errors.ts";
 import { CliIo } from "../io.ts";
+import type { ReencryptedVariable } from "../rotation-sweep.ts";
 import type { VerifiedPulledValue } from "../values-verify.ts";
 import { pushReencrypted, rescanEnvironment } from "./env-rotate-push.ts";
 import {
@@ -16,7 +17,6 @@ import {
   MAX_REENCRYPT_PASSES,
   asOutcome,
 } from "./env-rotate-shared.ts";
-import type { ReencryptedVariable } from "./env-rotate.ts";
 
 interface ReencryptOutcome {
   readonly reencrypted: number;

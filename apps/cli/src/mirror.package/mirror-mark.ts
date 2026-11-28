@@ -3,13 +3,8 @@ import type { ProjectId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { syncProject, type VerifiedProject } from "../chain-sync.ts";
-import {
-  type CliServices,
-  openSession,
-  openSessionWith,
-  resolveProjectId,
-  type SessionContext,
-} from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import { openSession, openSessionWith, resolveProjectId, type SessionContext } from "../context.ts";
 import { countNoun } from "../display.ts";
 import { type CliError, cliError, usageError } from "../errors.ts";
 import { toCliError } from "../failure.ts";

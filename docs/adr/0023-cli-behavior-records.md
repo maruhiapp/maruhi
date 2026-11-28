@@ -257,6 +257,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 ### `apps/cli/src/cli.ts`
 
 - L1: runCli holds only the pre-dispatch diagnostic, the diagnostic destination resolution, and the final internal-error net; values enter via stdin and display is gated by agent-gate
+- L20 (2026-11-28 tree): `CliServices`, the union of every service the entry provides, is declared here and not in context.ts. There it named three services of feature files (`ProcessRunner`, `ProxyAcceptStore`, `SqlRunner`), so context.ts imported types from the layer above it, and attestation.ts imported context.ts for the union. The three functions of attestation.ts that named it now declare the two services they use (`FloorStore`, `CliIo`), so no trust-core file names the union. The command layer, the features and context.ts name the type through a type-only import of this file, the one direction in which a lower layer may see the entry; none imports an entry file by value. The record on `Stdio` as a member of the union stays under `apps/cli/src/context.ts` (L70)
 - L24: A dedicated message exists for a command name placed after -- because effect/cli's diagnostic can only say 'extra argument' and cannot say how to fix it
 - L34: positionalTokens is dispatch material, not the argument-inspecting scan ADR-0016 d2 forbids; it cannot disagree with effect's resolution because consumers only read the first token and pre-terminator presence
 - L71: Diagnostic destination resolves to the deepest known command level drawn from COMMAND_SPECS (no hand-written copy); unknown or empty names resolve to root
@@ -879,6 +880,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 - L91: A stalled read is bounded like a failed one: the note must never hold `maruhi run` (B-7), and a check cannot wait forever
 - L95: A failed read is noted and counted: the listing goes on, but a check (`--fail-on-due`) cannot pass on an unknown age
 - L127: Every read at once: a handful of metadata GETs to one DO, so the note costs one round-trip time whatever the count (and one bound)
+- L145 (2026-11-28 tree): notePastDueValues takes the three fields it reads (variable id, name, max age) and not pull.ts's `DecryptedVariable`, which made this module import a feature file for a type; a decrypted variable still fits the parameter
 - L147: The push time of the **plaintext** the current version holds (B-9): a re-encryption (`sameValueAs = version − 1` — the mandated one after a
 - L173: "expired 14 days ago" / "due in 8 days". The day count rounds the way the `--due-within` filter counts: a value due in any part of a day is
 - L188: The one-line note of `maruhi run` / `maruhi pull` (S-E): only values **past** their max age, each with the interval, the push date, and how
@@ -1303,6 +1305,7 @@ Status: 2026-11-21. Accepted on merge of the PR that adds this ADR.
 ### `apps/cli/src/rotation-sweep.ts`
 
 - L1: The shared implementation of sweeping rotation mandates (CRYPTO_SPEC §7). revoke_server (server-revoke) and remove_member / demotion below
+- L23 (2026-11-28 tree): `RotationSummary` and `ReencryptedVariable` are declared here, as the result of the injected `SweepRotate` callback. `env.package` produces the summary and imports the types; declared in env-rotate.ts they made the sweep import a feature package for a type. The records on the summary's fields stay under `apps/cli/src/env.package/env-rotate.ts` (L53, L67)
 - L53: The injected rotation's mode: force = a new epoch is mandatory / verify = resume-or-confirm only.
 - L56: Injection of one environment's rotation (cli.ts passes envRotateOp wrapped with a floor).
 - L62: The all-environment sweep's result (the reporting material shared by revoke / remove / demotion / narrowing).

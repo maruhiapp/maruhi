@@ -3,7 +3,7 @@ import { Effect } from "effect";
 
 import type { MaruhiClient } from "../api.ts";
 import type { VerifiedProject } from "../chain-sync.ts";
-import type { CliServices } from "../context.ts";
+import type { CliServices } from "../cli.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import type { CliError } from "../errors.ts";
 import type { FloorHandle, VerifiedVariableStatement } from "../floor-check.ts";

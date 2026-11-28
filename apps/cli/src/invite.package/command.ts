@@ -3,6 +3,7 @@ import { ALL_SCOPE } from "@maruhi/crypto";
 import { Clock, Effect, Redacted } from "effect";
 import { Argument, Command } from "effect/cli";
 
+import type { CliServices } from "../cli.ts";
 import {
   NonBlank,
   invalidFlagCombination,
@@ -14,7 +15,7 @@ import {
 import { openMetadataProject, openProject, openSession } from "../commands/lazy.ts";
 import { loadIdentityBacking, parseGithubLoginFlag } from "../commands/shared.ts";
 import { identityBackingOf } from "../config.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
+import type { CommonFlags } from "../context.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";
 import {

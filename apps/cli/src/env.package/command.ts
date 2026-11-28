@@ -2,6 +2,7 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
+import type { CliServices } from "../cli.ts";
 import {
   environmentIdArgument,
   invalidFlagCombination,
@@ -19,7 +20,7 @@ import {
   openMetadataProject,
   openProject,
 } from "../commands/lazy.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
+import type { CommonFlags } from "../context.ts";
 import { countNoun, displayText, logWarnings } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { CliIo } from "../io.ts";

@@ -15,6 +15,7 @@ import {
   resolveProposalRef,
   voteEligibility,
 } from "../approval-rules.ts";
+import type { CliServices } from "../cli.ts";
 import { NonBlank, projectFlags, singleFlag } from "../commands/flags.ts";
 import {
   loadMasterKeys,
@@ -28,7 +29,7 @@ import {
   reportRoleChangeFulfilment,
   reportSweepOutcome,
 } from "../commands/shared.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
+import type { CommonFlags } from "../context.ts";
 import { displayText, formatUtcMinutes } from "../display.ts";
 import { CliError, cliError } from "../errors.ts";
 import { CliIo, type CliIoShape } from "../io.ts";

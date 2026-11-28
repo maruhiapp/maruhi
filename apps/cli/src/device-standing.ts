@@ -4,7 +4,8 @@ import { Effect, Result } from "effect";
 
 import type { MaruhiClient } from "./api.ts";
 import type { VerifiedProject } from "./chain-sync.ts";
-import { type CliServices, openMetadataProject, type ProjectContextBase } from "./context.ts";
+import type { CliServices } from "./cli.ts";
+import { openMetadataProject, type ProjectContextBase } from "./context.ts";
 import { revokedFingerprintsOf } from "./device-key.ts";
 import type { CliError } from "./errors.ts";
 import { fetchProjectMemberships } from "./project.package/index.ts";

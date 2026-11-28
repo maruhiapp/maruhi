@@ -3,6 +3,7 @@ import { type Role } from "@maruhi/crypto";
 import { Effect } from "effect";
 import { Argument, Command } from "effect/cli";
 
+import type { CliServices } from "../cli.ts";
 import {
   NonBlank,
   userIdArgument,
@@ -28,7 +29,7 @@ import {
   reportRoleChangeFulfilment,
   reportSweepOutcome,
 } from "../commands/shared.ts";
-import type { CliServices, CommonFlags } from "../context.ts";
+import type { CommonFlags } from "../context.ts";
 import { displayText } from "../display.ts";
 import { CliError, usageError } from "../errors.ts";
 import { parseUserFingerprintFlag } from "../fingerprint-flag.ts";

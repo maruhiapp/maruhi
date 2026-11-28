@@ -1,12 +1,37 @@
-import { Effect, type Layer } from "effect";
+import { Effect, type Layer, type Stdio } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
+import type { HttpClient } from "effect/http";
 
 import { runEffectCli } from "./cli-runner.ts";
 import { COMMAND_SPECS, ROOT_SPEC_KEY } from "./commands/index.ts";
-import type { CliServices } from "./context.ts";
+import type { ConfigStore } from "./config.ts";
+import type { SqlRunner } from "./connector.package/index.ts";
 import { internalErrorKind } from "./failure.ts";
+import type { FloorStore } from "./floor.ts";
+import type { CliIo } from "./io.ts";
+import type { Keychain } from "./keychain.ts";
+import type { FingerprintBook } from "./known-fingerprints.ts";
 import { logFailure } from "./notice.ts";
+import type { OwnDeviceStore } from "./own-devices.ts";
+import type { PinStore } from "./pins.ts";
+import type { ProxyAcceptStore } from "./proxy.package/index.ts";
+import type { ProcessRunner } from "./run.ts";
 
-export type { CliServices } from "./context.ts";
+export type CliServices =
+  | Keychain
+  | ConfigStore
+  | FloorStore
+  | PinStore
+  | FingerprintBook
+  | CliIo
+  | ProcessRunner
+  | Stdio.Stdio
+  | HttpClient.HttpClient
+  | OwnDeviceStore
+  | ProxyAcceptStore
+  | SqlRunner
+  | SecureRandom.SecureRandom
+  | Digest.Digest;
 
 const TERMINATOR_BEFORE_COMMAND =
   "Write the command name before `--` (everything after `--` is passed through as arguments)";

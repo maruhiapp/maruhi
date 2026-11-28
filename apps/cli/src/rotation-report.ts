@@ -2,10 +2,10 @@ import type { EnvironmentId } from "@maruhi/core";
 import { Effect } from "effect";
 
 import { countNoun, logWarnings } from "./display.ts";
-import type { RotationSummary } from "./env.package/index.ts";
 import type { CliError } from "./errors.ts";
 import { CliIo } from "./io.ts";
 import { logWarning } from "./notice.ts";
+import type { RotationSummary } from "./rotation-sweep.ts";
 
 const reportPartialRotation = Effect.fn("rotation-report.reportPartialRotation")(function* (
   environmentId: EnvironmentId,

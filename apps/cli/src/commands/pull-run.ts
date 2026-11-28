@@ -3,8 +3,9 @@ import { Effect } from "effect";
 import { Command } from "effect/cli";
 
 import { ensurePlainRunAllowed, ensureValueDisplayAllowed } from "../agent-gate.ts";
+import type { CliServices } from "../cli.ts";
 import { loadCliConfig } from "../config.ts";
-import type { CliServices, CommonFlags, EnvironmentContext } from "../context.ts";
+import type { CommonFlags, EnvironmentContext } from "../context.ts";
 import { reportOwnDeviceGapFills } from "../device-gaps.ts";
 import { countNoun, displayText, formatPulledLine, logWarnings, showValues } from "../display.ts";
 import { CliError } from "../errors.ts";

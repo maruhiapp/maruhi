@@ -5,7 +5,8 @@ import { computeAuditHeadHash, computeAuditRowDigest, SUITE_ID } from "@maruhi/c
 import { Data, Effect } from "effect";
 
 import { fetchAuditHead } from "../checkpoint.package/index.ts";
-import type { CliServices, ProjectContextBase } from "../context.ts";
+import type { CliServices } from "../cli.ts";
+import type { ProjectContextBase } from "../context.ts";
 import { cryptoErrorKind } from "../crypto-error-kind.ts";
 import { countNoun, displayText } from "../display.ts";
 import type { CliError } from "../errors.ts";
